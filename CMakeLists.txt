@@ -70,6 +70,8 @@ option(SLANG_INCLUDE_TOOLS "Include tools targets in the build"
 option(SLANG_INCLUDE_TESTS "Include test targets in the build"
        ${SLANG_MASTER_PROJECT})
 option(SLANG_INCLUDE_DOCS "Include documentation targets in the build" OFF)
+option(SLANG_INCLUDE_CAPI "Include the C API library (slang-c) in the build"
+       OFF)
 option(SLANG_INCLUDE_PYLIB "Include the pyslang python module in the build" OFF)
 option(SLANG_INCLUDE_PYTHON_DOCS
        "Include Python binding documentation in the build" OFF)
@@ -258,6 +260,12 @@ add_subdirectory(source)
 if(SLANG_INCLUDE_TESTS)
   include(CTest)
   add_subdirectory(tests)
+endif()
+
+# After include(CTest) so that the C API's own tests register with CTest. The
+# tools include a consumer of the C API (slang-hier), so they require it too.
+if(SLANG_INCLUDE_CAPI OR SLANG_INCLUDE_TOOLS)
+  add_subdirectory(source/capi)
 endif()
 
 if(SLANG_INCLUDE_BENCHMARKS)

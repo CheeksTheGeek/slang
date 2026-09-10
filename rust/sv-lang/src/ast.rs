@@ -392,13 +392,6 @@ impl Design {
         self.inner.raw
     }
 
-    fn wrap<'d>(&'d self, ast: sys::slang_ast) -> Option<Symbol<'d>> {
-        (!ast.ptr.is_null()).then_some(Symbol {
-            raw: ast,
-            _design: PhantomData,
-        })
-    }
-
     /// The root symbol of the design.
     ///
     /// # Examples
@@ -417,10 +410,7 @@ impl Design {
         let mut err = ffi::error();
         // SAFETY: the compilation is valid.
         let ast = unsafe { sys::slang_compilation_root(self.raw(), &mut err) };
-        Symbol {
-            raw: ast,
-            _design: PhantomData,
-        }
+        Symbol::from_raw(ast)
     }
 
     /// The top-level module/program instances.
@@ -442,7 +432,7 @@ impl Design {
         (0..count).filter_map(move |i| {
             // SAFETY: the compilation is valid; index is in range.
             let ast = unsafe { sys::slang_compilation_top_instance(self.raw(), i) };
-            self.wrap(ast)
+            wrap(ast)
         })
     }
 
@@ -466,7 +456,7 @@ impl Design {
         (0..count).filter_map(move |i| {
             // SAFETY: the compilation is valid; index is in range.
             let ast = unsafe { sys::slang_compilation_definition(self.raw(), i) };
-            self.wrap(ast)
+            wrap(ast)
         })
     }
 
@@ -489,7 +479,7 @@ impl Design {
         (0..count).filter_map(move |i| {
             // SAFETY: the compilation is valid; index is in range.
             let ast = unsafe { sys::slang_compilation_package(self.raw(), i) };
-            self.wrap(ast)
+            wrap(ast)
         })
     }
 
@@ -540,10 +530,7 @@ impl Design {
         let (p, pl) = ffi::as_ptr_len(path);
         // SAFETY: root is a scope of this compilation; out-error checked.
         let ast = unsafe { sys::slang_scope_lookup(root, p, pl, &mut err) };
-        (!ast.ptr.is_null()).then_some(Symbol {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// Opens an evaluation session: an exclusive borrow of the design through
@@ -687,31 +674,41 @@ pub struct Expression<'d> {
     _design: PhantomData<&'d Design>,
 }
 
+/// A borrowed read cursor into a [`Design`] — one of the pointer-sized handle
+/// types. `from_raw` is the single place the `{ raw, _design }` shape is built;
+/// prefer [`wrap`] (which null-checks) at call sites.
+trait Handle<'d>: Copy {
+    fn from_raw(raw: sys::slang_ast) -> Self;
+}
+
 // Handles are read cursors into the frozen arena of a `Design`, which is itself
 // `Send + Sync`, and the `'d` brand keeps a handle from outliving that design.
 // Reading through a handle from any thread is a pure read of the frozen arena,
 // so a handle is safe to send and share exactly as `&'d Design` is — this is
 // what lets `Design::par_visit` hand symbols to a rayon worker pool.
-// SAFETY: equivalent to `&'d Design`, which is Send because Design is Sync.
-unsafe impl Send for Symbol<'_> {}
-// SAFETY: as above — reads never mutate the frozen arena.
-unsafe impl Sync for Symbol<'_> {}
-// SAFETY: as `Symbol`.
-unsafe impl Send for Type<'_> {}
-// SAFETY: as `Symbol`.
-unsafe impl Sync for Type<'_> {}
-// SAFETY: as `Symbol`.
-unsafe impl Send for Expression<'_> {}
-// SAFETY: as `Symbol`.
-unsafe impl Sync for Expression<'_> {}
-// SAFETY: as `Symbol` (defined below; impls resolve module-wide).
-unsafe impl Send for Statement<'_> {}
-// SAFETY: as `Symbol`.
-unsafe impl Sync for Statement<'_> {}
-// SAFETY: as `Symbol`.
-unsafe impl Send for SemNode<'_> {}
-// SAFETY: as `Symbol`.
-unsafe impl Sync for SemNode<'_> {}
+macro_rules! impl_handle {
+    ($($t:ident),+ $(,)?) => { $(
+        // SAFETY: equivalent to `&'d Design`, which is Send because Design is Sync.
+        unsafe impl Send for $t<'_> {}
+        // SAFETY: as above — reads never mutate the frozen arena.
+        unsafe impl Sync for $t<'_> {}
+        impl<'d> Handle<'d> for $t<'d> {
+            fn from_raw(raw: sys::slang_ast) -> Self {
+                $t {
+                    raw,
+                    _design: PhantomData,
+                }
+            }
+        }
+    )+ };
+}
+impl_handle!(Symbol, Type, Expression, Statement, SemNode);
+
+/// Wraps a raw ast as a borrowed handle, or `None` if it is null. The single
+/// place the null-check-and-wrap pattern lives.
+fn wrap<'d, T: Handle<'d>>(raw: sys::slang_ast) -> Option<T> {
+    (!raw.ptr.is_null()).then(|| T::from_raw(raw))
+}
 
 /// A stable, owned identity for a symbol: its hierarchical path. Unlike a
 /// [`Symbol`] handle — a cursor into one [`Design`] that cannot outlive it — a
@@ -796,10 +793,7 @@ macro_rules! owned_handle {
         impl $owned {
             #[doc = concat!("Re-borrows the ", $what, " against the design kept alive here.")]
             pub fn get(&self) -> $handle<'_> {
-                $handle {
-                    raw: self.raw,
-                    _design: PhantomData,
-                }
+                <$handle as Handle>::from_raw(self.raw)
             }
         }
 
@@ -935,10 +929,7 @@ impl<'d> Symbol<'d> {
     pub fn parent(&self) -> Option<Symbol<'d>> {
         // SAFETY: the symbol is valid.
         let p = unsafe { sys::slang_symbol_parent_scope(self.raw) };
-        (!p.ptr.is_null()).then_some(Symbol {
-            raw: p,
-            _design: PhantomData,
-        })
+        wrap(p)
     }
 
     /// The next symbol in the same scope, or `None` at the end.
@@ -958,10 +949,7 @@ impl<'d> Symbol<'d> {
     pub fn next_sibling(&self) -> Option<Symbol<'d>> {
         // SAFETY: the symbol is valid.
         let s = unsafe { sys::slang_symbol_next_sibling(self.raw) };
-        (!s.ptr.is_null()).then_some(Symbol {
-            raw: s,
-            _design: PhantomData,
-        })
+        wrap(s)
     }
 
     /// True if the symbol is a scope (has members).
@@ -1089,10 +1077,7 @@ impl<'d> Symbol<'d> {
         // SAFETY: the symbol is valid; on a frozen design first_member does
         // not allocate.
         let first = unsafe { sys::slang_scope_first_member(self.raw, &mut err) };
-        let mut next = (!first.ptr.is_null()).then_some(Symbol::<'d> {
-            raw: first,
-            _design: PhantomData,
-        });
+        let mut next = wrap::<Symbol>(first);
         core::iter::from_fn(move || {
             let cur = next?;
             next = cur.next_sibling();
@@ -1160,10 +1145,7 @@ impl<'d> Symbol<'d> {
     pub fn body(&self) -> Option<Statement<'d>> {
         // SAFETY: the symbol is valid; the body was forced by the freeze sweep.
         let ast = unsafe { sys::slang_symbol_body(self.raw) };
-        (!ast.ptr.is_null()).then_some(Statement {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// Finds a direct member by name (no imports, no upward search). A pure
@@ -1186,10 +1168,7 @@ impl<'d> Symbol<'d> {
         let (n, nl) = ffi::as_ptr_len(name);
         // SAFETY: the symbol is valid; find does not allocate.
         let ast = unsafe { sys::slang_scope_find(self.raw, n, nl, &mut err) };
-        (!ast.ptr.is_null()).then_some(Symbol {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// Views this symbol as a [`Type`], if it is one.
@@ -1207,10 +1186,7 @@ impl<'d> Symbol<'d> {
     /// # Ok(()) }
     /// ```
     pub fn as_type(&self) -> Option<Type<'d>> {
-        self.is_type().then_some(Type {
-            raw: self.raw,
-            _design: PhantomData,
-        })
+        self.is_type().then(|| Type::from_raw(self.raw))
     }
 
     /// The declared type of a value symbol.
@@ -1234,10 +1210,7 @@ impl<'d> Symbol<'d> {
         let mut err = ffi::error();
         // SAFETY: the symbol is a value; type is memoized on a frozen design.
         let ast = unsafe { sys::slang_value_type(self.raw, &mut err) };
-        (!ast.ptr.is_null()).then_some(Type {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// The initializer expression of a value symbol, if any.
@@ -1261,10 +1234,7 @@ impl<'d> Symbol<'d> {
         let mut err = ffi::error();
         // SAFETY: the symbol is a value; the initializer is memoized.
         let ast = unsafe { sys::slang_value_initializer(self.raw, &mut err) };
-        (!ast.ptr.is_null()).then_some(Expression {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// For an `Instance` symbol, its body scope.
@@ -1288,10 +1258,7 @@ impl<'d> Symbol<'d> {
         }
         // SAFETY: the symbol is an instance.
         let ast = unsafe { sys::slang_instance_body(self.raw) };
-        (!ast.ptr.is_null()).then_some(Symbol {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// For an `Instance` symbol, the definition it instantiates.
@@ -1313,10 +1280,7 @@ impl<'d> Symbol<'d> {
         }
         // SAFETY: the symbol is an instance.
         let ast = unsafe { sys::slang_instance_definition(self.raw) };
-        (!ast.ptr.is_null()).then_some(Symbol {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// For an `Instance` symbol, its elaborated parameters (value and type).
@@ -1340,10 +1304,7 @@ impl<'d> Symbol<'d> {
         (0..count).filter_map(move |i| {
             // SAFETY: the symbol is valid; index is in range.
             let ast = unsafe { sys::slang_instance_parameter(raw, i) };
-            (!ast.ptr.is_null()).then_some(Symbol {
-                raw: ast,
-                _design: PhantomData,
-            })
+            wrap(ast)
         })
     }
 
@@ -1485,10 +1446,7 @@ impl<'d> Type<'d> {
     /// # Ok(()) }
     /// ```
     pub fn as_symbol(&self) -> Symbol<'d> {
-        Symbol {
-            raw: self.raw,
-            _design: PhantomData,
-        }
+        Symbol::from_raw(self.raw)
     }
 
     /// The canonical type: typedefs and type parameters resolved.
@@ -1509,10 +1467,7 @@ impl<'d> Type<'d> {
     pub fn canonical(&self) -> Type<'d> {
         // SAFETY: the type is valid.
         let ast = unsafe { sys::slang_type_canonical(self.raw) };
-        Type {
-            raw: ast,
-            _design: PhantomData,
-        }
+        Type::from_raw(ast)
     }
 
     /// The type printed in SystemVerilog syntax, e.g. `"logic[7:0]"`. Owned.
@@ -1772,7 +1727,7 @@ impl<'d> Type<'d> {
     /// ```
     pub fn element_type(&self) -> Option<Type<'d>> {
         // SAFETY: the type is valid; a null node for a non-array.
-        Self::wrap(unsafe { sys::slang_type_array_element(self.raw) })
+        wrap(unsafe { sys::slang_type_array_element(self.raw) })
     }
 
     /// The base type of an enum type, or `None` for a non-enum type.
@@ -1791,7 +1746,7 @@ impl<'d> Type<'d> {
     /// ```
     pub fn enum_base(&self) -> Option<Type<'d>> {
         // SAFETY: the type is valid; a null node for a non-enum.
-        Self::wrap(unsafe { sys::slang_type_enum_base(self.raw) })
+        wrap(unsafe { sys::slang_type_enum_base(self.raw) })
     }
 
     /// The members of an enum type, each an `EnumValue` symbol (in declaration
@@ -1817,10 +1772,7 @@ impl<'d> Type<'d> {
         (0..count).filter_map(move |i| {
             // SAFETY: the type is valid; index in range.
             let ast = unsafe { sys::slang_enum_member(raw, i) };
-            (!ast.ptr.is_null()).then_some(Symbol {
-                raw: ast,
-                _design: PhantomData,
-            })
+            wrap(ast)
         })
     }
 
@@ -1850,10 +1802,7 @@ impl<'d> Type<'d> {
         (0..count).filter_map(move |i| {
             // SAFETY: the type is valid; index in range.
             let ast = unsafe { sys::slang_type_field(raw, i) };
-            (!ast.ptr.is_null()).then_some(Symbol {
-                raw: ast,
-                _design: PhantomData,
-            })
+            wrap(ast)
         })
     }
 
@@ -1861,15 +1810,7 @@ impl<'d> Type<'d> {
     pub fn class_base(&self) -> Option<Type<'d>> {
         // SAFETY: the type is valid; a null node for a non-derived class or a
         // non-class type. The baseClass memo is populated by the freeze sweep.
-        Self::wrap(unsafe { sys::slang_type_class_base(self.raw) })
-    }
-
-    /// Wraps a raw ast as a `Type`, mapping a null node to `None`.
-    fn wrap(ast: sys::slang_ast) -> Option<Type<'d>> {
-        (!ast.ptr.is_null()).then_some(Type {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(unsafe { sys::slang_type_class_base(self.raw) })
     }
 }
 
@@ -1910,10 +1851,7 @@ impl<'d> Expression<'d> {
     pub fn expr_type(&self) -> Option<Type<'d>> {
         // SAFETY: the expression is valid.
         let ast = unsafe { sys::slang_expression_type(self.raw) };
-        (!ast.ptr.is_null()).then_some(Type {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// True if the expression is invalid (had errors).
@@ -1953,10 +1891,7 @@ impl<'d> Expression<'d> {
     pub fn referenced_symbol(&self) -> Option<Symbol<'d>> {
         // SAFETY: the expression is valid.
         let ast = unsafe { sys::slang_expression_symbol(self.raw) };
-        (!ast.ptr.is_null()).then_some(Symbol {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// The already-folded constant value, printed as SystemVerilog, if this
@@ -2201,10 +2136,7 @@ impl<'d> Expression<'d> {
     pub fn call_subroutine(&self) -> Option<Symbol<'d>> {
         // SAFETY: the expression is valid.
         let ast = unsafe { sys::slang_expr_call_subroutine(self.raw) };
-        (!ast.ptr.is_null()).then_some(Symbol {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// For a `MemberAccess` expression (`s.field`), the accessed member symbol.
@@ -2226,10 +2158,7 @@ impl<'d> Expression<'d> {
     pub fn member_symbol(&self) -> Option<Symbol<'d>> {
         // SAFETY: the expression is valid.
         let ast = unsafe { sys::slang_expr_member_symbol(self.raw) };
-        (!ast.ptr.is_null()).then_some(Symbol {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// The true-value operand of a `ConditionalOp` expression (`c ? t : f`),
@@ -2250,7 +2179,7 @@ impl<'d> Expression<'d> {
     /// ```
     pub fn true_value(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-conditional.
-        Self::wrap(unsafe { sys::slang_expr_cond_true(self.raw) })
+        wrap(unsafe { sys::slang_expr_cond_true(self.raw) })
     }
 
     /// The false-value operand of a `ConditionalOp` expression (`c ? t : f`),
@@ -2271,7 +2200,7 @@ impl<'d> Expression<'d> {
     /// ```
     pub fn false_value(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-conditional.
-        Self::wrap(unsafe { sys::slang_expr_cond_false(self.raw) })
+        wrap(unsafe { sys::slang_expr_cond_false(self.raw) })
     }
 
     /// The base value of an `ElementSelect` or `RangeSelect` expression
@@ -2291,7 +2220,7 @@ impl<'d> Expression<'d> {
     /// ```
     pub fn select_value(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-select.
-        Self::wrap(unsafe { sys::slang_expr_select_value(self.raw) })
+        wrap(unsafe { sys::slang_expr_select_value(self.raw) })
     }
 
     /// The index selector of an `ElementSelect` expression (`v[i]`), or `None`.
@@ -2310,7 +2239,7 @@ impl<'d> Expression<'d> {
     /// ```
     pub fn selector(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-element-select.
-        Self::wrap(unsafe { sys::slang_expr_select_selector(self.raw) })
+        wrap(unsafe { sys::slang_expr_select_selector(self.raw) })
     }
 
     /// The two range bounds of a `RangeSelect` expression (`v[l:r]`, `v[b+:w]`),
@@ -2330,14 +2259,14 @@ impl<'d> Expression<'d> {
     /// ```
     pub fn range_left(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-range-select.
-        Self::wrap(unsafe { sys::slang_expr_range_left(self.raw) })
+        wrap(unsafe { sys::slang_expr_range_left(self.raw) })
     }
 
     /// The right range bound of a `RangeSelect` expression. See
     /// [`range_left`](Self::range_left).
     pub fn range_right(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-range-select.
-        Self::wrap(unsafe { sys::slang_expr_range_right(self.raw) })
+        wrap(unsafe { sys::slang_expr_range_right(self.raw) })
     }
 
     /// The `RangeSelectionKind` ordinal of a `RangeSelect` expression
@@ -2382,7 +2311,7 @@ impl<'d> Expression<'d> {
     /// ```
     pub fn conversion_operand(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-conversion.
-        Self::wrap(unsafe { sys::slang_expr_conversion_operand(self.raw) })
+        wrap(unsafe { sys::slang_expr_conversion_operand(self.raw) })
     }
 
     /// The `ConversionKind` ordinal of a `Conversion` expression, or `None` if
@@ -2410,39 +2339,37 @@ impl<'d> Expression<'d> {
     /// ```
     pub fn replication_count(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-replication.
-        Self::wrap(unsafe { sys::slang_expr_replication_count(self.raw) })
+        wrap(unsafe { sys::slang_expr_replication_count(self.raw) })
     }
 
     /// The concatenation operand of a `Replication` expression (`{n{x}}`), or
     /// `None`. See [`replication_count`](Self::replication_count).
     pub fn replication_concat(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-replication.
-        Self::wrap(unsafe { sys::slang_expr_replication_concat(self.raw) })
-    }
-
-    /// Wraps a raw child ast as an `Expression`, mapping a null node to `None`.
-    fn wrap(ast: sys::slang_ast) -> Option<Expression<'d>> {
-        (!ast.ptr.is_null()).then_some(Expression {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(unsafe { sys::slang_expr_replication_concat(self.raw) })
     }
 }
 
 /// Collects the immediate semantic children of any AST node.
 fn sem_children<'d>(raw: sys::slang_ast) -> Vec<SemNode<'d>> {
-    // SAFETY: `raw` is a valid node of this design.
-    let count = unsafe { sys::slang_ast_sem_child_count(raw) };
-    (0..count)
-        .filter_map(|i| {
-            // SAFETY: index in range.
-            let ast = unsafe { sys::slang_ast_sem_child(raw, i) };
-            (!ast.ptr.is_null()).then_some(SemNode {
-                raw: ast,
-                _design: PhantomData,
-            })
-        })
-        .collect()
+    // `slang_ast_sem_children` collects the children once, fills up to `cap`, and
+    // returns the true total — so a small guess covers the common case in one FFI
+    // call, and a wider node needs a single exact-capacity retry. (Calling
+    // `slang_ast_sem_child(i)` in a loop would be O(N^2): each call re-collects.)
+    let mut cap = 16usize;
+    loop {
+        let mut buf = vec![sys::slang_ast::default(); cap];
+        // SAFETY: `raw` is a valid node of this design; `buf` has `cap` slots and
+        // the callee fills at most `cap`, returning the total child count.
+        let total = unsafe { sys::slang_ast_sem_children(raw, buf.as_mut_ptr(), cap as u32) };
+        let total = total as usize;
+        if total > cap {
+            cap = total; // buffer too small; retry once with the exact size
+            continue;
+        }
+        buf.truncate(total);
+        return buf.into_iter().filter_map(wrap::<SemNode>).collect();
+    }
 }
 
 /// A node in the elaborated *behavioral* tree — a statement, an expression, or
@@ -2510,10 +2437,7 @@ impl<'d> SemNode<'d> {
     /// # Ok(()) }
     /// ```
     pub fn as_expression(&self) -> Option<Expression<'d>> {
-        (self.raw.domain == sys::SLANG_AST_EXPRESSION).then_some(Expression {
-            raw: self.raw,
-            _design: PhantomData,
-        })
+        (self.raw.domain == sys::SLANG_AST_EXPRESSION).then(|| Expression::from_raw(self.raw))
     }
 
     /// This node as a [`Statement`], if it is one.
@@ -2535,10 +2459,7 @@ impl<'d> SemNode<'d> {
     /// # Ok(()) }
     /// ```
     pub fn as_statement(&self) -> Option<Statement<'d>> {
-        (self.raw.domain == sys::SLANG_AST_STATEMENT).then_some(Statement {
-            raw: self.raw,
-            _design: PhantomData,
-        })
+        (self.raw.domain == sys::SLANG_AST_STATEMENT).then(|| Statement::from_raw(self.raw))
     }
 
     /// The node's immediate semantic children.
@@ -2693,10 +2614,7 @@ impl<'d> Statement<'d> {
     pub fn then_branch(&self) -> Option<Statement<'d>> {
         // SAFETY: the statement is valid; a null node for a non-conditional.
         let ast = unsafe { sys::slang_stmt_then_branch(self.raw) };
-        (!ast.ptr.is_null()).then_some(Statement {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// The else-branch of a `Conditional` (`if`) statement, or `None` if there
@@ -2720,10 +2638,7 @@ impl<'d> Statement<'d> {
     pub fn else_branch(&self) -> Option<Statement<'d>> {
         // SAFETY: the statement is valid; a null node when there is no else.
         let ast = unsafe { sys::slang_stmt_else_branch(self.raw) };
-        (!ast.ptr.is_null()).then_some(Statement {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// The body of a loop (`for`/`repeat`/`while`/`do-while`/`forever`/
@@ -2751,10 +2666,7 @@ impl<'d> Statement<'d> {
     pub fn body(&self) -> Option<Statement<'d>> {
         // SAFETY: the statement is valid; a null node for a body-less kind.
         let ast = unsafe { sys::slang_stmt_body(self.raw) };
-        (!ast.ptr.is_null()).then_some(Statement {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// The controlling expression of a statement: the `while`/`do-while`/`wait`
@@ -2780,10 +2692,7 @@ impl<'d> Statement<'d> {
         // SAFETY: the statement is valid; a null node for a kind with no
         // controlling expression.
         let ast = unsafe { sys::slang_stmt_cond(self.raw) };
-        (!ast.ptr.is_null()).then_some(Expression {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// The principal expression of a statement: an `ExpressionStatement`'s
@@ -2809,10 +2718,7 @@ impl<'d> Statement<'d> {
         // SAFETY: the statement is valid; a null node for a kind with no
         // principal expression.
         let ast = unsafe { sys::slang_stmt_expr(self.raw) };
-        (!ast.ptr.is_null()).then_some(Expression {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 
     /// The timing control of a `Timed` statement (an `@(...)`/`#`-delayed
@@ -2838,10 +2744,7 @@ impl<'d> Statement<'d> {
     pub fn timing(&self) -> Option<SemNode<'d>> {
         // SAFETY: the statement is valid; a null node for a non-timed kind.
         let ast = unsafe { sys::slang_stmt_timing(self.raw) };
-        (!ast.ptr.is_null()).then_some(SemNode {
-            raw: ast,
-            _design: PhantomData,
-        })
+        wrap(ast)
     }
 }
 
@@ -2883,23 +2786,10 @@ impl UnaryOp {
     /// assert_eq!(UnaryOp::from_raw(999), None);
     /// ```
     pub fn from_raw(v: u32) -> Option<UnaryOp> {
-        use UnaryOp::*;
-        Some(match v {
-            0 => Plus,
-            1 => Minus,
-            2 => BitwiseNot,
-            3 => BitwiseAnd,
-            4 => BitwiseOr,
-            5 => BitwiseXor,
-            6 => BitwiseNand,
-            7 => BitwiseNor,
-            8 => BitwiseXnor,
-            9 => LogicalNot,
-            10 => Preincrement,
-            11 => Predecrement,
-            12 => Postincrement,
-            13 => Postdecrement,
-            _ => return None,
+        (v < 14).then(|| {
+            // SAFETY: UnaryOp is #[repr(u32)] with contiguous discriminants
+            // 0..14, and v is checked to be in range.
+            unsafe { core::mem::transmute::<u32, UnaryOp>(v) }
         })
     }
 }
@@ -3178,10 +3068,7 @@ impl<'d> Driver<'d> {
     /// # Ok(()) }
     /// ```
     pub fn containing_symbol(&self) -> Symbol<'d> {
-        Symbol {
-            raw: self.info.containing_symbol,
-            _design: PhantomData,
-        }
+        Symbol::from_raw(self.info.containing_symbol)
     }
 }
 
@@ -3196,25 +3083,16 @@ impl core::fmt::Debug for Driver<'_> {
     }
 }
 
-fn symbol_from_raw<'d>(ast: sys::slang_ast) -> Symbol<'d> {
-    Symbol {
-        raw: ast,
-        _design: PhantomData,
-    }
-}
-
+/// Cross-crate wrapper for a symbol node (used by `dataflow`); `None` on null.
 pub(crate) fn symbol_opt_from_raw<'d>(ast: sys::slang_ast) -> Option<Symbol<'d>> {
-    (!ast.ptr.is_null()).then_some(Symbol {
-        raw: ast,
-        _design: PhantomData,
-    })
+    wrap(ast)
 }
 
+/// Cross-crate wrapper for an expression node (used by `dataflow`), guarded on
+/// the expression domain: a non-expression `slang_ast` (e.g. a statement node
+/// passed as `ev.node`) maps to `None` rather than a mistyped handle.
 pub(crate) fn expression_opt_from_raw<'d>(ast: sys::slang_ast) -> Option<Expression<'d>> {
-    (!ast.ptr.is_null() && ast.domain == sys::SLANG_AST_EXPRESSION).then_some(Expression {
-        raw: ast,
-        _design: PhantomData,
-    })
+    wrap(ast).filter(|_| ast.domain == sys::SLANG_AST_EXPRESSION)
 }
 
 /// One procedure analyzed by slang (an `always`/`initial`/`final` block, a
@@ -3443,10 +3321,7 @@ impl Design {
             }
             // SAFETY: `listener` points at the caller's `&L`, still on the stack.
             let listener = unsafe { &*ctx.listener };
-            let sym = Symbol {
-                raw,
-                _design: PhantomData,
-            };
+            let sym = Symbol::from_raw(raw);
             let call = std::panic::AssertUnwindSafe(|| method(listener, sym));
             if std::panic::catch_unwind(call).is_err() {
                 ctx.poisoned.store(true, Ordering::Relaxed);
@@ -3590,7 +3465,7 @@ impl<'d> Analysis<'d> {
             // SAFETY: index in range.
             let ast = unsafe { sys::slang_analysis_scope_procedure(self.raw, scope.raw, i) };
             (!ast.ptr.is_null()).then_some(AnalyzedProcedure {
-                symbol: symbol_from_raw(ast),
+                symbol: Symbol::from_raw(ast),
                 analysis: self.raw,
                 scope: scope.raw,
                 index: i,

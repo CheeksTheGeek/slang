@@ -89,3 +89,25 @@ fn removing_a_file_drops_its_cache() {
     assert_eq!(stats.reused, 1);
     assert_eq!(stats.parsed + stats.reparsed, 0);
 }
+
+#[test]
+fn identical_set_file_keeps_the_cached_design() {
+    let mut ws = Workspace::new();
+    ws.set_file("m.sv", "module m; endmodule\n");
+    let _ = ws.design().unwrap();
+    ws.take_stats();
+
+    // Re-setting a file to the text it already has is a no-op: the cached
+    // design stands and `design()` re-elaborates nothing.
+    ws.set_file("m.sv", "module m; endmodule\n");
+    let _ = ws.design().unwrap();
+    let stats = ws.take_stats();
+    assert_eq!(stats.reused, 1);
+    assert_eq!(stats.parsed + stats.reparsed, 0);
+
+    // A real edit invalidates the cached design and re-parses the file.
+    ws.set_file("m.sv", "module m; wire w; endmodule\n");
+    let _ = ws.design().unwrap();
+    let stats = ws.take_stats();
+    assert_eq!(stats.reparsed, 1);
+}

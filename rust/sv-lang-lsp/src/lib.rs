@@ -95,26 +95,24 @@ pub struct Hover {
     pub contents: String,
 }
 
-/// Maps byte offsets in a source file to LSP [`Position`]s.
-pub struct LineIndex {
-    text: String,
+/// Maps byte offsets in a source file to LSP [`Position`]s. Borrows the source
+/// it indexes — build one per request and drop it; it copies nothing.
+pub struct LineIndex<'a> {
+    text: &'a str,
     /// Byte offset at which each line starts.
     line_starts: Vec<usize>,
 }
 
-impl LineIndex {
+impl<'a> LineIndex<'a> {
     /// Builds an index over `text`.
-    pub fn new(text: &str) -> LineIndex {
+    pub fn new(text: &'a str) -> LineIndex<'a> {
         let mut line_starts = vec![0usize];
         for (i, b) in text.bytes().enumerate() {
             if b == b'\n' {
                 line_starts.push(i + 1);
             }
         }
-        LineIndex {
-            text: text.to_string(),
-            line_starts,
-        }
+        LineIndex { text, line_starts }
     }
 
     /// The LSP position of a byte offset (clamped to the end of the text).
@@ -195,7 +193,7 @@ pub fn diagnostics(ws: &mut Workspace, path: &str) -> Vec<Diagnostic> {
     out
 }
 
-fn convert(d: &sv_lang::Diagnostic, index: &LineIndex) -> Diagnostic {
+fn convert(d: &sv_lang::Diagnostic, index: &LineIndex<'_>) -> Diagnostic {
     Diagnostic {
         range: index.range(d.span()),
         severity: severity_of(d),
@@ -362,24 +360,21 @@ fn resolve_symbol<'d>(
     }
 
     // 2. Reference: the same-named symbol whose enclosing scope tightest-covers
-    //    the offset. Ties and scope-less matches fall back to the first found.
-    let mut best: Option<(Option<usize>, sv_lang::Symbol<'d>)> = None;
+    //    the offset. A scope-less match ranks as widest (`usize::MAX`), so a
+    //    real enclosing scope always wins; ties fall back to the first found.
+    let mut best: Option<sv_lang::Symbol<'d>> = None;
+    let mut best_width = usize::MAX;
     for &s in &syms {
         if s.name() != name {
             continue;
         }
-        let width = enclosing_scope_width(s, tree, offset);
-        let better = match (&best, width) {
-            (None, _) => true,
-            (Some((Some(bw), _)), Some(w)) => w < *bw,
-            (Some((None, _)), Some(_)) => true,
-            _ => false,
-        };
-        if better {
-            best = Some((width, s));
+        let width = enclosing_scope_width(s, tree, offset).unwrap_or(usize::MAX);
+        if best.is_none() || width < best_width {
+            best = Some(s);
+            best_width = width;
         }
     }
-    best.map(|(_, s)| (s, name, id_range))
+    best.map(|s| (s, name, id_range))
 }
 
 /// Human-readable hover markdown for a symbol: `` `<type> <name>` — <Kind> ``

@@ -22,7 +22,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// `SLANG_C_VERSION_MAJOR` the declarations in this crate were generated for.
 pub const SLANG_C_VERSION_MAJOR: u32 = 1;
 /// `SLANG_C_VERSION_MINOR` the declarations in this crate were generated for.
-pub const SLANG_C_VERSION_MINOR: u32 = 0;
+pub const SLANG_C_VERSION_MINOR: u32 = 2;
 /// Encoded as by `SLANG_C_VERSION_ENCODE`.
 pub const SLANG_C_VERSION: u32 = SLANG_C_VERSION_MAJOR * 10000 + SLANG_C_VERSION_MINOR;
 
@@ -199,7 +199,7 @@ pub const SLANG_AST_BINS_SELECT_EXPR: slang_ast_domain = 6;
 pub const SLANG_AST_PATTERN: slang_ast_domain = 7;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct slang_ast {
     pub ptr: *const c_void,
     pub compilation: slang_compilation,
@@ -849,6 +849,7 @@ unsafe extern "C" {
     pub fn slang_symbol_body(sym: slang_ast) -> slang_ast;
     pub fn slang_ast_sem_child_count(node: slang_ast) -> u32;
     pub fn slang_ast_sem_child(node: slang_ast, index: u32) -> slang_ast;
+    pub fn slang_ast_sem_children(node: slang_ast, out: *mut slang_ast, cap: u32) -> u32;
     pub fn slang_expr_binary_op(node: slang_ast) -> u32;
     pub fn slang_expr_unary_op(node: slang_ast) -> u32;
     pub fn slang_expr_assignment_is_nonblocking(node: slang_ast) -> bool;

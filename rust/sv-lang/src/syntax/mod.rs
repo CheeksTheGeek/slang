@@ -1010,21 +1010,50 @@ impl<'t, T: AstNode<'t>> SyntaxList<'t, T> {
     /// assert_eq!(unit.members().iter().count(), 2);
     /// # Ok(()) }
     /// ```
-    pub fn iter(&self) -> impl Iterator<Item = T> + 't {
-        let node = self.node;
-        let range = self.start..self.start + self.len;
-        range.filter_map(move |i| match node.child(i) {
-            Some(Child::Node(n)) => T::cast(n),
-            _ => None,
-        })
+    pub fn iter(&self) -> ListIter<'t, T> {
+        ListIter::new(self.node, self.start, self.len)
     }
 }
 
 impl<'t, T: AstNode<'t>> IntoIterator for SyntaxList<'t, T> {
     type Item = T;
-    type IntoIter = std::vec::IntoIter<T>;
+    type IntoIter = ListIter<'t, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.iter().collect::<Vec<_>>().into_iter()
+        self.iter()
+    }
+}
+
+/// Lazy iterator over the `T` node members of a [`SyntaxList`] or
+/// [`SeparatedList`], skipping any interleaved separator tokens. Holds only the
+/// parent node and the child-index range still to visit — it allocates nothing.
+#[derive(Clone)]
+pub struct ListIter<'t, T> {
+    node: Node<'t>,
+    range: core::ops::Range<usize>,
+    _elem: PhantomData<fn() -> T>,
+}
+
+impl<'t, T> ListIter<'t, T> {
+    fn new(node: Node<'t>, start: usize, len: usize) -> Self {
+        ListIter {
+            node,
+            range: start..start + len,
+            _elem: PhantomData,
+        }
+    }
+}
+
+impl<'t, T: AstNode<'t>> Iterator for ListIter<'t, T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        for i in self.range.by_ref() {
+            if let Some(Child::Node(n)) = self.node.child(i)
+                && let Some(t) = T::cast(n)
+            {
+                return Some(t);
+            }
+        }
+        None
     }
 }
 
@@ -1050,13 +1079,8 @@ impl<'t, T: AstNode<'t>> SeparatedList<'t, T> {
     /// assert_eq!(decl.declarators().iter().count(), 2); // x and y
     /// # Ok(()) }
     /// ```
-    pub fn iter(&self) -> impl Iterator<Item = T> + 't {
-        let node = self.node;
-        let range = self.start..self.start + self.len;
-        range.filter_map(move |i| match node.child(i) {
-            Some(Child::Node(n)) => T::cast(n),
-            _ => None,
-        })
+    pub fn iter(&self) -> ListIter<'t, T> {
+        ListIter::new(self.node, self.start, self.len)
     }
 
     /// Iterates the separator tokens.
@@ -1083,9 +1107,9 @@ impl<'t, T: AstNode<'t>> SeparatedList<'t, T> {
 
 impl<'t, T: AstNode<'t>> IntoIterator for SeparatedList<'t, T> {
     type Item = T;
-    type IntoIter = std::vec::IntoIter<T>;
+    type IntoIter = ListIter<'t, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.iter().collect::<Vec<_>>().into_iter()
+        self.iter()
     }
 }
 

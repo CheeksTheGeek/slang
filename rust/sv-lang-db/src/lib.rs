@@ -56,6 +56,10 @@ pub struct Workspace {
     files: BTreeMap<String, String>,
     /// path -> cached parse (present once parsed and still current).
     cache: BTreeMap<String, Cached>,
+    /// The last elaborated design, reused until a file is added, removed, or
+    /// edited. `None` before the first [`design`](Self::design), or after an
+    /// edit invalidates it.
+    design_cache: Option<Design>,
     stats: Stats,
 }
 
@@ -72,6 +76,7 @@ impl Workspace {
             session: Session::new(),
             files: BTreeMap::new(),
             cache: BTreeMap::new(),
+            design_cache: None,
             stats: Stats::default(),
         }
     }
@@ -85,13 +90,22 @@ impl Workspace {
     /// text is a no-op. Does not parse — parsing happens lazily in
     /// [`design`](Self::design).
     pub fn set_file(&mut self, path: impl Into<String>, text: impl Into<String>) {
-        self.files.insert(path.into(), text.into());
+        let (path, text) = (path.into(), text.into());
+        // Setting a file to the text it already has changes nothing, so it must
+        // not invalidate the cached design.
+        if self.files.get(&path).is_some_and(|cur| *cur == text) {
+            return;
+        }
+        self.files.insert(path, text);
+        self.design_cache = None;
     }
 
     /// Removes a file.
     pub fn remove_file(&mut self, path: &str) {
-        self.files.remove(path);
-        self.cache.remove(path);
+        if self.files.remove(path).is_some() {
+            self.cache.remove(path);
+            self.design_cache = None;
+        }
     }
 
     /// The current text of a file, if present.
@@ -143,6 +157,16 @@ impl Workspace {
     /// [`Design`]. Call [`take_stats`](Self::take_stats) afterwards to see how
     /// much work was incremental.
     pub fn design(&mut self) -> Result<Design, Error> {
+        // Nothing has changed since the last elaboration: hand back the cached
+        // design (a cheap `Arc` clone) without re-parsing or re-elaborating.
+        // Every live file's result was served from cache, so it counts as
+        // reused — the same tally a full rebuild over unchanged files reports.
+        if let Some(design) = &self.design_cache {
+            let design = design.clone();
+            self.stats.reused += self.files.len();
+            return Ok(design);
+        }
+
         // Drop cache entries for files that were removed.
         let live: Vec<String> = self.files.keys().cloned().collect();
         self.cache.retain(|p, _| self.files.contains_key(p));
@@ -153,7 +177,9 @@ impl Workspace {
             let tree = self.tree_for(&path, &text)?;
             comp.add(&tree)?;
         }
-        comp.compile()
+        let design = comp.compile()?;
+        self.design_cache = Some(design.clone());
+        Ok(design)
     }
 
     /// Returns the accumulated [`Stats`] and resets them to zero.

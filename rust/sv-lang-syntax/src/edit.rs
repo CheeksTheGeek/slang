@@ -18,26 +18,21 @@ pub trait Spanned {
     fn text_range(&self) -> TextRange;
 }
 
-impl<D: 'static> Spanned for cstree::syntax::SyntaxNode<Kind, D> {
-    fn text_range(&self) -> TextRange {
-        cstree::syntax::SyntaxNode::text_range(self)
-    }
+// Each cstree element type carries the same `text_range` under its own name; a
+// resolved node/token forwards to the unresolved base's inherent method.
+macro_rules! impl_spanned {
+    ($elem:ident via $base:ident) => {
+        impl<D: 'static> Spanned for cstree::syntax::$elem<Kind, D> {
+            fn text_range(&self) -> TextRange {
+                cstree::syntax::$base::text_range(self)
+            }
+        }
+    };
 }
-impl<D: 'static> Spanned for cstree::syntax::SyntaxToken<Kind, D> {
-    fn text_range(&self) -> TextRange {
-        cstree::syntax::SyntaxToken::text_range(self)
-    }
-}
-impl<D: 'static> Spanned for cstree::syntax::ResolvedNode<Kind, D> {
-    fn text_range(&self) -> TextRange {
-        cstree::syntax::SyntaxNode::text_range(self)
-    }
-}
-impl<D: 'static> Spanned for cstree::syntax::ResolvedToken<Kind, D> {
-    fn text_range(&self) -> TextRange {
-        cstree::syntax::SyntaxToken::text_range(self)
-    }
-}
+impl_spanned!(SyntaxNode via SyntaxNode);
+impl_spanned!(SyntaxToken via SyntaxToken);
+impl_spanned!(ResolvedNode via SyntaxNode);
+impl_spanned!(ResolvedToken via SyntaxToken);
 
 /// Accumulates edits against a tree's text and applies them in one pass.
 ///

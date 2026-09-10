@@ -868,23 +868,19 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Reads and parses one versioned model file (`<name>-<version>.json`) from the
+/// model directory.
+fn load_model<T: serde::de::DeserializeOwned>(model_dir: &Path, name: &str) -> Result<T, String> {
+    let path = model_dir.join(format!("{name}-{SLANG_VERSION}.json"));
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("reading {name} model: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("parsing {name} model: {e}"))
+}
+
 fn generate(root: &Path) -> Result<Vec<Generated>, String> {
     let model_dir = root.join("model");
-    let syntax: SyntaxModel = serde_json::from_str(
-        &std::fs::read_to_string(model_dir.join(format!("syntax-model-{SLANG_VERSION}.json")))
-            .map_err(|e| format!("reading syntax model: {e}"))?,
-    )
-    .map_err(|e| format!("parsing syntax model: {e}"))?;
-    let diags: DiagModel = serde_json::from_str(
-        &std::fs::read_to_string(model_dir.join(format!("diagnostics-model-{SLANG_VERSION}.json")))
-            .map_err(|e| format!("reading diagnostics model: {e}"))?,
-    )
-    .map_err(|e| format!("parsing diagnostics model: {e}"))?;
-    let ast: AstKindsModel = serde_json::from_str(
-        &std::fs::read_to_string(model_dir.join(format!("ast-kinds-{SLANG_VERSION}.json")))
-            .map_err(|e| format!("reading AST kinds model: {e}"))?,
-    )
-    .map_err(|e| format!("parsing AST kinds model: {e}"))?;
+    let syntax: SyntaxModel = load_model(&model_dir, "syntax-model")?;
+    let diags: DiagModel = load_model(&model_dir, "diagnostics-model")?;
+    let ast: AstKindsModel = load_model(&model_dir, "ast-kinds")?;
 
     let kinds = root.join("sv-lang-kinds/src/generated");
     let mut files = vec![

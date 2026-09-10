@@ -1,0 +1,17 @@
+error[E0277]: `*mut sv_lang_sys::slang_compilation_t` cannot be shared between threads safely
+ --> tests/compile-fail/compilation_not_sync.rs:4:19
+  |
+4 |     assert_sync::<sv_lang::Compilation>();
+  |                   ^^^^^^^^^^^^^^^^^^^^ `*mut sv_lang_sys::slang_compilation_t` cannot be shared between threads safely
+  |
+  = help: within `sv_lang::Compilation`, the trait `Sync` is not implemented for `*mut sv_lang_sys::slang_compilation_t`
+note: required because it appears within the type `sv_lang::Compilation`
+ --> src/ast.rs
+  |
+  | pub struct Compilation {
+  |            ^^^^^^^^^^^
+note: required by a bound in `assert_sync`
+ --> tests/compile-fail/compilation_not_sync.rs:2:19
+  |
+2 | fn assert_sync<T: Sync>() {}
+  |                   ^^^^ required by this bound in `assert_sync`

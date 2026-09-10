@@ -1,0 +1,40 @@
+[package]
+name = "sv-lang-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sv-lang = { path = "../sv-lang" }
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compile"
+path = "fuzz_targets/compile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "semantic"
+path = "fuzz_targets/semantic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dataflow"
+path = "fuzz_targets/dataflow.rs"
+test = false
+doc = false
+bench = false

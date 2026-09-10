@@ -1,0 +1,33 @@
+[package]
+name = "sv-lang-lsp"
+version = "0.1.0+slang.11.0"
+description = "SystemVerilog language-server intelligence over sv-lang's incremental workspace — diagnostics, document symbols, hover — with an optional tower-lsp server"
+readme = "README.md"
+keywords = ["systemverilog", "verilog", "lsp", "language-server", "ide"]
+categories = ["development-tools"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+sv-lang = { path = "../sv-lang", version = "0.1" }
+sv-lang-db = { path = "../sv-lang-db", version = "0.1" }
+
+# The runnable server is optional so the intelligence library and its tests
+# build without pulling an async runtime.
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "macros"], optional = true }
+tower-lsp = { version = "0.20", optional = true }
+
+[features]
+default = []
+server = ["dep:tokio", "dep:tower-lsp"]
+
+[[bin]]
+name = "sv-lang-lsp"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[lints]
+workspace = true

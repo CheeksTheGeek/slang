@@ -1,0 +1,4 @@
+target/
+# Populated by `cargo xtask vendor` immediately before publishing.
+sv-lang-sys/vendor/*
+!sv-lang-sys/vendor/.gitkeep

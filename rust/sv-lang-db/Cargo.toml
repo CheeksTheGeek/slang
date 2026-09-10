@@ -1,0 +1,18 @@
+[package]
+name = "sv-lang-db"
+version = "0.1.0+slang.11.0"
+description = "An incremental workspace over sv-lang: cache parses, recompile on change — the building block for a SystemVerilog language server"
+readme = "README.md"
+keywords = ["systemverilog", "verilog", "lsp", "incremental", "ide"]
+categories = ["development-tools", "caching"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+sv-lang = { path = "../sv-lang", version = "0.1" }
+
+[lints]
+workspace = true

@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "sv-lang-kinds",
+    "sv-lang-sys",
+    "sv-lang-syntax",
+    "sv-lang",
+    "sv-lang-db",
+    "sv-lang-wasm",
+    "sv-lang-mock",
+    "sv-lang-lsp",
+    "xtask",
+]
+# The fuzz crate needs a nightly toolchain + libFuzzer; keep it out of the
+# normal workspace build.
+exclude = ["fuzz"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/MikePopoloski/slang"
+homepage = "https://sv-lang.com"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cc = { version = "1.2", features = ["parallel"] }
+pkg-config = "0.3"
+cstree = "0.14"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"

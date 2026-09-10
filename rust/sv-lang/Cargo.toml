@@ -1,0 +1,47 @@
+[package]
+name = "sv-lang"
+version = "0.1.0+slang.11.0"
+description = "Safe, ergonomic Rust bindings to slang, the fast SystemVerilog compiler frontend"
+readme = "README.md"
+keywords = ["systemverilog", "verilog", "parser", "compiler", "eda"]
+categories = ["parser-implementations", "compilers", "api-bindings"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+# Re-exported so downstream crates can select the sys backend from here.
+system = ["sv-lang-sys/system"]
+# Render diagnostics through the miette / ariadne reporters.
+miette = ["dep:miette"]
+ariadne = ["dep:ariadne"]
+# Parallel symbol traversal (Design::par_visit) via rayon.
+rayon = ["dep:rayon"]
+# INTERNAL, UNSOUND: exposes Compilation::compile_sealed_only for the
+# thread-sanitizer negative gate only. Never enable in a real build.
+__unsound_test_only = []
+
+[dependencies]
+sv-lang-sys = { path = "../sv-lang-sys", version = "0.1" }
+sv-lang-kinds = { path = "../sv-lang-kinds", version = "0.1" }
+sv-lang-syntax = { path = "../sv-lang-syntax", version = "0.1" }
+miette = { version = "7.6.0", optional = true }
+ariadne = { version = "0.6.0", optional = true }
+rayon = { version = "1.10", optional = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+trybuild = "1.0.119"
+serde_json = "1.0"
+
+[package.metadata.docs.rs]
+# docs.rs builds sv-lang-sys in stub mode (DOCS_RS), so no C++ toolchain is needed.
+# Document the additive features (reporters + parallel traversal) but NOT the
+# `system` backend or the internal `__unsound_test_only` hook.
+all-features = false
+features = ["miette", "ariadne", "rayon"]

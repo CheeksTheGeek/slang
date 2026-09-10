@@ -1,0 +1,20 @@
+error[E0277]: `Cell<()>` cannot be shared between threads safely
+ --> tests/compile-fail/eval_session_not_sync.rs:4:19
+  |
+4 |     assert_sync::<sv_lang::EvalSession<'static>>();
+  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Cell<()>` cannot be shared between threads safely
+  |
+  = help: within `EvalSession<'static>`, the trait `Sync` is not implemented for `Cell<()>`
+  = note: if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock`
+note: required because it appears within the type `PhantomData<Cell<()>>`
+ --> $RUST/core/src/marker.rs
+note: required because it appears within the type `EvalSession<'static>`
+ --> src/ast.rs
+  |
+  | pub struct EvalSession<'d> {
+  |            ^^^^^^^^^^^
+note: required by a bound in `assert_sync`
+ --> tests/compile-fail/eval_session_not_sync.rs:2:19
+  |
+2 | fn assert_sync<T: Sync>() {}
+  |                   ^^^^ required by this bound in `assert_sync`

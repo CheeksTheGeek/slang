@@ -1,0 +1,24 @@
+[package]
+name = "sv-lang-wasm"
+version = "0.1.0+slang.11.0"
+description = "Run slang in a WebAssembly sandbox via wasmtime — parse SystemVerilog with no native slang, no C++ toolchain"
+readme = "README.md"
+keywords = ["systemverilog", "verilog", "wasm", "wasmtime", "sandbox"]
+categories = ["parser-implementations", "wasm"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+flate2 = "1.1.9"
+wasmtime = { version = "48", default-features = false, features = ["cranelift", "runtime"] }
+wasmtime-wasi = "48"
+
+[dev-dependencies]
+# The native backend, for the cross-backend equivalence suite.
+sv-lang = { path = "../sv-lang" }
+
+[lints]
+workspace = true

@@ -1,0 +1,134 @@
+name: Rust Bindings CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+    paths:
+      - 'rust/**'
+      - 'source/capi/**'
+      - 'include/slang/c/**'
+      - 'scripts/*.py'
+      - 'scripts/*.txt'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'rust/**'
+      - 'source/capi/**'
+      - 'include/slang/c/**'
+      - 'scripts/*.py'
+      - 'scripts/*.txt'
+      - '.github/workflows/rust.yml'
+
+defaults:
+  run:
+    working-directory: rust
+
+jobs:
+  # Fast lint/format/doc gate on Linux.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        fetch-depth: 0
+    - name: Install toolchain
+      run: rustup component add rustfmt clippy
+    - name: Format
+      run: cargo fmt --all --check
+    - name: Clippy
+      run: cargo clippy --workspace --all-targets -- -D warnings
+    - name: Codegen is up to date
+      run: cargo xtask codegen --check
+    - name: Docs (deny warnings)
+      run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+      shell: bash
+    - name: docs.rs simulation
+      run: DOCS_RS=1 cargo doc -p sv-lang --no-deps
+      shell: bash
+
+  # Full test suite across the three tier-1 platforms. The vendored C++ build
+  # needs a C++20 compiler (preinstalled) and python3 for the codegen scripts.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        fetch-depth: 0
+    - name: python3 (codegen)
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.x'
+    - name: Test workspace
+      run: cargo test --workspace
+    - name: Test feature matrix
+      run: cargo test -p sv-lang --features miette,ariadne,rayon
+    - name: Offline package build (docs.rs / no network)
+      run: |
+        cargo package -p sv-lang-kinds --allow-dirty --no-verify
+        cargo package -p sv-lang-syntax --allow-dirty --no-verify
+      shell: bash
+
+  # The C++ Catch2 tests for the C API the bindings depend on.
+  capi:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        fetch-depth: 0
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
+      with:
+        key: capi
+    - name: Configure + build C API tests
+      working-directory: .
+      run: |
+        cmake -B build/capi -DSLANG_INCLUDE_CAPI=ON -DSLANG_INCLUDE_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+        cmake --build build/capi --target capi_tests -j8
+    - name: Run C API tests
+      working-directory: .
+      run: ctest --test-dir build/capi --output-on-failure --no-tests=error -R capi -j8
+
+  # Nightly soundness gates: the thread-sanitizer negative test (the un-totalized
+  # walk MUST race and the totalized one must be clean) and miri over the pure-Rust
+  # mock backend (validates the handle/lifetime algebra the FFI hides from miri).
+  nightly:
+    runs-on: ubuntu-latest
+    continue-on-error: true   # informational for the first 6 months
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        fetch-depth: 0
+    - name: Install nightly
+      run: |
+        rustup toolchain install nightly --component miri rust-src
+        rustup default nightly
+      shell: bash
+    - name: TSan negative gate
+      env:
+        SV_LANG_TSAN: '1'
+        RUSTFLAGS: '-Zsanitizer=thread'
+      run: cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p sv-lang --test tsan_race -- --nocapture
+      shell: bash
+    - name: Miri on the mock backend
+      run: cargo +nightly miri test -p sv-lang-mock
+      shell: bash
+
+  # API-compatibility gate (informational until the first published baseline).
+  semver:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        fetch-depth: 0
+    - name: cargo-semver-checks
+      run: |
+        cargo install cargo-semver-checks --locked
+        cargo semver-checks check-release -p sv-lang-kinds || true
+      shell: bash

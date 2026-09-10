@@ -1,0 +1,12 @@
+error[E0597]: `design` does not live long enough
+ --> tests/compile-fail/symbol_escapes_design.rs:8:9
+  |
+4 |     let sym = {
+  |         --- borrow later stored here
+...
+7 |         let design = comp.compile().unwrap();
+  |             ------ binding `design` declared here
+8 |         design.root()
+  |         ^^^^^^ borrowed value does not live long enough
+9 |     };
+  |     - `design` dropped here while still borrowed

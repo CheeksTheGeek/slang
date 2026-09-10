@@ -1,0 +1,11 @@
+[package]
+name = "sv-lang-mock"
+version = "0.0.0"
+description = "Pure-Rust model of sv-lang's handle/ownership algebra, for miri to validate the borrow and Send/Sync invariants the real FFI hides from it"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

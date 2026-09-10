@@ -1,0 +1,36 @@
+[package]
+name = "sv-lang-sys"
+version = "0.1.0+slang.11.0"
+description = "Raw FFI bindings to slang-c, the stable C API of the slang SystemVerilog compiler frontend"
+readme = "README.md"
+keywords = ["systemverilog", "verilog", "parser", "compiler", "ffi"]
+categories = ["external-ffi-bindings", "parser-implementations"]
+links = "slang-c"
+build = "build.rs"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# The vendored C++ tree is produced by `cargo xtask vendor` before publishing;
+# see build.rs for how sources are located in-tree versus from a .crate.
+exclude = ["vendor/.gitkeep"]
+
+[features]
+default = []
+# Link a prebuilt slang-c from the system (pkg-config `slang-c`, or the
+# SLANG_C_LIB_DIR / SLANG_C_INCLUDE_DIR environment variables) instead of
+# compiling the vendored sources.
+system = []
+
+[dependencies]
+
+[dev-dependencies]
+sv-lang-kinds = { path = "../sv-lang-kinds" }
+
+[build-dependencies]
+cc.workspace = true
+pkg-config.workspace = true
+
+[package.metadata.docs.rs]
+all-features = false

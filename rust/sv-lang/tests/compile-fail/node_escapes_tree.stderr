@@ -1,0 +1,11 @@
+error[E0597]: `tree` does not live long enough
+ --> tests/compile-fail/node_escapes_tree.rs:6:9
+  |
+4 |     let node = {
+  |         ---- borrow later stored here
+5 |         let tree = session.parse("module m; endmodule\n").unwrap();
+  |             ---- binding `tree` declared here
+6 |         tree.root()
+  |         ^^^^ borrowed value does not live long enough
+7 |     };
+  |     - `tree` dropped here while still borrowed

@@ -3,13 +3,29 @@
 # SPDX-License-Identifier: MIT
 # ~~~
 
-execute_process(
-  COMMAND
-    bash -c
-    "git remote get-url origin | sed -E 's#(git@[^:]+:|ssh://git@[^/]+/|https://[^/]+/).*#\\1#'"
-  OUTPUT_VARIABLE GITHUB_PREFIX
-  OUTPUT_STRIP_TRAILING_WHITESPACE)
-message(STATUS "Git remote URL: ${GITHUB_PREFIX}")
+# Derive the URL prefix for fetched dependencies from this checkout's origin remote
+# so that mirrored/forked clones fetch from the same host. Fall back to GitHub when
+# there is no git checkout (source tarballs, `git archive` exports, vendored copies).
+set(GITHUB_PREFIX "https://github.com/")
+find_package(Git QUIET)
+if(Git_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} remote get-url origin
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    OUTPUT_VARIABLE _slang_origin_url
+    RESULT_VARIABLE _slang_origin_result
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(_slang_origin_result EQUAL 0 AND _slang_origin_url)
+    # Keep only the host prefix: "git@host:", "ssh://git@host/", or "https://host/".
+    string(REGEX REPLACE "^(git@[^:]+:|ssh://git@[^/]+/|https://[^/]+/).*$" "\\1"
+                         _slang_origin_prefix "${_slang_origin_url}")
+    if(_slang_origin_prefix AND NOT _slang_origin_prefix STREQUAL _slang_origin_url)
+      set(GITHUB_PREFIX "${_slang_origin_prefix}")
+    endif()
+  endif()
+endif()
+message(STATUS "Dependency URL prefix: ${GITHUB_PREFIX}")
 
 # --- fmt lib ---
 if(SLANG_USE_SYSTEM_FMT)

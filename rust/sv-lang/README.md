@@ -70,10 +70,13 @@ docs.rs the native build is skipped, so the API documentation always renders.
 
 | Crate | Native code? | Purpose |
 |---|---|---|
-| `sv-lang` | via `sv-lang-sys` | the safe API (this crate) |
+| `sv-lang` | via `sv-lang-sys` | the safe API (this crate) — start here |
 | `sv-lang-syntax` | no | the pure-Rust lossless tree |
 | `sv-lang-kinds` | no | slang's kind enumerations |
 | `sv-lang-sys` | yes | raw FFI to the slang C API |
+| `sv-lang-db` | via `sv-lang` | incremental workspace: cache parses, recompile on change |
+| `sv-lang-lsp` | via `sv-lang` | language-server intelligence (diagnostics, symbols, hover) |
+| `sv-lang-wasm` | no (bundled wasm) | run slang in a WebAssembly sandbox, no C++ toolchain |
 
 ## License
 

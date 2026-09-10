@@ -7,7 +7,7 @@ SystemVerilog **language-server intelligence** built on
 The crate is two layers:
 
 - **A transport-free library** (the default build) — pure functions that turn a
-  file in a [`Workspace`] into editor-ready results, with a `LineIndex` that maps
+  file in a `Workspace` into editor-ready results, with a `LineIndex` that maps
   slang's byte offsets to LSP UTF-16 positions:
   - `diagnostics(ws, path)` — parse/lex/preprocess diagnostics with ranges.
   - `document_symbols(ws, path)` — the file's modules, interfaces and programs

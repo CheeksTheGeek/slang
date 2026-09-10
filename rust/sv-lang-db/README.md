@@ -2,7 +2,7 @@
 
 An incremental workspace over [`sv-lang`](https://crates.io/crates/sv-lang):
 hold a set of SystemVerilog source files, edit them, and get parse trees and an
-elaborated [`Design`] back — re-parsing only what changed.
+elaborated `Design` back — re-parsing only what changed.
 
 This is the building block for an editor integration or a language server: on
 each keystroke you `set_file` the changed buffer and ask for a fresh `design`,

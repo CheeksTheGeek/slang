@@ -26,7 +26,7 @@ this crate reaches the **same C ABI** across a wasm boundary instead. That buys:
 
 - **No C++ toolchain** to `cargo add` and run — the compiler is a data file.
 - **Sandboxing** — untrusted SystemVerilog is parsed inside wasmtime's memory
-  isolation, with **bounded memory and run time**: [`Slang::with_limits`] caps
+  isolation, with **bounded memory and run time**: `Slang::with_limits` caps
   linear memory and gives the guest a fuel budget, so a pathological input traps
   (an `Err`) instead of hanging the host thread or growing to the 4 GiB ceiling.
   A trap, hang-guard, or OOM is contained to the instance, not the host process.
@@ -64,9 +64,10 @@ All of it runs over the same `slang_*` C ABI the native
 through a small, uniform helper layer (indirect struct args, sret returns, guest
 allocation, and the callback trampoline).
 
-The remaining tail toward exhaustive parity is the long list of less-common
-accessors and a generic host-lattice API (the bridge is demonstrated with a
-built-in reaching-writes lattice). Extend the covered surface by adding functions
-through the same `call_ast` / `call_ast_to_ast` / `call_ast_to_str` helpers, or
-generate them from the C-API model (`xtask gen_wasm_bridge`) so the two backends
-stay in lock-step.
+The **entire C surface is already reachable** through the generated `raw_*`
+bridge — `xtask gen_wasm_bridge` emits a marshalling wrapper for every function
+in the C ABI (only callbacks and struct out-parameters are hand-written), so the
+raw layer never lags the native backend. The ergonomic high-level `Slang` methods
+cover the common path and grow as needed on top of that bridge; a generic
+host-lattice API (beyond the built-in reaching-writes lattice) is the main
+remaining ergonomic extension.

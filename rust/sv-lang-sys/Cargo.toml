@@ -13,8 +13,17 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 # The vendored C++ tree is produced by `cargo xtask vendor` before publishing;
-# see build.rs for how sources are located in-tree versus from a .crate.
-exclude = ["vendor/.gitkeep"]
+# see build.rs for how sources are located in-tree versus from a .crate. It is
+# git-ignored, so an explicit `include` list is required to package it (an
+# `include` overrides .gitignore; an `exclude` would not).
+include = [
+    "src/**/*.rs",
+    "build.rs",
+    "README.md",
+    "tests/**/*.rs",
+    "deps/**",
+    "vendor/**",
+]
 
 [features]
 default = []

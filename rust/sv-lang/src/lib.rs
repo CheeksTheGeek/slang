@@ -1,21 +1,40 @@
-//! Safe, ergonomic Rust bindings to [slang](https://sv-lang.com), the fast
-//! SystemVerilog compiler frontend.
+//! Safe, ergonomic Rust bindings to [slang](https://sv-lang.com), the fast,
+//! standards-compliant SystemVerilog compiler frontend.
 //!
-//! This `0.1` release covers parsing and the concrete syntax tree: load
-//! SystemVerilog source, walk or edit its lossless syntax tree, and read
-//! diagnostics. The semantic layer (elaboration, symbols, types) is being
-//! added in later releases behind the same [`Session`].
+//! `sv-lang` gives Rust the whole of slang — not just parsing, but the
+//! elaborated semantic model (symbols, types, name resolution, constant
+//! evaluation) and lint/driver analysis that until now existed only behind
+//! slang's C++ and Python APIs.
+//!
+//! - **Parse** into a lossless concrete syntax tree with byte-exact round-trip,
+//!   and read [`Diagnostics`].
+//! - **Elaborate** a [`Compilation`] into a frozen, `Send + Sync` [`Design`] and
+//!   read [`Symbol`]s, [`Type`]s, [`Expression`]s, scope iteration, name lookup
+//!   and constant values.
+//! - **Analyze** the design for unused-code lints and per-signal driver tracking.
 //!
 //! # Example
 //!
 //! ```
-//! # fn main() -> Result<(), sv_lang::Error> {
-//! let session = sv_lang::Session::new();
-//! let tree = session.parse("module counter; endmodule\nmodule alu; endmodule\n")?;
+//! use sv_lang::{AnalysisFlags, Compilation, Session};
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let session = Session::new();
 //!
-//! let names: Vec<_> = tree.module_names().collect();
-//! assert_eq!(names, ["counter", "alu"]);
-//! assert!(!tree.diagnostics().has_errors());
+//! // Parse: a lossless concrete syntax tree.
+//! let tree = session.parse("module counter(input clk); logic [7:0] q; endmodule\n")?;
+//! assert_eq!(tree.module_names().collect::<Vec<_>>(), ["counter"]);
+//!
+//! // Elaborate: a fully-frozen, thread-shareable semantic design.
+//! let mut comp = Compilation::new(&session)?;
+//! comp.add(&tree)?;
+//! let design = comp.compile()?;
+//! let counter = design.top_instances().next().unwrap();
+//! let q = counter.instance_body().unwrap().find("q").unwrap();
+//! assert_eq!(q.value_type().unwrap().to_sv_string(), "logic[7:0]");
+//!
+//! // Analyze: unused-code lints and driver tracking.
+//! let analysis = design.analyze(AnalysisFlags::CHECK_UNUSED, 0)?;
+//! let _diagnostics = analysis.diagnostics().items().len();
 //! # Ok(())
 //! # }
 //! ```

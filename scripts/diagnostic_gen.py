@@ -5,6 +5,8 @@
 # SPDX-License-Identifier: MIT
 
 import argparse
+import hashlib
+import json
 import os
 import shlex
 import subprocess
@@ -128,8 +130,6 @@ def emitModel(path, diags, groups):
     value used to construct its DiagCode within its subsystem, matching the
     generated headers exactly, so external tooling can map codes to names
     without re-parsing diagnostics.txt."""
-    import json
-
     model = buildModel(diags, groups)
     with open(path, "w") as f:
         json.dump(model, f, indent=2)
@@ -137,9 +137,6 @@ def emitModel(path, diags, groups):
 
 
 def buildModel(diags, groups):
-    import hashlib
-    import json
-
     subsystems = []
     for subsys, entries in sorted(diags.items()):
         subsystems.append(

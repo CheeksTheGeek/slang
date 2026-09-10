@@ -28,9 +28,13 @@
 #include "slang/ast/symbols/ClassSymbols.h"
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/CoverSymbols.h"
+#include "slang/ast/symbols/AttributeSymbol.h"
+#include "slang/ast/symbols/CheckerSymbols.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
+#include "slang/ast/symbols/MemberSymbols.h"
 #include "slang/ast/symbols/ParameterSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
+#include "slang/ast/symbols/SpecifySymbols.h"
 #include "slang/ast/symbols/SubroutineSymbols.h"
 #include "slang/ast/symbols/ValueSymbol.h"
 #include "slang/ast/symbols/VariableSymbols.h"
@@ -231,6 +235,7 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood> {
                 t.getResolutionFunction();
             }
             else if constexpr (std::is_same_v<T, ClassType>) {
+                t.getBaseClass();
                 t.getBaseConstructorCall();
                 t.getBitstreamWidth();
                 t.hasCycles();
@@ -249,8 +254,82 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood> {
                 t.getCoverageExpr();
                 t.getIffExpr();
             }
+            else if constexpr (std::is_same_v<T, CovergroupType>) {
+                t.getCoverageEvent();
+                t.getBaseGroup();
+            }
+            else if constexpr (std::is_same_v<T, ClockingBlockSymbol>) {
+                t.getEvent();
+                t.getDefaultInputSkew();
+                t.getDefaultOutputSkew();
+            }
             else if constexpr (std::is_same_v<T, CoverCrossSymbol>) {
                 t.getIffExpr();
+            }
+            // Continuous assignments are ubiquitous; force their assignment +
+            // delay expressions.
+            else if constexpr (std::is_same_v<T, ContinuousAssignSymbol>) {
+                t.getAssignment();
+                t.getDelay();
+            }
+            // Elaboration system tasks ($error/$info/... with a condition).
+            else if constexpr (std::is_same_v<T, ElabSystemTaskSymbol>) {
+                t.getMessage();
+                t.getAssertCondition();
+            }
+            // `alias` statements resolve their net references lazily.
+            else if constexpr (std::is_same_v<T, NetAliasSymbol>) {
+                t.getNetReferences();
+            }
+            // specify-block contents: one getter triggers the shared resolve().
+            else if constexpr (std::is_same_v<T, TimingPathSymbol>) {
+                t.getInputs();
+            }
+            else if constexpr (std::is_same_v<T, PulseStyleSymbol>) {
+                t.getTerminals();
+            }
+            else if constexpr (std::is_same_v<T, SystemTimingCheckSymbol>) {
+                t.getArguments();
+            }
+            // Checker instance output-port initial expressions (per connection).
+            else if constexpr (std::is_same_v<T, CheckerInstanceSymbol>) {
+                for (auto& conn : t.getPortConnections())
+                    conn.getOutputInitialExpr();
+            }
+            // Nets carry a lazily-resolved delay control (`wire #2 w;`).
+            else if constexpr (std::is_same_v<T, NetSymbol>) {
+                t.getDelay();
+            }
+            // Subroutine formal-argument default values.
+            else if constexpr (std::is_same_v<T, FormalArgumentSymbol>) {
+                t.getDefaultValue();
+            }
+            // Module-instance port connections: getPortConnections() resolves the
+            // connection list, and each connection's expression is lazy too.
+            else if constexpr (std::is_same_v<T, InstanceSymbol>) {
+                for (auto* pc : t.getPortConnections()) {
+                    if (pc)
+                        pc->getExpression();
+                }
+            }
+            // Gate/UDP primitive instances: port expressions + delay.
+            else if constexpr (std::is_same_v<T, PrimitiveInstanceSymbol>) {
+                t.getPortConnections();
+                t.getDelay();
+            }
+            // Interface ports resolve their connection (+ expression, range) lazily.
+            else if constexpr (std::is_same_v<T, InterfacePortSymbol>) {
+                t.getConnectionAndExpr();
+                t.getDeclaredRange();
+            }
+            // Attribute constant values.
+            else if constexpr (std::is_same_v<T, AttributeSymbol>) {
+                t.getValue();
+            }
+            // A generic (parameterized) class's default specialization.
+            else if constexpr (std::is_same_v<T, GenericClassDefSymbol>) {
+                if (auto* sc = t.getParentScope())
+                    t.getDefaultSpecialization(*sc);
             }
             auto saved = currentScope;
             if (auto scope = scopeOf(t))

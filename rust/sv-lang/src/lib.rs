@@ -57,6 +57,15 @@ use std::sync::Arc;
 
 use sv_lang_sys as sys;
 
+/// Reads a static, NUL-terminated string the linked library returns (never
+/// freed). SAFETY: `p` must point at such a string.
+unsafe fn static_cstr(p: *const core::ffi::c_char) -> &'static str {
+    // SAFETY: guaranteed by the caller.
+    unsafe { core::ffi::CStr::from_ptr(p) }
+        .to_str()
+        .unwrap_or("")
+}
+
 /// The slang version the linked library reports, e.g. `"11.0.3+abc1234"`.
 ///
 /// # Examples
@@ -66,9 +75,7 @@ use sv_lang_sys as sys;
 /// ```
 pub fn slang_version() -> &'static str {
     // SAFETY: the library returns a static NUL-terminated string.
-    unsafe { core::ffi::CStr::from_ptr(sys::slang_version_string()) }
-        .to_str()
-        .unwrap_or("")
+    unsafe { static_cstr(sys::slang_version_string()) }
 }
 
 /// The syntax-model hash the linked slang-c reports. It equals
@@ -83,9 +90,7 @@ pub fn slang_version() -> &'static str {
 /// ```
 pub fn slang_syntax_model_hash() -> &'static str {
     // SAFETY: the library returns a static NUL-terminated string.
-    unsafe { core::ffi::CStr::from_ptr(sys::slang_syntax_model_hash()) }
-        .to_str()
-        .unwrap_or("")
+    unsafe { static_cstr(sys::slang_syntax_model_hash()) }
 }
 
 /// Whether the linked slang-c was built with assertions enabled — the

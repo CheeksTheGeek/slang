@@ -487,7 +487,11 @@ impl Slang {
     }
 
     fn read_u32(&self, ptr: u32) -> Result<u32, Error> {
-        let b = self.read(ptr, 4)?;
+        let data = self.memory.data(&self.store);
+        let start = ptr as usize;
+        let b = data
+            .get(start..start + 4)
+            .ok_or_else(|| Error::Runtime("out-of-bounds read".into()))?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
@@ -512,20 +516,16 @@ impl Slang {
     }
 
     /// Reads a NUL-terminated C string from guest memory.
-    fn read_cstr(&self, mut ptr: u32) -> Result<String, Error> {
+    fn read_cstr(&self, ptr: u32) -> Result<String, Error> {
         if ptr == 0 {
             return Ok(String::new());
         }
-        let mut bytes = Vec::new();
-        loop {
-            let b = self.read(ptr, 1)?[0];
-            if b == 0 {
-                break;
-            }
-            bytes.push(b);
-            ptr += 1;
-        }
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        let data = self.memory.data(&self.store);
+        let tail = data
+            .get(ptr as usize..)
+            .ok_or_else(|| Error::Runtime("out-of-bounds read".into()))?;
+        let len = tail.iter().position(|&b| b == 0).unwrap_or(tail.len());
+        Ok(String::from_utf8_lossy(&tail[..len]).into_owned())
     }
 
     /// Reads a `slang_str` struct at `ptr` (data:i32, len:i32, owner:i32) into a
@@ -632,7 +632,12 @@ impl Slang {
     }
 
     fn zero(&mut self, ptr: u32, len: u32) -> Result<(), Error> {
-        self.write(ptr, &vec![0u8; len as usize])
+        let data = self.memory.data_mut(&mut self.store);
+        let (start, end) = (ptr as usize, ptr as usize + len as usize);
+        data.get_mut(start..end)
+            .ok_or_else(|| Error::Runtime("out-of-bounds write".into()))?
+            .fill(0);
+        Ok(())
     }
 
     /// Checks a `slang_error` at `ptr`; returns `Err(Slang(msg))` on failure.
@@ -727,14 +732,22 @@ impl Slang {
     }
 
     fn module_declaration_kind(&mut self) -> Result<u32, Error> {
-        // Find the SyntaxKind whose name is "ModuleDeclaration".
+        // The ordinal is a property of the (process-wide, shared) compiled
+        // module's kind table, so scan for it once and cache it.
+        static KIND: OnceLock<Option<u32>> = OnceLock::new();
+        if let Some(cached) = KIND.get() {
+            return cached.ok_or_else(|| Error::Slang("ModuleDeclaration kind not found".into()));
+        }
         let count = self.syntax_kind_count();
+        let mut found = None;
         for k in 0..count {
             if self.syntax_kind_name(k)? == "ModuleDeclaration" {
-                return Ok(k);
+                found = Some(k);
+                break;
             }
         }
-        Err(Error::Slang("ModuleDeclaration kind not found".into()))
+        let _ = KIND.set(found);
+        found.ok_or_else(|| Error::Slang("ModuleDeclaration kind not found".into()))
     }
 }
 

@@ -463,11 +463,12 @@ pub fn references(ws: &mut Workspace, path: &str, pos: Position) -> Vec<Location
         if r.start >= r.end {
             continue;
         }
-        if text.get(r.clone()) == Some(name.as_str()) && !ranges.contains(&r) {
+        if text.get(r.clone()) == Some(name.as_str()) {
             ranges.push(r);
         }
     }
     ranges.sort_by_key(|r| r.start);
+    ranges.dedup();
     ranges
         .into_iter()
         .map(|r| Location {

@@ -243,7 +243,6 @@ fn emit_fn(out: &mut String, f: &Fun) {
 
     // Body: allocate sret + error, marshal struct args, build the arg vec, call, read back.
     let has_err = f.args.iter().any(|a| matches!(a, Arg::Error));
-    let sret = matches!(f.ret, Ret::Sret(_, _));
     let mut argexpr: Vec<String> = Vec::new();
 
     if let Ret::Sret(_, sz) = &f.ret {
@@ -326,7 +325,6 @@ fn emit_fn(out: &mut String, f: &Fun) {
         }
     }
     let _ = writeln!(out, "    }}");
-    let _ = sret;
 }
 
 /// Tiny helper so we can stringify a syn type without pulling in `quote`.

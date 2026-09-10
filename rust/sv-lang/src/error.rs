@@ -181,13 +181,7 @@ impl std::error::Error for Diagnostic {}
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let sev = match self.severity {
-            DiagSeverity::Ignored => "ignored",
-            DiagSeverity::Note => "note",
-            DiagSeverity::Warning => "warning",
-            DiagSeverity::Error => "error",
-            DiagSeverity::Fatal => "fatal",
-        };
+        let sev = severity_label(self.severity);
         if self.file.is_empty() {
             write!(f, "{sev}: {}", self.message)
         } else {
@@ -312,7 +306,6 @@ impl fmt::Display for Diagnostics {
     }
 }
 
-#[cfg(feature = "ariadne")]
 fn severity_label(severity: DiagSeverity) -> &'static str {
     match severity {
         DiagSeverity::Ignored => "ignored",

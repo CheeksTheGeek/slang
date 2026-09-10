@@ -252,14 +252,12 @@ impl<D: 'static> NodeExt<D> for cstree::syntax::SyntaxNode<Kind, D> {
     }
 
     fn members(&self) -> impl Iterator<Item = SyntaxElement<D>> {
+        use cstree::util::NodeOrToken;
         self.children_with_tokens().filter_map(|e| match e {
-            cstree::util::NodeOrToken::Node(n) => Some(cstree::util::NodeOrToken::Node(n.clone())),
-            cstree::util::NodeOrToken::Token(t) => {
-                // Trivia are interleaved siblings, not members.
-                matches!(t.kind(), Kind::Trivia(_))
-                    .then_some(())
-                    .map_or(Some(cstree::util::NodeOrToken::Token(t.clone())), |()| None)
-            }
+            NodeOrToken::Node(n) => Some(NodeOrToken::Node(n.clone())),
+            // Trivia are interleaved siblings, not members.
+            NodeOrToken::Token(t) if matches!(t.kind(), Kind::Trivia(_)) => None,
+            NodeOrToken::Token(t) => Some(NodeOrToken::Token(t.clone())),
         })
     }
 }

@@ -164,7 +164,14 @@ unsafe extern "C" fn clone_state<L: Lattice>(
     Box::into_raw(Box::new(v)) as *mut c_void
 }
 
-unsafe extern "C" fn join<L: Lattice>(user: *mut c_void, into: *mut c_void, other: *const c_void) {
+// Shared body for the join/meet thunks (which differ only by which merge method
+// they call): downcast both states and run `f`, poisoning on panic.
+unsafe fn merge<L: Lattice>(
+    user: *mut c_void,
+    into: *mut c_void,
+    other: *const c_void,
+    f: fn(&mut L, &L),
+) {
     // SAFETY: `user` is the &Ctx passed to slang_dfa_run.
     let c = unsafe { ctx(user) };
     // SAFETY: both are Box<State<L>> we created.
@@ -172,24 +179,20 @@ unsafe extern "C" fn join<L: Lattice>(user: *mut c_void, into: *mut c_void, othe
     // SAFETY: both are Box<State<L>> we created.
     let b = unsafe { &*(other as *const State<L>) };
     if let (Some(a), Some(b)) = (a.as_mut(), b.as_ref())
-        && catch_unwind(AssertUnwindSafe(|| a.join(b))).is_err()
+        && catch_unwind(AssertUnwindSafe(|| f(a, b))).is_err()
     {
         c.poison();
     }
 }
 
+unsafe extern "C" fn join<L: Lattice>(user: *mut c_void, into: *mut c_void, other: *const c_void) {
+    // SAFETY: forwards the raw pointers from slang_dfa_run unchanged.
+    unsafe { merge::<L>(user, into, other, L::join) };
+}
+
 unsafe extern "C" fn meet<L: Lattice>(user: *mut c_void, into: *mut c_void, other: *const c_void) {
-    // SAFETY: `user` is the &Ctx passed to slang_dfa_run.
-    let c = unsafe { ctx(user) };
-    // SAFETY: both are Box<State<L>> we created.
-    let a = unsafe { &mut *(into as *mut State<L>) };
-    // SAFETY: both are Box<State<L>> we created.
-    let b = unsafe { &*(other as *const State<L>) };
-    if let (Some(a), Some(b)) = (a.as_mut(), b.as_ref())
-        && catch_unwind(AssertUnwindSafe(|| a.meet(b))).is_err()
-    {
-        c.poison();
-    }
+    // SAFETY: forwards the raw pointers from slang_dfa_run unchanged.
+    unsafe { merge::<L>(user, into, other, L::meet) };
 }
 
 unsafe extern "C" fn transfer<L: Lattice>(

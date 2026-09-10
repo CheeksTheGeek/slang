@@ -5,6 +5,8 @@
 # SPDX-License-Identifier: MIT
 
 import argparse
+import hashlib
+import json
 import math
 import os
 from io import StringIO
@@ -55,13 +57,29 @@ def main():
     parser = argparse.ArgumentParser(description="Diagnostic source generator")
     parser.add_argument("--dir", default=os.getcwd(), help="Output directory")
     parser.add_argument("--python-bindings", action="store_true")
+    parser.add_argument(
+        "--emit-model",
+        metavar="PATH",
+        help="write a machine-readable JSON description of all syntax node types "
+        "and kind enums to PATH instead of generating C++",
+    )
+    parser.add_argument(
+        "--c-api",
+        metavar="PATH",
+        help="write the generated C API reflection tables (SyntaxCApi.cpp) to PATH "
+        "instead of generating the C++ library sources",
+    )
     parser.add_argument("--syntax", help="full path to syntax file")
     args = parser.parse_args()
 
     inputdir = os.path.dirname(args.syntax)
     alltypes, kindmap = loadalltypes(inputdir)
 
-    if args.python_bindings:
+    if args.emit_model:
+        emitModel(args.emit_model, inputdir, alltypes, kindmap)
+    elif args.c_api:
+        generateCApi(args.c_api, buildModel(inputdir, alltypes, kindmap))
+    elif args.python_bindings:
         generatePyBindings(args.dir, alltypes)
         generatePyFactoryBindings(args.dir, alltypes)
     else:
@@ -71,6 +89,212 @@ def main():
         generateTokenKinds(inputdir, args.dir)
         generateSystemNames(inputdir, args.dir)
         generateCSTJson(args.dir, alltypes)
+
+
+def emitModel(path, inputdir, alltypes, kindmap):
+    """Writes a JSON model describing every syntax node type, its members in
+    getChild() index order, and the SyntaxKind / TokenKind / TriviaKind enums
+    in their generated ordinal order. External tooling (other-language
+    bindings, editors, documentation) can consume this instead of re-parsing
+    syntax.txt, and the embedded hash lets a consumer verify that its copy of
+    the model matches the library it links against."""
+    model = buildModel(inputdir, alltypes, kindmap)
+    with open(path, "w") as f:
+        json.dump(model, f, indent=2)
+        f.write("\n")
+
+
+def buildModel(inputdir, alltypes, kindmap):
+    """Builds the model dictionary written by --emit-model. The C API tables
+    are generated from this same dictionary so that struct and member ordinals
+    (and the hash) can never disagree between the JSON and the library."""
+
+    def memberForm(memberType):
+        if memberType == "Token":
+            return "token", None
+        if memberType == "TokenList":
+            return "tokenlist", None
+        if memberType.startswith("SyntaxList<"):
+            return "list", memberType[len("SyntaxList<") : -1]
+        if memberType.startswith("SeparatedSyntaxList<"):
+            return "separated_list", memberType[len("SeparatedSyntaxList<") : -1]
+        return "node", None
+
+    structs = []
+    kindsByStruct = {}
+    for kind, structName in kindmap.items():
+        kindsByStruct.setdefault(structName, []).append(kind)
+
+    for name, ti in alltypes.items():
+        if name == "SyntaxNode":
+            continue
+
+        members = []
+        for m in ti.combinedMembers or []:
+            memberType, memberName = m[MEMBER_TYPE], m[MEMBER_NAME]
+            form, elem = memberForm(memberType)
+            entry = {"name": memberName, "form": form}
+            if form == "node":
+                baseType = m[MEMBER_BASE_TYPE] if len(m) > MEMBER_BASE_TYPE else None
+                if baseType is None:
+                    baseType = memberType.rstrip("*&")
+                    if baseType.startswith("not_null<"):
+                        baseType = baseType[len("not_null<") : -2]
+                entry["type"] = baseType
+                entry["optional"] = memberName in (ti.optionalMembers or set())
+            elif elem is not None:
+                entry["element"] = elem
+            members.append(entry)
+
+        isFinal = ti.final != ""
+        structs.append(
+            {
+                "name": name,
+                "base": ti.base,
+                "final": isFinal,
+                "multiKind": isFinal and ti.kindValue == "kind",
+                "kinds": sorted(kindsByStruct.get(name, [])),
+                "members": members,
+            }
+        )
+
+    model = {
+        "schemaVersion": 1,
+        "syntaxKinds": ["Unknown"] + [k for k, _ in sorted(kindmap.items())],
+        "kindToStruct": {k: v for k, v in sorted(kindmap.items())},
+        "tokenKinds": loadkinds(inputdir, "tokenkinds.txt"),
+        "triviaKinds": loadkinds(inputdir, "triviakinds.txt"),
+        "structs": structs,
+    }
+
+    canonical = json.dumps(model, sort_keys=True, separators=(",", ":")).encode()
+    model["modelHash"] = hashlib.sha256(canonical).hexdigest()
+    return model
+
+
+def generateCApi(path, model):
+    """Writes SyntaxCApi.cpp: the reflection tables behind the C API's
+    slang_syntax_* functions and the generated member-span function. Struct
+    ordinals are positions in model["structs"]; member ordinals are positions
+    in each struct's "members" list, which is getChild() index order."""
+    forms = {
+        "token": 0,
+        "node": 1,  # 2 when optional
+        "list": 3,
+        "separated_list": 4,
+        "tokenlist": 5,
+    }
+    structs = model["structs"]
+    structIndex = {s["name"]: i for i, s in enumerate(structs)}
+    kinds = model["syntaxKinds"]
+    kindToStruct = model["kindToStruct"]
+
+    f = open(path, "w")
+    f.write(
+        """//------------------------------------------------------------------------------
+// SyntaxCApi.cpp
+// Generated by scripts/syntax_gen.py --c-api; do not edit.
+//
+// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-License-Identifier: MIT
+//------------------------------------------------------------------------------
+#include <cstdint>
+
+#include "slang/syntax/AllSyntax.h"
+
+namespace slang::capi::gen {
+
+struct MemberInfo {
+    const char* name;
+    uint8_t form;
+};
+
+struct StructInfo {
+    const char* name;
+    uint32_t memberBegin;
+    uint32_t memberCount;
+};
+
+"""
+    )
+    f.write('extern const char* const syntaxModelHash = "{}";\n\n'.format(model["modelHash"]))
+
+    f.write("extern const MemberInfo members[] = {\n")
+    memberBegin = []
+    total = 0
+    for s in structs:
+        memberBegin.append(total)
+        for m in s["members"]:
+            form = forms[m["form"]]
+            if m["form"] == "node" and m.get("optional"):
+                form = 2
+            f.write('    {{"{}", {}}},\n'.format(m["name"], form))
+            total += 1
+    f.write('    {"", 0},\n};\n\n')
+
+    f.write("extern const StructInfo structs[] = {\n")
+    for s, begin in zip(structs, memberBegin):
+        f.write('    {{"{}", {}, {}}},\n'.format(s["name"], begin, len(s["members"])))
+    f.write("};\n")
+    f.write("extern const uint32_t structCount = {};\n\n".format(len(structs)))
+
+    f.write("extern const uint32_t tokenKindCount = {};\n".format(len(model["tokenKinds"])))
+    f.write("extern const uint32_t triviaKindCount = {};\n".format(len(model["triviaKinds"])))
+    f.write("extern const uint32_t syntaxKindCount = {};\n".format(len(kinds)))
+    f.write("extern const uint32_t kindToStruct[] = {\n")
+    for k in kinds:
+        if k in kindToStruct:
+            f.write("    {}, // {}\n".format(structIndex[kindToStruct[k]], k))
+        else:
+            f.write("    UINT32_MAX, // {}\n".format(k))
+    f.write("};\n\n")
+
+    f.write(
+        """// Maps a struct member ordinal to the contiguous span of getChild() indices it
+// occupies. This mirrors the flattening performed by the generated getChild()
+// implementations: scalar members take one slot, lists take one per element
+// (separated lists count their separators).
+bool memberSpan(const syntax::SyntaxNode& node, uint32_t member, uint32_t& start,
+                uint32_t& len) {
+    using namespace slang::syntax;
+    switch (node.kind) {
+"""
+    )
+    for s in structs:
+        if not s["final"] or not s["kinds"] or not s["members"]:
+            continue
+        for k in s["kinds"]:
+            f.write("        case SyntaxKind::{}:\n".format(k))
+        f.write("        {{\n            auto& s = node.as<{}>();\n".format(s["name"]))
+        f.write("            (void)s;\n            switch (member) {\n")
+        expr = "0"
+        for slot, m in enumerate(s["members"]):
+            if m["form"] in ("list", "separated_list", "tokenlist"):
+                count = "(uint32_t)s.{}.getChildCount()".format(m["name"])
+                f.write(
+                    "                case {}: start = {}; len = {}; return true;\n".format(
+                        slot, expr, count
+                    )
+                )
+                expr = "{} + {}".format(expr, count)
+            else:
+                f.write(
+                    "                case {}: start = {}; len = 1; return true;\n".format(
+                        slot, expr
+                    )
+                )
+                expr = "{} + 1".format(expr)
+        f.write("                default: return false;\n            }\n        }\n")
+    f.write(
+        """        default:
+            return false;
+    }
+}
+
+} // namespace slang::capi::gen
+"""
+    )
+    f.close()
 
 
 def loadalltypes(ourdir):

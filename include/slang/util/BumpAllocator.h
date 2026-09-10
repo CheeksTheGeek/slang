@@ -76,27 +76,17 @@ public:
 
     /// Freeze the allocator, preventing further allocations.
     /// Attempts to allocate after freezing will assert.
-    void freeze() {
-#if SLANG_ASSERT_ENABLED
-        frozen = true;
-#endif
-    }
+    ///
+    /// The frozen state is tracked in all build configurations so that callers
+    /// (e.g. code that shares a frozen Compilation across threads) can rely on
+    /// isFrozen() reporting the truth even when assertions are compiled out.
+    void freeze() { frozen = true; }
 
     /// Unfreeze the allocator, allowing further allocations.
-    void unfreeze() {
-#if SLANG_ASSERT_ENABLED
-        frozen = false;
-#endif
-    }
+    void unfreeze() { frozen = false; }
 
     /// Returns true if the allocator is frozen, and false otherwise.
-    bool isFrozen() const {
-#if SLANG_ASSERT_ENABLED
-        return frozen;
-#else
-        return false;
-#endif
-    }
+    bool isFrozen() const { return frozen; }
 
 protected:
     // Allocations are tracked as a linked list of segments.
@@ -108,9 +98,7 @@ protected:
     Segment* head;
     byte* endPtr;
     size_t totalBytesAllocated = 0;
-#if SLANG_ASSERT_ENABLED
     bool frozen = false;
-#endif
 
     enum { INITIAL_SIZE = 512, SEGMENT_SIZE = 4096 };
 

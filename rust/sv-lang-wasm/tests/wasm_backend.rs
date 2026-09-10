@@ -85,7 +85,7 @@ fn behavioral_tree_walks_in_the_sandbox() {
 
 #[test]
 fn generated_raw_bridge_marshals() {
-    // The xtask-generated raw_* methods (196 of them) marshal the full C
+    // The xtask-generated raw_* methods (197 of them) marshal the full C
     // surface; spot-check a scalar-return and an sret-string-return one.
     let mut slang = Slang::new().unwrap();
     assert!(slang.raw_slang_syntax_kind_count().unwrap() > 500);

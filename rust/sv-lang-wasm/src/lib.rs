@@ -1068,23 +1068,49 @@ impl Slang {
     }
 
     /// The immediate semantic children of a statement or expression node.
+    ///
+    /// Uses the bulk `slang_ast_sem_children` (which collects the children once
+    /// and fills a caller buffer) rather than the per-child accessor, whose
+    /// re-collection on every index makes an N-child node cost O(N²). The guest
+    /// returns the true total, so a node wider than the initial guess is filled
+    /// by a single retry with the exact capacity.
     pub fn sem_children(&mut self, node: Node) -> Result<Vec<Node>, Error> {
-        let count = match self
-            .call_ast("slang_ast_sem_child_count", node.0, &[])?
-            .first()
-        {
-            Some(Val::I32(n)) => *n as u32,
-            _ => 0,
-        };
-        let mut out = Vec::new();
-        for i in 0..count {
-            let a =
-                self.call_ast_to_ast("slang_ast_sem_child", node.0, &[Val::I32(i as i32)], false)?;
-            if !a.is_null() {
-                out.push(Node(a));
+        let mut cap = 16u32;
+        loop {
+            let out = self.malloc(cap * SLANG_AST_SIZE)?;
+            // `call_ast` marshals the node handle indirectly (and frees it); the
+            // `out` buffer is ours to allocate and read back.
+            let r = self.call_ast(
+                "slang_ast_sem_children",
+                node.0,
+                &[Val::I32(out as i32), Val::I32(cap as i32)],
+            );
+            let total = match r {
+                Ok(vals) => match vals.first() {
+                    Some(Val::I32(n)) => *n as u32,
+                    _ => 0,
+                },
+                Err(e) => {
+                    self.free(out);
+                    return Err(e);
+                }
+            };
+            if total > cap {
+                // The buffer was too small; retry once with the exact size.
+                self.free(out);
+                cap = total;
+                continue;
             }
+            let mut children = Vec::with_capacity(total as usize);
+            for i in 0..total {
+                let a = self.read_ast(out + i * SLANG_AST_SIZE)?;
+                if !a.is_null() {
+                    children.push(Node(a));
+                }
+            }
+            self.free(out);
+            return Ok(children);
         }
-        Ok(out)
     }
 
     /// The binary-operator ordinal of a `BinaryOp` expression (0 otherwise).

@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 197 functions generated, 17 skipped (callbacks / struct out-params).
+//! is written on top. 197 functions generated, 18 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -3339,6 +3339,7 @@ impl Slang {
  *   slang_constant_flat_int: has a struct out-param
  *   slang_svint_as_i64: has a struct out-param
  *   slang_svint_as_u64: has a struct out-param
+ *   slang_ast_sem_children: has a struct out-param
  *   slang_driver_parse_args: unsupported arg type `c_int`
  *   slang_driver_option_flag: has a struct out-param
  *   slang_driver_option_int: has a struct out-param

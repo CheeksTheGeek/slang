@@ -200,21 +200,15 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood> {
                 t.getCanonicalType();
                 report.types_canonicalized++;
             }
-            // Parameter/specparam values allocate a ConstantValue from the arena on
-            // first read; force them here (pre-seal) so slang_parameter_value never
-            // allocates after the seal.
+            // Parameter/specparam/enum values allocate a ConstantValue from the
+            // arena on first read; force them here (pre-seal) so the accessors
+            // (slang_parameter_value / slang_enum_member_value) are pure reads on
+            // the shared, frozen &Design and never mutate. (SOUNDNESS-MEMOS.md:
+            // a new &Design accessor reaching such a memo needs a matching
+            // pre-seal force, exactly like these.)
             if constexpr (std::is_same_v<T, ParameterSymbol> ||
-                          std::is_same_v<T, SpecparamSymbol>) {
-                t.getValue();
-                report.params_folded++;
-            }
-            // An EnumValueSymbol resolves its member constant lazily, allocating
-            // it from the arena on first read. Force it here (pre-seal) so the
-            // slang_enum_member_value accessor is a pure read on the shared,
-            // frozen &Design and never mutates. (SOUNDNESS-MEMOS.md, B-latent
-            // row: a new &Design accessor reaching this memo needs a matching
-            // pre-seal force, exactly like the ParameterSymbol getValue above.)
-            if constexpr (std::is_same_v<T, EnumValueSymbol>) {
+                          std::is_same_v<T, SpecparamSymbol> ||
+                          std::is_same_v<T, EnumValueSymbol>) {
                 t.getValue();
                 report.params_folded++;
             }

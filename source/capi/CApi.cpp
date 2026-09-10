@@ -183,14 +183,6 @@ slang_str slang_trivia_kind_name(uint32_t kind) {
     });
 }
 
-template<typename TEnum>
-static slang_str kindName(uint32_t kind) {
-    using Traits = typename TEnum::traits;
-    if (kind >= Traits::values.size())
-        return borrowed("");
-    return borrowed(toString(Traits::values[kind]));
-}
-
 #define SLANG_C_AST_KIND_DISPATCH(domain, expr)   \
     switch (domain) {                             \
         case SLANG_AST_SYMBOL:                    \

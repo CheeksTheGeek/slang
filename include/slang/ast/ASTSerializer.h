@@ -37,8 +37,10 @@ public:
 
     Compilation& getCompilation() const { return compilation; }
 
-    /// Sets a flag that indicates whether the addresses of AST objects
-    /// should be included in the JSON output.
+    /// Sets a flag that indicates whether object identities of AST objects
+    /// should be included in the JSON output. Identities are dense integer
+    /// ids assigned in first-visited order, so output is stable across runs
+    /// and platforms (they are not memory addresses).
     void setIncludeAddresses(bool set) { includeAddrs = set; }
 
     /// Sets a flag that indicates whether source line and file
@@ -182,6 +184,10 @@ private:
     template<typename T>
     void visit(const T& symbol, bool inMembersArray = false);
 
+    // Returns a dense, run-stable id for the given object, assigning
+    // one on first sight.
+    uint64_t idOf(const void* ptr);
+
     Compilation& compilation;
     JsonWriter& writer;
     bool includeAddrs = true;
@@ -190,6 +196,7 @@ private:
     bool tryConstantFold = true;
     flat_hash_set<const void*> visiting;
     flat_hash_set<const void*> printedEnums;
+    flat_hash_map<const void*, uint64_t> objectIds;
 };
 
 } // namespace slang::ast

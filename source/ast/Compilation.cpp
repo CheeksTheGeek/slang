@@ -254,13 +254,28 @@ std::span<const CompilationUnitSymbol* const> Compilation::getCompilationUnits()
 std::vector<const Symbol*> Compilation::getDefinitions() const {
     std::vector<const Symbol*> result;
     for (auto& [key, val] : definitionMap) {
-        for (auto sym : val.first) {
-            result.insert(std::ranges::upper_bound(result, sym->name, {},
-                                                   [](auto item) { return item->name; }),
-                          sym);
-        }
+        for (auto sym : val.first)
+            result.push_back(sym);
     }
 
+    // Sort by name, tie-breaking on source location and then on the parent
+    // scope's hierarchical path, so that definitions that share a name -- or
+    // even a location, as nested definitions do when their enclosing module is
+    // instantiated more than once -- are returned in a deterministic order
+    // independent of hash map iteration.
+    std::vector<std::pair<std::tuple<std::string_view, SourceLocation, std::string>, const Symbol*>>
+        keyed;
+    keyed.reserve(result.size());
+    for (auto sym : result) {
+        std::string parentPath;
+        if (auto scope = sym->getParentScope())
+            parentPath = scope->asSymbol().getHierarchicalPath();
+        keyed.emplace_back(std::tuple{sym->name, sym->location, std::move(parentPath)}, sym);
+    }
+
+    std::ranges::sort(keyed, {}, [](auto& item) -> auto& { return item.first; });
+    for (size_t i = 0; i < keyed.size(); i++)
+        result[i] = keyed[i].second;
     return result;
 }
 

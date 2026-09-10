@@ -141,7 +141,7 @@ void ASTSerializer::writeLink(std::string_view name, const Symbol& value) {
 
     std::string str;
     if (includeAddrs)
-        str = std::to_string(uintptr_t(&value)) + " ";
+        str = std::to_string(idOf(&value)) + " ";
 
     if (value.isType())
         str += value.as<Type>().toString();
@@ -149,6 +149,11 @@ void ASTSerializer::writeLink(std::string_view name, const Symbol& value) {
         str += std::string(value.name);
 
     writer.writeValue(str);
+}
+
+uint64_t ASTSerializer::idOf(const void* ptr) {
+    auto [it, inserted] = objectIds.try_emplace(ptr, objectIds.size() + 1);
+    return it->second;
 }
 
 void ASTSerializer::startArray() {
@@ -269,6 +274,9 @@ void ASTSerializer::visit(const T& elem, bool inMembersArray) {
                     printer.options.typedefsAsLinks = true;
                     printer.options.enumsAsLinks = true;
                     printer.options.classesAsLinks = true;
+                    printer.options.linkIdProvider = [this](const Type& t) {
+                        return idOf(&t);
+                    };
                 }
 
                 printer.append(elem);
@@ -351,7 +359,7 @@ void ASTSerializer::visit(const T& elem, bool inMembersArray) {
         }
 
         if (includeAddrs)
-            write("addr", uintptr_t(&elem));
+            write("addr", idOf(&elem));
 
         auto attributes = compilation.getAttributes(elem);
         if (!attributes.empty()) {

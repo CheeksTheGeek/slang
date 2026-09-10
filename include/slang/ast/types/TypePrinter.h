@@ -7,6 +7,8 @@
 //------------------------------------------------------------------------------
 #pragma once
 
+#include <functional>
+
 #include "slang/ast/types/AllTypes.h"
 #include "slang/diagnostics/DiagArgFormatter.h"
 
@@ -47,6 +49,12 @@ struct SLANG_EXPORT TypePrintingOptions {
 
     /// Print classes and covergroups as links instead of their expanded type details.
     bool classesAsLinks = false;
+
+    /// When printing a type as a link, provides the identifier to print for it.
+    /// If not set, the type's memory address is used, which is not stable
+    /// across runs; callers that need reproducible output (e.g. serializers)
+    /// should supply a provider that assigns stable ids.
+    std::function<uint64_t(const Type&)> linkIdProvider;
 
     /// Print the constant range of integral types for packed non-array objects
     bool printIntegralRange = false;
@@ -122,6 +130,7 @@ private:
     void printUnpackedArrayDim(const Type& type);
     void printScope(const Scope* scope);
     void printAKA(const Type& type);
+    void printLink(const Type& type);
 
     std::unique_ptr<FormatBuffer> buffer;
 };

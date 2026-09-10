@@ -136,7 +136,7 @@ void TypePrinter::visit(const EnumType& type, std::string_view overrideName) {
     }
     else {
         if (options.enumsAsLinks) {
-            buffer->format("{} ", uintptr_t(&type));
+            printLink(type);
         }
         else {
             buffer->append("enum");
@@ -371,9 +371,15 @@ void TypePrinter::visit(const PropertyType& type, std::string_view) {
     buffer->append(type.name);
 }
 
+void TypePrinter::printLink(const Type& type) {
+    uint64_t id = options.linkIdProvider ? options.linkIdProvider(type)
+                                         : uint64_t(uintptr_t(&type));
+    buffer->format("{} ", id);
+}
+
 void TypePrinter::visit(const ClassType& type, std::string_view) {
     if (options.classesAsLinks)
-        buffer->format("{} ", uintptr_t(&type));
+        printLink(type);
     buffer->append(type.name);
     if (type.genericClass)
         appendParameters(type.genericParameters, false);
@@ -381,7 +387,7 @@ void TypePrinter::visit(const ClassType& type, std::string_view) {
 
 void TypePrinter::visit(const CovergroupType& type, std::string_view) {
     if (options.classesAsLinks)
-        buffer->format("{} ", uintptr_t(&type));
+        printLink(type);
     if (type.name.empty())
         buffer->append("<unnamed covergroup>");
     else
@@ -427,7 +433,7 @@ void TypePrinter::visit(const TypeAliasType& type, std::string_view overrideName
 
     if (options.skipTypeDefs) {
         if (options.typedefsAsLinks)
-            buffer->format("{} ", uintptr_t(&type));
+            printLink(type);
         buffer->append(downstreamOverrideName);
     }
     else {

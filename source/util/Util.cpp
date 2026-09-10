@@ -7,6 +7,8 @@
 //------------------------------------------------------------------------------
 #include "slang/util/Util.h"
 
+#include <cstdlib>
+
 #include <fmt/format.h>
 
 namespace slang::assert {

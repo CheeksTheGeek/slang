@@ -30,6 +30,7 @@ add_library(
   CApiSyntax.cpp
   CApiDiagnostics.cpp
   CApiAst.cpp
+  CApiConstant.cpp
   CApiAnalysis.cpp
   CApiDataFlow.cpp
   CApiDriver.cpp

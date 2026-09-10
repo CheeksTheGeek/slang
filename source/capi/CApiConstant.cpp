@@ -25,26 +25,26 @@ struct slang_constant_t {
 
 namespace {
 
-// Temporarily lifts the seal for an evaluation that mutates (constant caching).
-struct SealGuard {
-    slang_compilation comp;
-    bool lifted;
-    explicit SealGuard(slang_compilation c) : comp(c), lifted(c->sealed) {
-        if (lifted)
-            comp->comp->unfreeze();
-    }
-    ~SealGuard() {
-        if (lifted)
-            comp->comp->freeze();
-    }
-};
-
 const ConstantValue& valueOf(slang_constant c) {
     return c->value;
 }
 
 const SVInt& svintOf(slang_svint v) {
     return *reinterpret_cast<const SVInt*>(v);
+}
+
+// Shared body of the fixed-width `slang_svint_as_*` accessors: succeeds only
+// when the value fits `T` losslessly (`SVInt::as<T>` returns nullopt otherwise).
+template<typename T>
+bool svintAs(slang_svint v, T* out) {
+    if (!v)
+        return false;
+    if (auto r = svintOf(v).as<T>()) {
+        if (out)
+            *out = *r;
+        return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -71,7 +71,7 @@ slang_constant slang_expression_eval_constant(slang_ast expr, slang_error* err) 
         auto e = exprOf(expr);
         if (!e)
             return (slang_constant) nullptr;
-        SealGuard guard(expr.compilation);
+        SealLift guard(expr.compilation);
         ASTContext ctx(expr.compilation->comp->getRoot(), LookupLocation::max);
         ConstantValue cv = ctx.tryEval(*e);
         if (cv.bad())
@@ -223,29 +223,11 @@ bool slang_svint_has_unknown(slang_svint v) {
 }
 
 bool slang_svint_as_i64(slang_svint v, int64_t* out) {
-    SLANG_C_ACCESS(false, {
-        if (!v)
-            return false;
-        if (auto r = svintOf(v).as<int64_t>()) {
-            if (out)
-                *out = *r;
-            return true;
-        }
-        return false;
-    });
+    SLANG_C_ACCESS(false, { return svintAs<int64_t>(v, out); });
 }
 
 bool slang_svint_as_u64(slang_svint v, uint64_t* out) {
-    SLANG_C_ACCESS(false, {
-        if (!v)
-            return false;
-        if (auto r = svintOf(v).as<uint64_t>()) {
-            if (out)
-                *out = *r;
-            return true;
-        }
-        return false;
-    });
+    SLANG_C_ACCESS(false, { return svintAs<uint64_t>(v, out); });
 }
 
 uint8_t slang_svint_get_bit(slang_svint v, uint32_t index) {

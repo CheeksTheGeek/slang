@@ -116,9 +116,10 @@ struct Walk {
 };
 
 slang_visit visitor(slang_ast node, slang_ast, void* user) {
-    if (node.domain == SLANG_AST_SYMBOL && slang_ast_kind_name(SLANG_AST_SYMBOL, node.kind).len &&
-        sv(slang_ast_kind_name(SLANG_AST_SYMBOL, node.kind)) == "Instance") {
-        return static_cast<Walk*>(user)->visit(node);
+    if (node.domain == SLANG_AST_SYMBOL) {
+        slang_str kind = slang_ast_kind_name(SLANG_AST_SYMBOL, node.kind);
+        if (kind.len && sv(kind) == "Instance")
+            return static_cast<Walk*>(user)->visit(node);
     }
     return SLANG_VISIT_CONTINUE;
 }

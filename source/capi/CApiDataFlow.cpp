@@ -128,17 +128,7 @@ void* slang_dfa_run(slang_compilation comp, slang_ast procedure, const slang_dfa
         // The flow analysis may constant-fold (e.g. to unroll loops), which
         // allocates into the arena; lift the seal for the run. The caller holds
         // exclusive access (the safe wrapper takes &mut Design).
-        bool wasSealed = comp->sealed;
-        if (wasSealed)
-            comp->comp->unfreeze();
-        struct Reseal {
-            slang_compilation c;
-            bool on;
-            ~Reseal() {
-                if (on)
-                    c->comp->freeze();
-            }
-        } reseal{comp, wasSealed};
+        SealLift guard(comp);
 
         AnalysisOptions opts;
         RustFlowAnalysis analysis(*sym, opts, *lattice, user, comp);

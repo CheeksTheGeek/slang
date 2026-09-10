@@ -7,6 +7,8 @@
 //------------------------------------------------------------------------------
 #include "CApiInternal.h"
 
+#include <ranges>
+
 #include "slang/ast/ASTContext.h"
 #include "slang/ast/ASTVisitor.h"
 #include "slang/ast/Constraints.h"
@@ -105,23 +107,6 @@ static const Statement* stmtOf(slang_ast node) {
 static void ensureRoot(slang_compilation comp) {
     comp->comp->getRoot();
 }
-
-// Lifts the seal on a compilation for the duration of an operation that slang
-// implements with a mutation (constant evaluation caching, reference tracking
-// during name lookup). Callers of such operations promise exclusive access.
-struct SealLift {
-    slang_compilation comp;
-    bool lifted;
-
-    explicit SealLift(slang_compilation comp) : comp(comp), lifted(comp->sealed) {
-        if (lifted)
-            comp->comp->unfreeze();
-    }
-    ~SealLift() {
-        if (lifted)
-            comp->comp->freeze();
-    }
-};
 
 // ---- Compilation ------------------------------------------------------------
 
@@ -589,7 +574,7 @@ slang_range slang_ast_range(slang_ast node) {
 }
 
 slang_node slang_ast_syntax(slang_ast node) {
-    SLANG_C_ACCESS((slang_node{nullptr, nullptr, 0, 0}), {
+    SLANG_C_ACCESS(noNode(nullptr), {
     const syntax::SyntaxNode* syntax = nullptr;
     if (node.ptr) {
         switch (node.domain) {
@@ -620,9 +605,9 @@ slang_node slang_ast_syntax(slang_ast node) {
         }
     }
     if (!syntax || !node.compilation)
-        return slang_node{nullptr, nullptr, 0, 0};
+        return noNode(nullptr);
     auto tree = findTree(node.compilation, *syntax);
-    return tree ? capi::toC(syntax, tree) : slang_node{nullptr, nullptr, 0, 0};
+    return tree ? capi::toC(syntax, tree) : noNode(nullptr);
     });
 }
 
@@ -926,40 +911,22 @@ uint64_t slang_type_bit_width(slang_ast type) {
     });
 }
 
-bool slang_type_is_integral(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isIntegral();
-    });
-}
+// A boolean type predicate: recover the Type, forward one `Type::isX()` query,
+// and report `false` for a null/non-type node. Every `slang_type_is_*` accessor
+// shares this body, so each is one self-documenting line.
+#define SLANG_TYPE_PRED(fn, method)                                                    \
+    bool fn(slang_ast type) {                                                          \
+        SLANG_C_ACCESS(false, {                                                        \
+            auto t = typeOf(type);                                                     \
+            return t && t->method();                                                   \
+        });                                                                            \
+    }
 
-bool slang_type_is_signed(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isSigned();
-    });
-}
-
-bool slang_type_is_four_state(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isFourState();
-    });
-}
-
-bool slang_type_is_unpacked_array(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isUnpackedArray();
-    });
-}
-
-bool slang_type_is_class(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isClass();
-    });
-}
+SLANG_TYPE_PRED(slang_type_is_integral, isIntegral)
+SLANG_TYPE_PRED(slang_type_is_signed, isSigned)
+SLANG_TYPE_PRED(slang_type_is_four_state, isFourState)
+SLANG_TYPE_PRED(slang_type_is_unpacked_array, isUnpackedArray)
+SLANG_TYPE_PRED(slang_type_is_class, isClass)
 
 bool slang_type_is_matching(slang_ast a, slang_ast b) {
     SLANG_C_ACCESS(false, {
@@ -1146,23 +1113,42 @@ slang_ast slang_ast_sem_child(slang_ast node, uint32_t index) {
     });
 }
 
-uint32_t slang_expr_binary_op(slang_ast node) {
+uint32_t slang_ast_sem_children(slang_ast node, slang_ast* out, uint32_t cap) {
     SLANG_C_ACCESS(0u, {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::BinaryOp)
-            return 0u;
-        return (uint32_t)e->as<BinaryExpression>().op;
+        auto children = collectSemChildren(node);
+        uint32_t n = children.size() < cap ? (uint32_t)children.size() : cap;
+        for (uint32_t i = 0; i < n; i++)
+            out[i] = children[i];
+        return (uint32_t)children.size();
     });
 }
 
-uint32_t slang_expr_unary_op(slang_ast node) {
-    SLANG_C_ACCESS(0u, {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::UnaryOp)
-            return 0u;
-        return (uint32_t)e->as<UnaryExpression>().op;
-    });
-}
+// Every typed expression accessor shares one body: recover the Expression,
+// bail to the neutral value unless it is a specific ExpressionKind, then read
+// one child or attribute off the concrete subtype. These two macros capture
+// that body so each accessor is a single self-documenting line; the trailing
+// `member` is spliced after `.`, so pass a field (`op`) or a getter (`left()`).
+#define SLANG_EXPR_CHILD(fn, KIND, T, member)                                          \
+    slang_ast fn(slang_ast node) {                                                     \
+        SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {                \
+            auto e = exprOf(node);                                                     \
+            if (!e || e->kind != ExpressionKind::KIND)                                 \
+                return noAst(node.compilation, SLANG_AST_EXPRESSION);                  \
+            return wrapAst(e->as<T>().member, node.compilation);                       \
+        });                                                                            \
+    }
+#define SLANG_EXPR_ENUM(fn, KIND, T, member)                                           \
+    uint32_t fn(slang_ast node) {                                                      \
+        SLANG_C_ACCESS(0u, {                                                           \
+            auto e = exprOf(node);                                                     \
+            if (!e || e->kind != ExpressionKind::KIND)                                 \
+                return 0u;                                                             \
+            return (uint32_t)e->as<T>().member;                                        \
+        });                                                                            \
+    }
+
+SLANG_EXPR_ENUM(slang_expr_binary_op, BinaryOp, BinaryExpression, op)
+SLANG_EXPR_ENUM(slang_expr_unary_op, UnaryOp, UnaryExpression, op)
 
 bool slang_expr_assignment_is_nonblocking(slang_ast node) {
     SLANG_C_ACCESS(false, {
@@ -1303,23 +1289,8 @@ slang_ast slang_stmt_timing(slang_ast node) {
 
 // ---- Typed expression children ----------------------------------------------
 
-slang_ast slang_expr_cond_true(slang_ast node) {
-    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::ConditionalOp)
-            return noAst(node.compilation, SLANG_AST_EXPRESSION);
-        return wrapAst(e->as<ConditionalExpression>().left(), node.compilation);
-    });
-}
-
-slang_ast slang_expr_cond_false(slang_ast node) {
-    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::ConditionalOp)
-            return noAst(node.compilation, SLANG_AST_EXPRESSION);
-        return wrapAst(e->as<ConditionalExpression>().right(), node.compilation);
-    });
-}
+SLANG_EXPR_CHILD(slang_expr_cond_true, ConditionalOp, ConditionalExpression, left())
+SLANG_EXPR_CHILD(slang_expr_cond_false, ConditionalOp, ConditionalExpression, right())
 
 slang_ast slang_expr_select_value(slang_ast node) {
     SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
@@ -1334,77 +1305,19 @@ slang_ast slang_expr_select_value(slang_ast node) {
     });
 }
 
-slang_ast slang_expr_select_selector(slang_ast node) {
-    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::ElementSelect)
-            return noAst(node.compilation, SLANG_AST_EXPRESSION);
-        return wrapAst(e->as<ElementSelectExpression>().selector(), node.compilation);
-    });
-}
+SLANG_EXPR_CHILD(slang_expr_select_selector, ElementSelect, ElementSelectExpression, selector())
+SLANG_EXPR_CHILD(slang_expr_range_left, RangeSelect, RangeSelectExpression, left())
+SLANG_EXPR_CHILD(slang_expr_range_right, RangeSelect, RangeSelectExpression, right())
+SLANG_EXPR_CHILD(slang_expr_conversion_operand, Conversion, ConversionExpression, operand())
+SLANG_EXPR_CHILD(slang_expr_replication_count, Replication, ReplicationExpression, count())
+SLANG_EXPR_CHILD(slang_expr_replication_concat, Replication, ReplicationExpression, concat())
 
-slang_ast slang_expr_range_left(slang_ast node) {
-    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::RangeSelect)
-            return noAst(node.compilation, SLANG_AST_EXPRESSION);
-        return wrapAst(e->as<RangeSelectExpression>().left(), node.compilation);
-    });
-}
+SLANG_EXPR_ENUM(slang_expr_conversion_kind, Conversion, ConversionExpression, conversionKind)
+SLANG_EXPR_ENUM(slang_expr_range_selection_kind, RangeSelect, RangeSelectExpression,
+                getSelectionKind())
 
-slang_ast slang_expr_range_right(slang_ast node) {
-    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::RangeSelect)
-            return noAst(node.compilation, SLANG_AST_EXPRESSION);
-        return wrapAst(e->as<RangeSelectExpression>().right(), node.compilation);
-    });
-}
-
-slang_ast slang_expr_conversion_operand(slang_ast node) {
-    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::Conversion)
-            return noAst(node.compilation, SLANG_AST_EXPRESSION);
-        return wrapAst(e->as<ConversionExpression>().operand(), node.compilation);
-    });
-}
-
-slang_ast slang_expr_replication_count(slang_ast node) {
-    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::Replication)
-            return noAst(node.compilation, SLANG_AST_EXPRESSION);
-        return wrapAst(e->as<ReplicationExpression>().count(), node.compilation);
-    });
-}
-
-slang_ast slang_expr_replication_concat(slang_ast node) {
-    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::Replication)
-            return noAst(node.compilation, SLANG_AST_EXPRESSION);
-        return wrapAst(e->as<ReplicationExpression>().concat(), node.compilation);
-    });
-}
-
-uint32_t slang_expr_conversion_kind(slang_ast node) {
-    SLANG_C_ACCESS(0u, {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::Conversion)
-            return 0u;
-        return (uint32_t)e->as<ConversionExpression>().conversionKind;
-    });
-}
-
-uint32_t slang_expr_range_selection_kind(slang_ast node) {
-    SLANG_C_ACCESS(0u, {
-        auto e = exprOf(node);
-        if (!e || e->kind != ExpressionKind::RangeSelect)
-            return 0u;
-        return (uint32_t)e->as<RangeSelectExpression>().getSelectionKind();
-    });
-}
+#undef SLANG_EXPR_CHILD
+#undef SLANG_EXPR_ENUM
 
 // ---- Type breadth -----------------------------------------------------------
 
@@ -1455,12 +1368,7 @@ uint32_t slang_enum_member_count(slang_ast type) {
         auto& ct = t->getCanonicalType();
         if (ct.kind != SymbolKind::EnumType)
             return 0u;
-        uint32_t count = 0;
-        for (auto& value : ct.as<EnumType>().values()) {
-            (void)value;
-            count++;
-        }
-        return count;
+        return (uint32_t)std::ranges::distance(ct.as<EnumType>().values());
     });
 }
 
@@ -1500,12 +1408,8 @@ uint32_t slang_type_field_count(slang_ast type) {
         auto s = structScope(typeOf(type));
         if (!s)
             return 0u;
-        uint32_t count = 0;
-        for (auto& member : s->members()) {
-            if (member.kind == SymbolKind::Field)
-                count++;
-        }
-        return count;
+        return (uint32_t)std::ranges::count_if(
+            s->members(), [](const Symbol& m) { return m.kind == SymbolKind::Field; });
     });
 }
 
@@ -1543,40 +1447,13 @@ uint32_t slang_field_index(slang_ast field) {
     });
 }
 
-bool slang_type_is_enum(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isEnum();
-    });
-}
+SLANG_TYPE_PRED(slang_type_is_enum, isEnum)
+SLANG_TYPE_PRED(slang_type_is_struct, isStruct)
+SLANG_TYPE_PRED(slang_type_is_union, isUnion)
+SLANG_TYPE_PRED(slang_type_is_array, isArray)
+SLANG_TYPE_PRED(slang_type_is_string, isString)
 
-bool slang_type_is_struct(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isStruct();
-    });
-}
-
-bool slang_type_is_union(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isUnion();
-    });
-}
-
-bool slang_type_is_array(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isArray();
-    });
-}
-
-bool slang_type_is_string(slang_ast type) {
-    SLANG_C_ACCESS(false, {
-        auto t = typeOf(type);
-        return t && t->isString();
-    });
-}
+#undef SLANG_TYPE_PRED
 
 slang_ast slang_type_class_base(slang_ast type) {
     SLANG_C_ACCESS(noAst(type.compilation), {

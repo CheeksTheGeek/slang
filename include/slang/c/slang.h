@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 1
+#define SLANG_C_VERSION_MINOR 2
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -1168,6 +1168,12 @@ SLANG_C_API uint32_t slang_ast_sem_child_count(slang_ast node);
 /// The i'th immediate semantic child of an AST node (see
 /// slang_ast_sem_child_count). Returns a null ast if out of range.
 SLANG_C_API slang_ast slang_ast_sem_child(slang_ast node, uint32_t index);
+
+/// Bulk-fills up to `cap` immediate semantic children of `node` into `out`,
+/// returning the total child count (which may exceed `cap`). Collects the
+/// children once, so enumerating an N-child node is O(N) rather than the
+/// O(N^2) of calling slang_ast_sem_child in a loop. history: since 1.2.
+SLANG_C_API uint32_t slang_ast_sem_children(slang_ast node, slang_ast* out, uint32_t cap);
 
 /// The BinaryOperator of a BinaryOp expression, as its enum ordinal (0 for a
 /// non-binary node). Ordinals follow slang's BinaryOperator enum.

@@ -87,6 +87,27 @@ struct slang_diagnostics_t {
 
 namespace slang::capi {
 
+// RAII lift of a compilation's seal for the span of an operation that slang
+// implements by mutating the arena — constant-eval caching, name-lookup
+// reference tracking, dataflow constant folding. The caller must hold exclusive
+// access (the safe wrappers take `&mut`). Re-seals on scope exit exactly when it
+// lifted, and never on a compilation that was already unsealed.
+struct SealLift {
+    slang_compilation comp;
+    bool lifted;
+
+    explicit SealLift(slang_compilation comp) : comp(comp), lifted(comp && comp->sealed) {
+        if (lifted)
+            comp->comp->unfreeze();
+    }
+    ~SealLift() {
+        if (lifted)
+            comp->comp->freeze();
+    }
+    SealLift(const SealLift&) = delete;
+    SealLift& operator=(const SealLift&) = delete;
+};
+
 // Tables emitted by `syntax_gen.py --c-api` and `diagnostic_gen.py --c-api`.
 namespace gen {
 struct MemberInfo {
@@ -237,6 +258,11 @@ inline slang_ast toC(const ast::Expression* expr, slang_compilation comp) {
 
 inline slang_ast noAst(slang_compilation comp, slang_ast_domain domain = SLANG_AST_SYMBOL) {
     return slang_ast{nullptr, comp, 0, (uint32_t)domain};
+}
+
+// The null CST-node cursor into `tree` — the syntax-side analogue of `noAst`.
+inline slang_node noNode(slang_syntax_tree tree) {
+    return slang_node{nullptr, tree, 0, 0};
 }
 
 template<typename T>

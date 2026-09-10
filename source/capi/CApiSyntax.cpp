@@ -127,7 +127,7 @@ void slang_syntax_tree_release(slang_syntax_tree tree) {
 
 slang_node slang_syntax_tree_root(slang_syntax_tree tree) {
     if (!tree)
-        return slang_node{nullptr, nullptr, 0, 0};
+        return noNode(nullptr);
     return toC(&tree->tree->root(), tree);
 }
 
@@ -357,13 +357,13 @@ bool slang_token_trivia(slang_token token, uint32_t index, slang_trivia* out) {
 }
 
 slang_node slang_token_trivia_syntax(slang_token token, uint32_t index) {
-    SLANG_C_ACCESS((slang_node{nullptr, token.tree, 0, 0}), {
+    SLANG_C_ACCESS(noNode(token.tree), {
         auto t = fromC(token);
         if (!t)
-            return slang_node{nullptr, token.tree, 0, 0};
+            return noNode(token.tree);
         auto trivia = t.trivia();
         if (index >= trivia.size())
-            return slang_node{nullptr, token.tree, 0, 0};
+            return noNode(token.tree);
         return toC(trivia[index].syntax(), token.tree);
     });
 }

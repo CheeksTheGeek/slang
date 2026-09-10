@@ -390,3 +390,68 @@ endmodule
     // The freeze report shows the sweep did real work.
     assert!(design.freeze_report().symbols_elaborated > 0);
 }
+
+// The last of the once-"B-latent" memo families, now force-resolved in the
+// FreezeVisitor. Each test elaborates a design containing the construct; if
+// forcing its lazy getter faulted (a precondition assert, in this assertions-on
+// build), `compile()` would abort. Reaching the assertion proves it is safe.
+
+#[test]
+fn freeze_forces_continuous_assign_memos() {
+    let d = compile("module m(input a, b, output y);\n  assign #2 y = a & b;\nendmodule\n");
+    assert!(d.freeze_report().symbols_elaborated > 0);
+}
+
+#[test]
+fn freeze_forces_net_alias_memos() {
+    let d = compile("module m;\n  wire x, w;\n  alias x = w;\nendmodule\n");
+    assert!(d.freeze_report().symbols_elaborated > 0);
+}
+
+#[test]
+fn freeze_forces_elab_system_task_memos() {
+    let d = compile("module m;\n  $info(\"elaborated\");\nendmodule\n");
+    assert!(d.freeze_report().symbols_elaborated > 0);
+}
+
+#[test]
+fn freeze_forces_specify_memos() {
+    let d = compile(
+        "module m(input a, input clk, output y);\n  assign y = a;\n  specify\n    pulsestyle_onevent y;\n    (a => y) = 1;\n    $setup(a, posedge clk, 1);\n  endspecify\nendmodule\n",
+    );
+    assert!(d.freeze_report().symbols_elaborated > 0);
+}
+
+#[test]
+fn freeze_forces_checker_memos() {
+    let d = compile(
+        "checker chk(input logic i, output logic o = 1'b0);\n  assign o = i;\nendchecker\nmodule m(input logic a);\n  logic w;\n  chk c1(.i(a), .o(w));\nendmodule\n",
+    );
+    assert!(d.freeze_report().symbols_elaborated > 0);
+}
+
+#[test]
+fn freeze_forces_instance_net_gate_attribute_memos() {
+    // Module instance port connections, a delayed net, a gate primitive, and an
+    // attribute value — all lazily resolved, all forced in the sweep.
+    let d = compile(
+        "module sub(input logic a, output logic y);\n  assign y = a;\nendmodule\nmodule m(input logic a);\n  (* keep = 1 *) wire #3 w;\n  logic o;\n  sub s(.a(a), .y(o));\n  and g(w, a, o);\nendmodule\n",
+    );
+    assert!(d.freeze_report().symbols_elaborated > 0);
+}
+
+#[test]
+fn freeze_forces_formalarg_classbase_genericclass_covergroup_memos() {
+    let d = compile(
+        "class B;\n  int b;\nendclass\nclass D extends B;\n  int d;\nendclass\nclass G #(int N = 4);\n  logic [N-1:0] data;\nendclass\nmodule m(input logic clk, input logic [2:0] a);\n  function automatic int f(int x = 7);\n    return x;\n  endfunction\n  covergroup cg @(posedge clk);\n    cp: coverpoint a;\n  endgroup\n  cg ci = new();\n  initial begin\n    int r;\n    r = f();\n  end\nendmodule\n",
+    );
+    assert!(d.freeze_report().symbols_elaborated > 0);
+}
+
+#[test]
+fn freeze_forces_interface_port_memos() {
+    let d = compile(
+        "interface bus;\n  logic x;\nendinterface\nmodule m(bus b);\n  assign b.x = 1'b0;\nendmodule\n",
+    );
+    assert!(d.freeze_report().symbols_elaborated > 0);
+}

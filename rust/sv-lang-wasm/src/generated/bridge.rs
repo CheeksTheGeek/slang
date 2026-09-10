@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 196 functions generated, 17 skipped (callbacks / struct out-params).
+//! is written on top. 197 functions generated, 17 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -3138,6 +3138,35 @@ impl Slang {
                 Val::I32(comp as i32),
                 Val::I32(flags as i32),
                 Val::I32(threads as i32),
+                Val::I32(__err as i32),
+            ],
+        );
+        let __chk = self.check_err(__err);
+        self.free(__err);
+        let __v = __r?;
+        __chk?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_analysis_run_listening`.
+    pub fn raw_slang_analysis_run_listening(
+        &mut self,
+        comp: u32,
+        flags: u32,
+        threads: u32,
+        listeners: u32,
+    ) -> Result<u32, Error> {
+        let __err = self.malloc(252)?;
+        self.zero(__err, 252)?;
+        let __r = self.call(
+            "slang_analysis_run_listening",
+            &[
+                Val::I32(comp as i32),
+                Val::I32(flags as i32),
+                Val::I32(threads as i32),
+                Val::I32(listeners as i32),
                 Val::I32(__err as i32),
             ],
         );

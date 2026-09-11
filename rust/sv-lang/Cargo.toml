@@ -1,6 +1,6 @@
 [package]
 name = "sv-lang"
-version = "0.1.0+slang.11.0"
+version = "0.1.1+slang.11.0"
 description = "Safe, ergonomic Rust bindings to slang, the fast SystemVerilog compiler frontend"
 readme = "README.md"
 keywords = ["systemverilog", "verilog", "parser", "compiler", "eda"]

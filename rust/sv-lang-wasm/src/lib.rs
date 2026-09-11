@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use wasmtime::{
-    Caller, Config, Engine, Instance, Linker, Memory, Module, Store, StoreLimits,
+    Cache, Caller, Config, Engine, Instance, Linker, Memory, Module, Store, StoreLimits,
     StoreLimitsBuilder, TypedFunc, Val,
 };
 use wasmtime_wasi::WasiCtxBuilder;
@@ -313,6 +313,15 @@ fn shared_engine_module() -> Result<&'static (Engine, Module), Error> {
     CELL.get_or_init(|| {
         let mut config = Config::new();
         config.consume_fuel(true);
+        // Enable wasmtime's on-disk compilation cache (best-effort): the ~14 MB
+        // module is expensive to compile (seconds in release, far longer in a
+        // debug build), but the result is content-addressed and cached across
+        // processes, so only the very first run ever pays that cost — every run
+        // afterward loads the cached native code. If no cache directory is
+        // available the call is simply skipped and we compile as before.
+        if let Ok(cache) = Cache::from_file(None) {
+            config.cache(Some(cache));
+        }
         let engine = Engine::new(&config).map_err(|e| e.to_string())?;
         let wasm = decompress_wasm().map_err(|e| e.to_string())?;
         let module = Module::from_binary(&engine, &wasm).map_err(|e| e.to_string())?;

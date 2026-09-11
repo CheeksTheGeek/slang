@@ -8,6 +8,16 @@ The whole compiler is compiled to `wasm32-wasip1` and embedded in this crate
 and runs it, and the crate marshals arguments and results across the wasm
 boundary through the guest's 32-bit linear memory.
 
+## Startup
+
+The ~14 MB module is expensive to JIT-compile — seconds in a release build,
+much longer in a debug build. wasmtime's on-disk compilation cache is enabled
+by default, so that cost is paid **once, ever**: the compiled native code is
+content-addressed and cached across processes, so the second run and every run
+afterward start in milliseconds (`Slang::new()` ≈ 0.1 s vs ≈ 7 s cold on a
+release build). The cache is best-effort — if no cache directory is available it
+is silently skipped and the module is compiled each run.
+
 ```rust
 let mut slang = sv_lang_wasm::Slang::new()?;
 assert!(slang.version().starts_with("11."));

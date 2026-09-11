@@ -1,6 +1,6 @@
 [package]
 name = "sv-lang-wasm"
-version = "0.1.1+slang.11.0"
+version = "0.1.2+slang.11.0"
 description = "Run slang in a WebAssembly sandbox via wasmtime — parse SystemVerilog with no native slang, no C++ toolchain"
 readme = "README.md"
 keywords = ["systemverilog", "verilog", "wasm", "wasmtime", "sandbox"]
@@ -13,7 +13,7 @@ homepage.workspace = true
 
 [dependencies]
 flate2 = "1.1.9"
-wasmtime = { version = "48", default-features = false, features = ["cranelift", "runtime"] }
+wasmtime = { version = "48", default-features = false, features = ["cranelift", "runtime", "cache"] }
 wasmtime-wasi = "48"
 
 [dev-dependencies]

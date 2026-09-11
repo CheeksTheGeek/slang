@@ -18,6 +18,29 @@ afterward start in milliseconds (`Slang::new()` ≈ 0.1 s vs ≈ 7 s cold on a
 release build). The cache is best-effort — if no cache directory is available it
 is silently skipped and the module is compiled each run.
 
+### Ephemeral / serverless: ahead-of-time precompilation
+
+On immutable infrastructure — a fresh container or Lambda per request, a
+read-only filesystem — the on-disk cache never persists, so *every* cold start
+would recompile. For that case, precompile the module to native code at build
+time and load it directly:
+
+```rust
+// build.rs — run once, at your build time
+let bytes = sv_lang_wasm::Slang::precompile()?;               // compile + serialize
+std::fs::write(concat!(env!("OUT_DIR"), "/slang.cwasm"), bytes)?;
+
+// runtime — a cold start with no compilation and no cache directory
+static CWASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/slang.cwasm"));
+// SAFETY: bytes are our own build's precompile() output.
+let slang = unsafe { sv_lang_wasm::Slang::from_precompiled(CWASM, Default::default())? };
+```
+
+Cold start drops from ~7 s to **~15 ms** with no cache needed (see
+`examples/aot.rs`). The `.cwasm` is native code (~25 MB, larger than the wasm)
+and is specific to the wasmtime version and target, so regenerate it when either
+changes; if it ever fails to load, `from_precompiled` falls back to compiling.
+
 ```rust
 let mut slang = sv_lang_wasm::Slang::new()?;
 assert!(slang.version().starts_with("11."));

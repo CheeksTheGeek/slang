@@ -180,3 +180,21 @@ fn two_instances_are_independent() {
     assert_eq!(a.module_count(&ta).unwrap(), 1);
     assert_eq!(b.module_count(&tb).unwrap(), 2);
 }
+
+#[test]
+fn precompiled_sandbox_works() {
+    // Precompile the module to portable native bytes, then drive a sandbox
+    // loaded from them. This is the serverless/read-only path: embed the bytes
+    // at build time and cold-start with no compilation and no cache directory.
+    let cwasm = Slang::precompile().expect("precompile");
+    assert!(cwasm.len() > 1_000_000, "native code should be substantial");
+    // SAFETY: the bytes came from precompile() in this same build.
+    let mut slang =
+        unsafe { Slang::from_precompiled(&cwasm, Limits::default()) }.expect("from_precompiled");
+    let tree = slang
+        .parse("module top; logic [3:0] q; endmodule\n")
+        .unwrap();
+    assert_eq!(slang.module_count(&tree).unwrap(), 1);
+    let design = slang.compile(&tree).unwrap();
+    assert_eq!(slang.top_instances(&design).unwrap().len(), 1);
+}

@@ -309,22 +309,46 @@ fn map<E: fmt::Display>(kind: fn(String) -> Error) -> impl Fn(E) -> Error {
 /// instances (the latter run with a `u64::MAX` budget); the per-instruction cost
 /// is negligible next to recompiling the module.
 fn shared_engine_module() -> Result<&'static (Engine, Module), Error> {
+    init_shared(None)
+}
+
+/// Initializes the process-wide engine + module, once. With `precompiled` bytes
+/// (from [`precompile`]) it deserializes native code directly — no compilation,
+/// no cache directory needed — which is what makes a cold start on ephemeral or
+/// read-only infrastructure (serverless, fresh containers) instant. Without
+/// them it JIT-compiles the embedded module, using wasmtime's on-disk cache so
+/// the compile is paid once per machine. The cell is set once by whichever path
+/// runs first; a deserialize that fails validation (wrong target or wasmtime
+/// version) falls back to compiling, so a stale `.cwasm` never breaks anything.
+fn init_shared(precompiled: Option<&[u8]>) -> Result<&'static (Engine, Module), Error> {
     static CELL: OnceLock<Result<(Engine, Module), String>> = OnceLock::new();
     CELL.get_or_init(|| {
         let mut config = Config::new();
         config.consume_fuel(true);
-        // Enable wasmtime's on-disk compilation cache (best-effort): the ~14 MB
-        // module is expensive to compile (seconds in release, far longer in a
-        // debug build), but the result is content-addressed and cached across
-        // processes, so only the very first run ever pays that cost — every run
-        // afterward loads the cached native code. If no cache directory is
-        // available the call is simply skipped and we compile as before.
-        if let Ok(cache) = Cache::from_file(None) {
+        // The on-disk cache only helps the compile path; deserialize is already
+        // near-instant, so skip it there.
+        if precompiled.is_none()
+            && let Ok(cache) = Cache::from_file(None)
+        {
             config.cache(Some(cache));
         }
         let engine = Engine::new(&config).map_err(|e| e.to_string())?;
-        let wasm = decompress_wasm().map_err(|e| e.to_string())?;
-        let module = Module::from_binary(&engine, &wasm).map_err(|e| e.to_string())?;
+        let compile = |engine: &Engine| -> Result<Module, String> {
+            let wasm = decompress_wasm().map_err(|e| e.to_string())?;
+            Module::from_binary(engine, &wasm).map_err(|e| e.to_string())
+        };
+        let module = match precompiled {
+            // SAFETY: `bytes` are trusted to come from `precompile()` of this
+            // crate built against this wasmtime version (the documented contract
+            // of the `unsafe fn from_precompiled`). `deserialize` validates a
+            // compatibility header and returns `Err` (not UB) on a version/target
+            // mismatch, and we fall back to compiling on any error.
+            Some(bytes) => match unsafe { Module::deserialize(&engine, bytes) } {
+                Ok(m) => m,
+                Err(_) => compile(&engine)?,
+            },
+            None => compile(&engine)?,
+        };
         Ok((engine, module))
     })
     .as_ref()
@@ -359,7 +383,42 @@ impl Slang {
         // Reuse the process-wide compiled module (see `shared_engine_module`);
         // only the store and instance are per-`Slang`.
         let (engine, module) = shared_engine_module()?;
+        Self::instantiate(engine, module, limits)
+    }
 
+    /// Precompiles the embedded module to portable native code (a wasmtime
+    /// `.cwasm`) for the current target, returning the bytes to embed. Intended
+    /// for a build script: run it once at build time, save the bytes, and load
+    /// them with [`from_precompiled`](Slang::from_precompiled) so a cold start
+    /// does no compilation — the answer for serverless / read-only deployments
+    /// where the on-disk cache never persists between runs.
+    ///
+    /// The bytes are specific to this crate's wasmtime version and the build
+    /// host's target; regenerate them whenever either changes.
+    pub fn precompile() -> Result<Vec<u8>, Error> {
+        let (_engine, module) = shared_engine_module()?;
+        module.serialize().map_err(map(Error::Setup))
+    }
+
+    /// Loads the sandbox from precompiled bytes produced by
+    /// [`precompile`](Slang::precompile), skipping compilation entirely — a cold
+    /// start becomes a fast `deserialize` with no cache directory required. If
+    /// the bytes are incompatible (a different wasmtime version or target) it
+    /// transparently falls back to compiling the embedded module, so a stale
+    /// artifact never breaks the sandbox.
+    ///
+    /// # Safety
+    /// `cwasm` must be the unmodified output of [`precompile`](Slang::precompile)
+    /// from the same crate version and wasmtime build; deserializing arbitrary or
+    /// corrupted bytes is undefined behavior (wasmtime runs the embedded native
+    /// code). A version/target mismatch is detected and rejected safely.
+    pub unsafe fn from_precompiled(cwasm: &[u8], limits: Limits) -> Result<Slang, Error> {
+        let (engine, module) = init_shared(Some(cwasm))?;
+        Self::instantiate(engine, module, limits)
+    }
+
+    /// Builds a fresh store and instance over an already-loaded engine/module.
+    fn instantiate(engine: &Engine, module: &Module, limits: Limits) -> Result<Slang, Error> {
         let mut linker: Linker<Host> = Linker::new(engine);
         wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |h: &mut Host| &mut h.wasi)
             .map_err(map(Error::Setup))?;

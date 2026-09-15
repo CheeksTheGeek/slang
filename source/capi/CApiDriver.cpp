@@ -364,6 +364,21 @@ slang_compilation slang_driver_create_compilation(slang_driver driver, uint32_t 
     return nullptr;
 }
 
+slang_bag slang_driver_create_option_bag(slang_driver driver, slang_error* err) {
+    if (!checkEntry(err))
+        return nullptr;
+    if (!driver) {
+        setError(err, SLANG_ERR_INVALID_ARG, "null driver");
+        return nullptr;
+    }
+    SLANG_C_GUARD(err, { return new slang_bag_t{driver->driver.createOptionBag()}; });
+    return nullptr;
+}
+
+void slang_bag_destroy(slang_bag bag) {
+    delete bag;
+}
+
 void slang_driver_report_compilation(slang_driver driver, slang_compilation comp, bool quiet,
                                      slang_error* err) {
     if (!checkEntry(err))

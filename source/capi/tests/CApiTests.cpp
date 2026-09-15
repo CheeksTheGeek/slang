@@ -535,6 +535,58 @@ TEST_CASE("C API: driver") {
     std::filesystem::remove(path);
 }
 
+TEST_CASE("C API: driver option bag builds a compilation") {
+    // createOptionBag -> create_from_bag: the advanced-composition path, and the
+    // last of slang's Driver surface to be bound.
+    auto path =
+        (std::filesystem::temp_directory_path() / "slang_capi_option_bag_test.sv").string();
+    {
+        std::ofstream f(path);
+        f << "module m; logic clk; endmodule\n";
+    }
+
+    slang_error err = SLANG_ERROR_INIT;
+    auto driver = slang_driver_create(&err);
+    REQUIRE(driver);
+    const char* argv[] = {"prog", path.c_str(), "--top", "m"};
+    REQUIRE(slang_driver_parse_args(driver, 4, argv, &err));
+    REQUIRE(SLANG_SUCCESS(err.status));
+
+    auto bag = slang_driver_create_option_bag(driver, &err);
+    REQUIRE(bag);
+    REQUIRE(SLANG_SUCCESS(err.status));
+
+    // A null bag is allowed (defaults).
+    auto compDefault = slang_compilation_create_from_bag(nullptr, 0, &err);
+    REQUIRE(compDefault);
+    REQUIRE(SLANG_SUCCESS(err.status));
+    slang_compilation_destroy(compDefault);
+
+    // Build a compilation from the bag, add our own tree, freeze, inspect.
+    auto sm = slang_source_manager_create(&err);
+    std::string src = "module m; logic clk; endmodule\n";
+    auto tree = slang_syntax_tree_from_text(sm, src.data(), src.size(), "m.sv", 4, nullptr, 0,
+                                            nullptr, &err);
+    REQUIRE(tree);
+    auto comp = slang_compilation_create_from_bag(bag, SLANG_COMP_DISABLE_INSTANCE_CACHING, &err);
+    REQUIRE(comp);
+    slang_compilation_add_tree(comp, tree, &err);
+    REQUIRE(SLANG_SUCCESS(err.status));
+
+    slang_freeze_report report;
+    slang_compilation_freeze(comp, SLANG_FREEZE_ALL, &report, &err);
+    REQUIRE(SLANG_SUCCESS(err.status));
+    REQUIRE(slang_compilation_top_instance_count(comp) == 1);
+    CHECK(sv(slang_symbol_name(slang_compilation_top_instance(comp, 0))) == "m");
+
+    slang_compilation_destroy(comp);
+    slang_syntax_tree_release(tree);
+    slang_source_manager_destroy(sm);
+    slang_bag_destroy(bag);
+    slang_driver_destroy(driver);
+    std::filesystem::remove(path);
+}
+
 TEST_CASE("C API: analysis (unused lints and drivers)") {
     Session s(R"(
 module m(input logic clk, output logic o);

@@ -96,6 +96,13 @@ struct slang_compilation_t {
         comp(&borrowed, [](slang::ast::Compilation*) {}) {}
 };
 
+// An owned, opaque options bag (slang::Bag is a type-erased heterogeneous
+// container of option structs). Produced by slang_driver_create_option_bag and
+// consumed by slang_compilation_create_from_bag.
+struct slang_bag_t {
+    slang::Bag bag;
+};
+
 struct slang_diagnostics_t {
     std::vector<slang::Diagnostic> diags;
     slang_source_manager sm;

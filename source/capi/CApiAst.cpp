@@ -129,6 +129,22 @@ slang_compilation slang_compilation_create(slang_options options, slang_error* e
     return nullptr;
 }
 
+slang_compilation slang_compilation_create_from_bag(slang_bag bag, uint32_t extra_flags,
+                                                    slang_error* err) {
+    if (!checkEntry(err))
+        return nullptr;
+    SLANG_C_GUARD(err, {
+        Bag b = bag ? bag->bag : Bag();
+        if (extra_flags) {
+            auto opts = b.getOrDefault<ast::CompilationOptions>();
+            opts.flags |= bitmask<ast::CompilationFlags>(ast::CompilationFlags(extra_flags));
+            b.set(opts);
+        }
+        return new slang_compilation_t(b);
+    });
+    return nullptr;
+}
+
 void slang_compilation_destroy(slang_compilation comp) {
     if (!comp)
         return;

@@ -81,6 +81,30 @@ pub struct Driver {
     session: Session,
 }
 
+/// An owned, opaque bag of the options a [`Driver`] assembled from its
+/// command-line arguments (`slang::Bag`), produced by
+/// [`Driver::create_option_bag`]. Its contents are type-erased and not
+/// introspectable from Rust; hand it to
+/// [`Compilation::from_option_bag`](crate::Compilation::from_option_bag) to
+/// build a compilation that reuses those options.
+pub struct OptionBag {
+    raw: sys::slang_bag,
+}
+
+impl OptionBag {
+    /// The raw handle, for passing to a C accessor that takes a `slang_bag`.
+    pub(crate) fn raw(&self) -> sys::slang_bag {
+        self.raw
+    }
+}
+
+impl Drop for OptionBag {
+    fn drop(&mut self) {
+        // SAFETY: `raw` is a live owned bag handle from slang_driver_create_option_bag.
+        unsafe { sys::slang_bag_destroy(self.raw) };
+    }
+}
+
 impl Driver {
     /// Creates a driver with slang's standard arguments registered.
     ///
@@ -485,6 +509,32 @@ impl Driver {
             self.session.clone(),
             report,
         ))
+    }
+
+    /// Assembles this driver's command-line-derived options into an owned
+    /// [`OptionBag`] (`slang::Driver::createOptionBag`).
+    ///
+    /// For the common case prefer [`compile`](Self::compile), which applies
+    /// these same options **and** wires up the driver's source libraries,
+    /// library maps, and user-defined subroutines. The option bag is for
+    /// advanced composition: building a compilation by hand with
+    /// [`Compilation::from_option_bag`](crate::Compilation::from_option_bag)
+    /// while reusing the flags parsed from the CLI.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let driver = sv_lang::Driver::from_args(["cpu.sv", "--top", "cpu"])?;
+    /// let bag = driver.create_option_bag()?;
+    /// let comp = sv_lang::Compilation::from_option_bag(driver.session(), &bag)?;
+    /// # let _ = comp;
+    /// # Ok(()) }
+    /// ```
+    pub fn create_option_bag(&self) -> Result<OptionBag, Error> {
+        let mut err = ffi::error();
+        // SAFETY: the driver is valid; out-error checked.
+        let raw = unsafe { sys::slang_driver_create_option_bag(self.raw(), &mut err) };
+        ffi::check(&err)?;
+        Ok(OptionBag { raw })
     }
 
     /// Reports a compilation's diagnostics through this driver's diagnostic

@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1015 functions generated, 44 skipped (callbacks / struct out-params).
+//! is written on top. 1018 functions generated, 44 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -1160,6 +1160,31 @@ impl Slang {
         let __r = self.call(
             "slang_compilation_create",
             &[Val::I32(options as i32), Val::I32(__err as i32)],
+        );
+        let __chk = self.check_err(__err);
+        self.free(__err);
+        let __v = __r?;
+        __chk?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_compilation_create_from_bag`.
+    pub fn raw_slang_compilation_create_from_bag(
+        &mut self,
+        bag: u32,
+        extra_flags: u32,
+    ) -> Result<u32, Error> {
+        let __err = self.malloc(252)?;
+        self.zero(__err, 252)?;
+        let __r = self.call(
+            "slang_compilation_create_from_bag",
+            &[
+                Val::I32(bag as i32),
+                Val::I32(extra_flags as i32),
+                Val::I32(__err as i32),
+            ],
         );
         let __chk = self.check_err(__err);
         self.free(__err);
@@ -12243,6 +12268,29 @@ impl Slang {
             Some(Val::I32(n)) => *n as u32,
             _ => 0,
         })
+    }
+    /// Raw marshalling for `slang_driver_create_option_bag`.
+    pub fn raw_slang_driver_create_option_bag(&mut self, driver: u32) -> Result<u32, Error> {
+        let __err = self.malloc(252)?;
+        self.zero(__err, 252)?;
+        let __r = self.call(
+            "slang_driver_create_option_bag",
+            &[Val::I32(driver as i32), Val::I32(__err as i32)],
+        );
+        let __chk = self.check_err(__err);
+        self.free(__err);
+        let __v = __r?;
+        __chk?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_bag_destroy`.
+    pub fn raw_slang_bag_destroy(&mut self, bag: u32) -> Result<(), Error> {
+        let __r = self.call("slang_bag_destroy", &[Val::I32(bag as i32)]);
+        __r?;
+        Ok(())
     }
     /// Raw marshalling for `slang_driver_report_compilation`.
     pub fn raw_slang_driver_report_compilation(

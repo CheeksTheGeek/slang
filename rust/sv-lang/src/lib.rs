@@ -76,7 +76,8 @@ pub use ast::{
 pub use constant::{Bit, ConstantValue, Digit, LiteralBase, OwnedSVInt, SVInt};
 pub use driver::{
     AnalysisOptions, CommandFileMetadata, DiagEngine, Driver, DriverAnalysis, LoadedSourceBuffer,
-    OptionKind, ParseOptions, PreprocessFlags, SourceLoader, SourceOptions, TextDiagClient,
+    OptionBag, OptionKind, ParseOptions, PreprocessFlags, SourceLoader, SourceOptions,
+    TextDiagClient,
 };
 pub use error::{Diagnostic, Diagnostics, Error};
 pub use script::{ScriptCompilation, ScriptSession};

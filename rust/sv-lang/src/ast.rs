@@ -132,6 +132,44 @@ impl Compilation {
         })
     }
 
+    /// Creates an empty compilation from a driver's assembled
+    /// [`OptionBag`](crate::OptionBag), reusing the options parsed from the
+    /// command line. Add trees with [`add`](Self::add) as usual.
+    ///
+    /// Like [`new_with`](Self::new_with), this forces `DisableInstanceCaching`
+    /// so the resulting design is totalizable (the precondition for
+    /// `Design: Send + Sync`).
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let driver = sv_lang::Driver::from_args(["cpu.sv", "--top", "cpu"])?;
+    /// let bag = driver.create_option_bag()?;
+    /// let comp = sv_lang::Compilation::from_option_bag(driver.session(), &bag)?;
+    /// # let _ = comp;
+    /// # Ok(()) }
+    /// ```
+    pub fn from_option_bag(
+        session: &Session,
+        bag: &crate::OptionBag,
+    ) -> Result<Compilation, Error> {
+        let mut err = ffi::error();
+        // SAFETY: `bag` is a live owned handle; out-error checked. Force
+        // DisableInstanceCaching so FREEZE_ELABORATE_ALL can totalize.
+        let raw = unsafe {
+            sys::slang_compilation_create_from_bag(
+                bag.raw(),
+                sys::SLANG_COMP_DISABLE_INSTANCE_CACHING,
+                &mut err,
+            )
+        };
+        ffi::check(&err)?;
+        Ok(Compilation {
+            raw,
+            session: session.clone(),
+            _trees: Vec::new(),
+        })
+    }
+
     /// The raw handle, for passing to a C accessor that takes a `slang_compilation`.
     pub(crate) fn raw(&self) -> sys::slang_compilation {
         self.raw
@@ -3447,8 +3485,8 @@ impl core::ops::BitOrAssign for MethodFlags {
 /// [`EvalSession::eval_lvalue`] (mirrors `slang::ast::Expression::
 /// evalLValue`, whose result, `slang::ast::LValue`, may internally be a
 /// plain storage location or a `std::vector`-backed tree of concatenated
-/// lvalues). Backed by the scratch evaluation frame [`eval_lvalue`]
-/// (Self::eval_lvalue) built for it, kept alive alongside this handle
+/// lvalues). Backed by the scratch evaluation frame
+/// [`EvalSession::eval_lvalue`] built for it, kept alive alongside this handle
 /// together with the design's compilation; dropping it frees that frame.
 /// Neither `Send` nor `Sync` — confined to the thread that created it.
 pub struct LValue {
@@ -4574,7 +4612,7 @@ fn wrap<'d, T: Handle<'d>>(raw: sys::slang_ast) -> Option<T> {
 /// structs private to a `RandSeqProductionSymbol`'s rule tree, not AST
 /// symbols/expressions in their own right. A borrowed read cursor into a
 /// [`Design`], exactly like the other handle types — see the module docs on
-/// [`Handle`].
+/// the internal `Handle` trait.
 #[derive(Clone, Copy)]
 pub struct RandSeqProd<'d> {
     raw: sys::slang_randseq_prod,
@@ -8067,7 +8105,7 @@ impl<'d> Symbol<'d> {
     /// For a `MethodPrototype` symbol: whether it is a `function` or a
     /// `task` (`slang::ast::MethodPrototypeSymbol::subroutineKind`). Set
     /// once at construction, so a pure, allocation-free read.
-    /// [`SubroutineKind::Function`] (indistinguishable from an actual
+    /// [`crate::SubroutineKind::Function`] (indistinguishable from an actual
     /// function) for any other symbol kind — check [`Self::kind`] first.
     ///
     /// # Examples
@@ -22865,7 +22903,8 @@ impl<'d> Analysis<'d> {
 
     /// The drivers of a value symbol, as live [`ValueDriver`] handles rather
     /// than the flattened snapshot [`drivers`](Self::drivers) returns. Unlike
-    /// [`Driver`], a `ValueDriver` also exposes the raw flag bitmask, the
+    /// that curated `Driver` snapshot, a `ValueDriver` also exposes the raw
+    /// flag bitmask, the
     /// driven symbol, the driven bit range, and any override source range
     /// (`slang::analysis::ValueDriver`). Empty if `value` is not a value
     /// symbol.
@@ -22954,7 +22993,7 @@ impl From<sys::slang_range> for SourceSpan {
 }
 
 /// The raw flag bitmask of a [`ValueDriver`] (`slang::analysis::DriverFlags`),
-/// combined with `|`. Unlike the curated subset [`Driver`] exposes
+/// combined with `|`. Unlike the curated subset the `Driver` snapshot exposes
 /// (`is_input_port`, `is_clock_var`, ...), this is every underlying bit.
 ///
 /// # Examples
@@ -23019,8 +23058,9 @@ impl core::ops::BitOrAssign for RawDriverFlags {
 /// A single driver of a value symbol (an assignment or connection that writes
 /// it), as a live handle into the analysis (`slang::analysis::ValueDriver`).
 ///
-/// Unlike [`Driver`] (the flattened snapshot [`Analysis::drivers`] returns),
-/// this is obtained from [`Analysis::driver_handles`] and additionally exposes
+/// Unlike the `Driver` snapshot (the flattened form [`Analysis::drivers`]
+/// returns), this is obtained from [`Analysis::driver_handles`] and
+/// additionally exposes
 /// the raw flag bitmask, the driven symbol, the driven bit range, and any
 /// override source range.
 #[derive(Clone, Copy)]

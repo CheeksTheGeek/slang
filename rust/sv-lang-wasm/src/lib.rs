@@ -69,6 +69,54 @@ pub trait WasmLattice: Clone + Send + 'static {
     }
     /// Apply a read/write/call event to the state.
     fn transfer(&mut self, event: &WasmDfaEvent);
+
+    /// Called when the analysis begins visiting a case statement, before any of
+    /// its branches. Mirrors `sv_lang::dataflow::Lattice::on_case_begin`. The
+    /// default is a no-op.
+    fn on_case_begin(&mut self, _stmt: Node, _ctx: &WasmFlowContext) {}
+
+    /// Called when the analysis begins visiting a conditional (`if`/`else`)
+    /// statement, before its branches. Mirrors
+    /// `sv_lang::dataflow::Lattice::on_conditional_begin`. The default is a
+    /// no-op.
+    fn on_conditional_begin(&mut self, _stmt: Node, _ctx: &WasmFlowContext) {}
+
+    /// Called when the analysis begins visiting any loop statement, before its
+    /// body. Mirrors `sv_lang::dataflow::Lattice::on_loop_begin`. The default
+    /// is a no-op.
+    fn on_loop_begin(&mut self, _stmt: Node, _ctx: &WasmFlowContext) {}
+}
+
+/// Context handed to a [`WasmLattice`]'s observer hooks (`on_case_begin`,
+/// `on_conditional_begin`, `on_loop_begin`).
+///
+/// The guest resolves the two cheap scalars this exposes before crossing back
+/// to the host, so no re-entrant call into the sandbox is needed. Unlike the
+/// native `sv_lang::dataflow::FlowContext`, this does **not** offer
+/// `eval_constant`: evaluating an arbitrary expression from an observer would
+/// require host→guest re-entry in the middle of a lattice callback, so
+/// observer-time constant evaluation is a native-backend-only capability.
+#[derive(Clone, Copy, Debug)]
+pub struct WasmFlowContext {
+    is_bad: bool,
+    state_addr: usize,
+}
+
+impl WasmFlowContext {
+    /// True if the analysis has recorded an unrecoverable error (an
+    /// `InvalidStatement`/`InvalidExpression` was visited). Mirrors
+    /// `sv_lang::dataflow::FlowContext::is_bad`.
+    pub fn is_bad(&self) -> bool {
+        self.is_bad
+    }
+
+    /// The opaque identity of the current flow state (the same state the
+    /// lattice methods operate on). Mirrors
+    /// `sv_lang::dataflow::FlowContext::current_state_addr` — exposed for
+    /// identity only; not dereferenceable.
+    pub fn current_state_addr(&self) -> usize {
+        self.state_addr
+    }
 }
 
 /// A type-erased lattice state (a `Box<L>` seen as `dyn Any`), plus the erased
@@ -78,6 +126,7 @@ type ConstructFn = Box<dyn Fn() -> Erased + Send>;
 type CloneFn = Box<dyn Fn(&dyn Any) -> Erased + Send>;
 type MergeFn = Box<dyn Fn(&mut dyn Any, &dyn Any) + Send>;
 type TransferFn = Box<dyn Fn(&mut dyn Any, &WasmDfaEvent) + Send>;
+type ObserveFn = Box<dyn Fn(&mut dyn Any, Node, &WasmFlowContext) + Send>;
 
 /// A type-erased in-flight dataflow run: the host-side lattice states slang
 /// operates on (addressed by the opaque integer "state pointers" it passes),
@@ -90,6 +139,9 @@ struct DfaRun {
     join: MergeFn,
     meet: MergeFn,
     transfer: TransferFn,
+    on_case: ObserveFn,
+    on_conditional: ObserveFn,
+    on_loop: ObserveFn,
 }
 
 impl DfaRun {
@@ -111,6 +163,17 @@ impl DfaRun {
             }),
             transfer: Box::new(|st, ev| {
                 st.downcast_mut::<L>().unwrap().transfer(ev);
+            }),
+            on_case: Box::new(|st, stmt, ctx| {
+                st.downcast_mut::<L>().unwrap().on_case_begin(stmt, ctx);
+            }),
+            on_conditional: Box::new(|st, stmt, ctx| {
+                st.downcast_mut::<L>()
+                    .unwrap()
+                    .on_conditional_begin(stmt, ctx);
+            }),
+            on_loop: Box::new(|st, stmt, ctx| {
+                st.downcast_mut::<L>().unwrap().on_loop_begin(stmt, ctx);
             }),
         }
     }
@@ -149,9 +212,11 @@ impl DfaRun {
         }
     }
 
-    /// Handles one lattice callback. `a`/`b` are state ids; `ev` is the event's
-    /// `slang_ast` (only meaningful for a WRITE transfer).
-    fn dispatch(&mut self, op: i32, a: u32, b: u32, ev_kind: u32, ev: [u32; 4]) -> i32 {
+    /// Handles one lattice callback. For lattice ops `a`/`b` are state ids and
+    /// `ev` is the event's `slang_ast` (only meaningful for a WRITE transfer).
+    /// For observer ops (7/8/9) `user` is the current state id, `ev` is the
+    /// observed statement's `slang_ast`, and `b` is the `is_bad` flag.
+    fn dispatch(&mut self, op: i32, user: u32, a: u32, b: u32, ev_kind: u32, ev: [u32; 4]) -> i32 {
         match op {
             0 => {
                 let s = (self.top)();
@@ -193,6 +258,29 @@ impl DfaRun {
                     && let Some(slot) = self.slab.get_mut((a - 1) as usize)
                 {
                     *slot = None;
+                }
+                0
+            }
+            7..=9 => {
+                if user != 0
+                    && let Some(Some(st)) = self.slab.get_mut((user - 1) as usize)
+                {
+                    let stmt = Node(Ast {
+                        ptr: ev[0],
+                        comp: ev[1],
+                        kind: ev[2],
+                        domain: ev[3],
+                    });
+                    let ctx = WasmFlowContext {
+                        is_bad: b != 0,
+                        state_addr: user as usize,
+                    };
+                    let observe = match op {
+                        7 => &self.on_case,
+                        8 => &self.on_conditional,
+                        _ => &self.on_loop,
+                    };
+                    observe(st.as_mut(), stmt, &ctx);
                 }
                 0
             }
@@ -429,22 +517,29 @@ impl Slang {
             .func_wrap(
                 "env",
                 "dfa_dispatch",
-                |mut caller: Caller<'_, Host>, op: i32, _user: i32, a: i32, b: i32| -> i32 {
-                    // For a transfer, read the event (kind + written symbol ast)
-                    // from guest memory before touching the (mutably-borrowed) run.
-                    let (ev_kind, ev) = if op == 5 {
+                |mut caller: Caller<'_, Host>, op: i32, user: i32, a: i32, b: i32| -> i32 {
+                    // Read any struct the callback references out of guest memory
+                    // before touching the (mutably-borrowed) run: for a transfer
+                    // (op 5) the event's `slang_ast` at `b`; for an observer
+                    // (ops 7/8/9) the observed statement's `slang_ast` at `a`.
+                    let (ev_kind, ev) = if op == 5 || (7..=9).contains(&op) {
                         match caller.get_export("memory").and_then(|e| e.into_memory()) {
                             Some(mem) => {
                                 let data = mem.data(&caller);
-                                let base = b as usize;
+                                let base = if op == 5 { b as usize } else { a as usize };
                                 let rd = |off: usize| -> u32 {
                                     match data.get(base + off..base + off + 4) {
                                         Some(s) => u32::from_le_bytes([s[0], s[1], s[2], s[3]]),
                                         None => 0,
                                     }
                                 };
-                                // slang_dfa_event { kind:u32@0, symbol:slang_ast@4, node@20 }
-                                (rd(0), [rd(4), rd(8), rd(12), rd(16)])
+                                if op == 5 {
+                                    // slang_dfa_event { kind:u32@0, symbol:slang_ast@4 }
+                                    (rd(0), [rd(4), rd(8), rd(12), rd(16)])
+                                } else {
+                                    // slang_ast { ptr@0, comp@4, kind@8, domain@12 }
+                                    (0, [rd(0), rd(4), rd(8), rd(12)])
+                                }
                             }
                             None => (0, [0; 4]),
                         }
@@ -452,7 +547,7 @@ impl Slang {
                         (0, [0; 4])
                     };
                     match caller.data_mut().dfa.as_mut() {
-                        Some(run) => run.dispatch(op, a as u32, b as u32, ev_kind, ev),
+                        Some(run) => run.dispatch(op, user as u32, a as u32, b as u32, ev_kind, ev),
                         None => 0,
                     }
                 },

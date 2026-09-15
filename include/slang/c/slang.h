@@ -261,6 +261,12 @@ typedef struct slang_compilation_t* slang_compilation;
 typedef struct slang_diagnostics_t* slang_diagnostics;
 typedef struct slang_options_t* slang_options;
 
+/// An owned, opaque options bag: slang's type-erased container of the option
+/// structs (compilation/lexer/parser/preprocessor options) a driver assembles
+/// from its command-line arguments. Produced by slang_driver_create_option_bag,
+/// consumed by slang_compilation_create_from_bag, freed with slang_bag_destroy.
+typedef struct slang_bag_t* slang_bag;
+
 /* ------------------------------------------------------------------------- */
 /* Positions                                                                  */
 /* ------------------------------------------------------------------------- */
@@ -781,6 +787,16 @@ SLANG_C_API slang_str slang_diagnostics_render(slang_diagnostics diags,
 /// Creates an empty compilation. `options` may be null for defaults.
 SLANG_C_API slang_compilation slang_compilation_create(slang_options options /* nullable */,
                                                        slang_error* err);
+
+/// Creates an empty compilation using the options in `bag` (e.g. one assembled
+/// by slang_driver_create_option_bag), ORing `extra_flags` (a bitmask of
+/// slang_compilation_flag) into the compilation flags — pass
+/// SLANG_COMP_DISABLE_INSTANCE_CACHING to make the result totalizable by
+/// SLANG_FREEZE_ELABORATE_ALL, or 0 for none. `bag` may be null for defaults.
+/// The caller still owns `bag` and must free it separately; add trees as usual.
+SLANG_C_API slang_compilation slang_compilation_create_from_bag(slang_bag bag /* nullable */,
+                                                                uint32_t extra_flags,
+                                                                slang_error* err);
 
 /// Destroys a compilation. Every slang_ast from it becomes invalid. Syntax trees
 /// that were added are released (the caller's own retain, if any, remains).
@@ -5527,6 +5543,17 @@ SLANG_C_API slang_syntax_tree slang_driver_tree(slang_driver driver, uint32_t in
 SLANG_C_API slang_compilation slang_driver_create_compilation(slang_driver driver,
                                                               uint32_t extra_flags,
                                                               slang_error* err);
+
+/// Assembles the driver's command-line-derived options into an owned option bag
+/// (slang::Driver::createOptionBag). For most uses prefer
+/// slang_driver_create_compilation, which applies the same options AND wires up
+/// the driver's source libraries, library maps, and user-defined subroutines;
+/// this exposes the raw bag for advanced composition (building a compilation by
+/// hand via slang_compilation_create_from_bag). Free with slang_bag_destroy.
+SLANG_C_API slang_bag slang_driver_create_option_bag(slang_driver driver, slang_error* err);
+
+/// Destroys an option bag from slang_driver_create_option_bag.
+SLANG_C_API void slang_bag_destroy(slang_bag bag);
 
 /// Reports the compilation's diagnostics through the driver's configured
 /// diagnostic output (colors, `--diag-*` options, error limits).

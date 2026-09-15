@@ -1096,6 +1096,12 @@ pub struct slang_driver_t {
 }
 pub type slang_driver = *mut slang_driver_t;
 
+#[repr(C)]
+pub struct slang_bag_t {
+    _private: [u8; 0],
+}
+pub type slang_bag = *mut slang_bag_t;
+
 pub type slang_option_kind = c_uint;
 pub const SLANG_OPTION_FLAG: slang_option_kind = 0;
 pub const SLANG_OPTION_INT: slang_option_kind = 1;
@@ -1440,6 +1446,11 @@ unsafe extern "C" {
     // Compilation
     pub fn slang_compilation_create(
         options: slang_options,
+        err: *mut slang_error,
+    ) -> slang_compilation;
+    pub fn slang_compilation_create_from_bag(
+        bag: slang_bag,
+        extra_flags: u32,
         err: *mut slang_error,
     ) -> slang_compilation;
     pub fn slang_compilation_destroy(comp: slang_compilation);
@@ -2590,6 +2601,9 @@ unsafe extern "C" {
         extra_flags: u32,
         err: *mut slang_error,
     ) -> slang_compilation;
+    pub fn slang_driver_create_option_bag(driver: slang_driver, err: *mut slang_error)
+    -> slang_bag;
+    pub fn slang_bag_destroy(bag: slang_bag);
     pub fn slang_driver_report_compilation(
         driver: slang_driver,
         comp: slang_compilation,

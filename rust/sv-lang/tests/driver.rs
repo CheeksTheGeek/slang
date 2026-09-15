@@ -66,6 +66,31 @@ fn driver_runs_a_cli_flow() {
 }
 
 #[test]
+fn option_bag_reuses_driver_options() {
+    // Driver::create_option_bag hands the CLI-derived options to a hand-built
+    // compilation via Compilation::from_option_bag — the advanced-composition
+    // path (the last of slang's Driver surface to be bound).
+    let dir = std::env::temp_dir().join("sv_lang_option_bag_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("m.sv");
+    std::fs::write(&src, "module m; logic clk; endmodule\n").unwrap();
+
+    let driver = Driver::from_args([src.to_str().unwrap(), "--top", "m"]).unwrap();
+    let bag = driver.create_option_bag().unwrap();
+
+    // Build a compilation by hand from the bag, add our own source, elaborate.
+    let mut comp = Compilation::from_option_bag(driver.session(), &bag).unwrap();
+    comp.add_source("module m; logic clk; endmodule\n").unwrap();
+    let design = comp.compile().unwrap();
+    assert!(
+        design.top_instances().any(|s| s.name() == "m"),
+        "expected top module `m` in the design built from the option bag"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn design_outlives_driver() {
     let dir = std::env::temp_dir().join("sv_lang_driver_test2");
     std::fs::create_dir_all(&dir).unwrap();

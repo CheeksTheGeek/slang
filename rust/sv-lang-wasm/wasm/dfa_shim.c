@@ -22,7 +22,10 @@ enum {
     OP_JOIN = 3,
     OP_MEET = 4,
     OP_TRANSFER = 5,
-    OP_DROP = 6
+    OP_DROP = 6,
+    OP_ON_CASE = 7,
+    OP_ON_CONDITIONAL = 8,
+    OP_ON_LOOP = 9
 };
 
 static void* w_top(void* user) {
@@ -47,15 +50,40 @@ static void w_drop(void* user, void* state) {
     host_dfa_dispatch(OP_DROP, user, state, 0);
 }
 
+/* Observer hooks. slang passes an opaque `ctx` and the statement being entered.
+ * The guest resolves the two cheap scalars the host FlowContext exposes —
+ * `slang_dfa_ctx_state` (the current state's opaque handle, which in this bridge
+ * IS the host slab id the lattice operates on) and `slang_dfa_ctx_is_bad` — here
+ * in the guest, so the host needs no re-entrant call back into the sandbox. The
+ * statement value-struct is passed by pointer to the guest-stack copy; the host
+ * reads its four words while this frame is live. `eval_constant` is deliberately
+ * not bridged (it would require host->guest re-entry mid-lattice-callback); it is
+ * a native-only FlowContext method. */
+static void w_observe(int32_t op, slang_dfa_ctx ctx, slang_ast stmt) {
+    int32_t state_id = (int32_t)(intptr_t)slang_dfa_ctx_state(ctx);
+    int32_t is_bad = slang_dfa_ctx_is_bad(ctx) ? 1 : 0;
+    host_dfa_dispatch(op, (void*)(intptr_t)state_id, (const void*)&stmt,
+                      (const void*)(intptr_t)is_bad);
+}
+static void w_on_case(void* user, slang_dfa_ctx ctx, slang_ast stmt) {
+    (void)user;
+    w_observe(OP_ON_CASE, ctx, stmt);
+}
+static void w_on_conditional(void* user, slang_dfa_ctx ctx, slang_ast stmt) {
+    (void)user;
+    w_observe(OP_ON_CONDITIONAL, ctx, stmt);
+}
+static void w_on_loop(void* user, slang_dfa_ctx ctx, slang_ast stmt) {
+    (void)user;
+    w_observe(OP_ON_LOOP, ctx, stmt);
+}
+
 __attribute__((export_name("slang_wasm_dfa_run"))) void* slang_wasm_dfa_run(
     slang_compilation comp, slang_ast procedure, void* user, slang_error* err) {
-    /* Zero-initialize so the observer hooks (on_case_begin / on_conditional_begin
-     * / on_loop_begin) are null. slang null-checks each before calling, so null
-     * means "skip" — exactly matching a native Lattice's default no-op observers.
-     * WasmLattice exposes no observer methods, so there is nothing to forward
-     * them to; leaving them as uninitialized stack garbage made slang indirect-
-     * call a bogus table slot ("undefined element") on any design with an
-     * if/case/loop. */
+    /* Zero-initialize first: any field left unset must read as a null pointer,
+     * not uninitialized stack garbage. slang null-checks each observer before
+     * calling it, and an indirect call through a garbage table slot traps
+     * ("undefined element") on any design with an if/case/loop. */
     slang_dfa_lattice lat = {0};
     lat.top = w_top;
     lat.bottom = w_bottom;
@@ -64,5 +92,8 @@ __attribute__((export_name("slang_wasm_dfa_run"))) void* slang_wasm_dfa_run(
     lat.meet = w_meet;
     lat.transfer = w_transfer;
     lat.drop = w_drop;
+    lat.on_case_begin = w_on_case;
+    lat.on_conditional_begin = w_on_conditional;
+    lat.on_loop_begin = w_on_loop;
     return slang_dfa_run(comp, procedure, &lat, user, err);
 }

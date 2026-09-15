@@ -1,6 +1,8 @@
 //! Drives slang running inside a WebAssembly sandbox end-to-end.
 
-use sv_lang_wasm::{Limits, Slang};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use sv_lang_wasm::{Limits, Node, Slang, WasmDfaEvent, WasmFlowContext, WasmLattice};
 
 #[test]
 fn fuel_limit_traps_instead_of_hanging() {
@@ -120,6 +122,84 @@ fn custom_dataflow_bridge_runs_in_the_sandbox() {
     assert!(
         written.contains(&"x".to_string()),
         "expected `x` in the reaching-writes set, got {written:?}"
+    );
+}
+
+// Firing counters for the observer test below. This is the only test that
+// touches them and `run_lattice` drives the guest synchronously on the calling
+// thread, so plain globals are reliable even under the parallel test harness.
+static OBS_CONDS: AtomicUsize = AtomicUsize::new(0);
+static OBS_CASES: AtomicUsize = AtomicUsize::new(0);
+static OBS_LOOPS: AtomicUsize = AtomicUsize::new(0);
+
+#[test]
+fn observer_hooks_fire_in_the_sandbox() {
+    // The three observer hooks (on_case_begin / on_conditional_begin /
+    // on_loop_begin) reach a custom WasmLattice across the sandbox boundary,
+    // with a usable WasmFlowContext — full parity with the native Lattice's
+    // observers (save eval_constant, documented native-only).
+    #[derive(Clone)]
+    struct Obs;
+    impl WasmLattice for Obs {
+        fn top() -> Self {
+            Obs
+        }
+        fn join(&mut self, _other: &Self) {}
+        fn transfer(&mut self, _event: &WasmDfaEvent) {}
+        fn on_conditional_begin(&mut self, _stmt: Node, ctx: &WasmFlowContext) {
+            assert!(!ctx.is_bad(), "analysis should not be in a bad state here");
+            let _ = ctx.current_state_addr();
+            OBS_CONDS.fetch_add(1, Ordering::Relaxed);
+        }
+        fn on_case_begin(&mut self, _stmt: Node, _ctx: &WasmFlowContext) {
+            OBS_CASES.fetch_add(1, Ordering::Relaxed);
+        }
+        fn on_loop_begin(&mut self, _stmt: Node, _ctx: &WasmFlowContext) {
+            OBS_LOOPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let mut slang = Slang::new().unwrap();
+    let tree = slang
+        .parse(
+            "module m(input logic clk, input logic rst, input logic [1:0] sel);\n\
+             logic [7:0] q, n;\n\
+             always_ff @(posedge clk) begin\n\
+               if (rst) q <= 8'd0;\n\
+               else begin\n\
+                 case (sel)\n\
+                   2'd0: q <= n;\n\
+                   default: q <= q;\n\
+                 endcase\n\
+                 for (int i = 0; i < 4; i++) q <= q + 8'd1;\n\
+               end\n\
+             end\n\
+             endmodule\n",
+        )
+        .unwrap();
+    let design = slang.compile(&tree).unwrap();
+    let tops = slang.top_instances(&design).unwrap();
+    let body = slang.instance_body(tops[0]).unwrap().unwrap();
+    let proc = slang
+        .members(body)
+        .unwrap()
+        .into_iter()
+        .find(|&m| slang.kind_name(m).unwrap().contains("Procedural"))
+        .expect("always_ff is a procedural block");
+
+    let _exit: Obs = slang.run_lattice::<Obs>(&design, proc).unwrap();
+
+    assert!(
+        OBS_CONDS.load(Ordering::Relaxed) >= 1,
+        "on_conditional_begin should fire for the if/else"
+    );
+    assert!(
+        OBS_CASES.load(Ordering::Relaxed) >= 1,
+        "on_case_begin should fire for the case"
+    );
+    assert!(
+        OBS_LOOPS.load(Ordering::Relaxed) >= 1,
+        "on_loop_begin should fire for the for-loop"
     );
 }
 

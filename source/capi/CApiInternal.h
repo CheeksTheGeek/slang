@@ -14,17 +14,30 @@
 #include <string>
 #include <vector>
 
+#include "slang/analysis/AnalysisManager.h"
 #include "slang/ast/Compilation.h"
+#include "slang/ast/EvalContext.h"
 #include "slang/ast/Expression.h"
+#include "slang/ast/LValue.h"
+#include "slang/ast/Lookup.h"
 #include "slang/c/slang.h"
 #include "slang/diagnostics/DiagnosticEngine.h"
 #include "slang/diagnostics/Diagnostics.h"
+#include "slang/numeric/ConstantValue.h"
 #include "slang/parsing/Lexer.h"
 #include "slang/parsing/Parser.h"
 #include "slang/parsing/Preprocessor.h"
 #include "slang/syntax/SyntaxTree.h"
 #include "slang/text/SourceManager.h"
 #include "slang/util/Bag.h"
+
+namespace slang {
+class TextDiagnosticClient;
+} // namespace slang
+
+namespace slang::driver {
+class SourceLoader;
+} // namespace slang::driver
 
 // The handle types declared opaque in slang.h. Each owns exactly the C++
 // objects its lifetime rules in the header describe.
@@ -60,16 +73,27 @@ struct slang_syntax_tree_t {
 };
 
 struct slang_compilation_t {
-    std::unique_ptr<slang::ast::Compilation> comp;
+    // A shared_ptr (rather than unique_ptr) so this handle can either own its
+    // Compilation (the common case) or, via the borrowed-reference
+    // constructor below, wrap one owned elsewhere (e.g.
+    // slang::ast::ScriptSession::compilation, which is always mutable and
+    // must NOT be deleted when this wrapper is destroyed) with a no-op
+    // deleter. All existing call sites use `->` / `.get()`-free access, so
+    // this is a transparent swap.
+    std::shared_ptr<slang::ast::Compilation> comp;
     std::vector<slang_syntax_tree> trees;
     slang_source_manager sm = nullptr;
     bool sealed = false;
     bool elaboratedAll = false;
 
     explicit slang_compilation_t(const slang::Bag& options) :
-        comp(std::make_unique<slang::ast::Compilation>(options)) {}
+        comp(std::make_shared<slang::ast::Compilation>(options)) {}
     explicit slang_compilation_t(std::unique_ptr<slang::ast::Compilation> existing) :
         comp(std::move(existing)) {}
+    // Non-owning: wraps a Compilation this handle does not own and must never
+    // free (e.g. a ScriptSession's own always-mutable compilation).
+    explicit slang_compilation_t(slang::ast::Compilation& borrowed) :
+        comp(&borrowed, [](slang::ast::Compilation*) {}) {}
 };
 
 struct slang_diagnostics_t {
@@ -82,6 +106,89 @@ struct slang_diagnostics_t {
         if (!engine)
             engine = std::make_unique<slang::DiagnosticEngine>(sm->sm);
         return *engine;
+    }
+};
+
+// An owned constant value handle (see slang_expression_constant_value /
+// slang_expression_eval_constant / slang_script_session_eval). Shared here
+// (rather than kept file-local to CApiConstant.cpp) so other translation
+// units (e.g. CApiScript.cpp) can construct one directly.
+struct slang_constant_t {
+    slang::ConstantValue value;
+};
+
+// The result of Expression::evalLValue (see slang_expr_eval_lvalue). Owns the
+// scratch EvalContext that the LValue's internal ConstantValue* pointers may
+// reference (a local materialized for the referenced value symbol), so those
+// pointers stay valid for as long as this handle is alive; slang::ast::LValue
+// itself is move-only and non-copyable, hence the unique_ptr indirection for
+// the EvalContext (which LValue does not own but must outlive).
+struct slang_lvalue_t {
+    std::unique_ptr<slang::ast::EvalContext> ctx;
+    slang::ast::LValue lval;
+};
+
+// The scratch buffer behind slang_lookup_result: a mutable slang::ast::
+// LookupResult (see slang_lookup_result_create and the slang_lookup_*
+// entry points that populate one, e.g. slang_lookup_within_class_randomize),
+// plus the compilation handle needed to wrap `result.found` as a slang_ast
+// and to copy `result.getDiagnostics()` out into an owned slang_diagnostics.
+// `comp` starts null (a fresh, never-populated result has nothing to wrap
+// against) and is set by whichever entry point last populated `result`.
+struct slang_lookup_result_t {
+    slang::ast::LookupResult result;
+    slang_compilation comp = nullptr;
+};
+
+// The result of running slang::analysis::AnalysisManager over a compilation
+// (see slang_analysis_run and slang_driver_run_analysis). Shared here (rather
+// than kept file-local to CApiAnalysis.cpp) so CApiDriver.cpp can construct
+// one directly from Driver::runAnalysis's result.
+struct slang_analysis_t {
+    std::unique_ptr<slang::analysis::AnalysisManager> manager;
+    slang_compilation comp;
+};
+
+// The handle behind slang_driver_text_diag_client: a stable-address wrapper
+// around a reference to the driver's own textDiagClient member (a
+// std::shared_ptr<TextDiagnosticClient>). Never reallocated for the life of
+// the owning slang_driver_t, so returning its address is a pure read.
+struct slang_text_diag_client_t {
+    std::shared_ptr<slang::TextDiagnosticClient>& client;
+};
+
+// The handle behind slang_driver_source_loader: a stable-address wrapper
+// around a reference to the driver's own sourceLoader member. Never
+// reallocated for the life of the owning slang_driver_t, so returning its
+// address is a pure read.
+struct slang_source_loader_t {
+    slang::driver::SourceLoader& loader;
+
+    // The owning driver's source manager handle, needed to wrap the syntax
+    // trees returned by SourceLoader::getLibraryMaps() (see
+    // slang_source_loader_library_map_at). Never null once constructed by
+    // slang_driver_t; borrowed, outlives this handle.
+    slang_source_manager sm = nullptr;
+
+    // A cache of wrapped handles for loader.getLibraryMaps(), grown lazily to
+    // match (see syncLibraryMapTrees in CApiDriver.cpp) since the real list
+    // only ever grows and its shared_ptr<SyntaxTree> elements need a stable
+    // slang_syntax_tree_t wrapper to hand back through the C API. Each entry
+    // is created with a single reference owned by this cache and released in
+    // the destructor below (a caller that wants one to outlive the loader
+    // must retain it first, exactly like every other borrowed tree handle).
+    std::vector<slang_syntax_tree> libraryMapTrees;
+
+    // The result of the last SourceLoader::loadSources() call (see
+    // slang_source_loader_load_sources / slang_source_loader_loaded_buffer_*).
+    // Each SourceBuffer's `data` points into storage owned by the source
+    // manager, so it stays valid for the lifetime of this handle without
+    // needing to be copied.
+    std::vector<slang::SourceBuffer> loadedBuffers;
+
+    ~slang_source_loader_t() {
+        for (auto tree : libraryMapTrees)
+            slang_syntax_tree_release(tree);
     }
 };
 

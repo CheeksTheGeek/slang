@@ -457,7 +457,14 @@ public:
     [[nodiscard]] Bag createParseOptionBag() const;
 
     /// Creates a compilation object from all of the current loaded state of the driver.
-    [[nodiscard]] std::unique_ptr<ast::Compilation> createCompilation();
+    /// @param extraFlags additional CompilationFlags to OR into the resulting
+    ///                   compilation's options beyond what the driver's own
+    ///                   configured options already specify (e.g. a caller that
+    ///                   needs CompilationFlags::DisableInstanceCaching to fully
+    ///                   totalize the design). Defaults to none, matching the
+    ///                   plain behavior of this method.
+    [[nodiscard]] std::unique_ptr<ast::Compilation> createCompilation(
+        bitmask<ast::CompilationFlags> extraFlags = {});
 
     /// Reports all parsing diagnostics found in all of the @a syntaxTrees
     /// @returns true on success and false if errors were encountered.

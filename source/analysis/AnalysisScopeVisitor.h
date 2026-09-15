@@ -116,10 +116,10 @@ struct AnalysisScopeVisitor {
     template<typename T>
         requires(IsAnyOf<T, ProceduralBlockSymbol, ContinuousAssignSymbol>)
     void visit(const T& symbol) {
-        result.procedures.emplace_back(manager.analyzeProcedure(context, symbol, parentProcedure));
-        manager.driverTracker.add(state.context, state.driverAlloc, result.procedures.back());
+        auto& proc = manager.emplaceProcedure(context, symbol, parentProcedure, result.procedures);
+        manager.driverTracker.add(state.context, state.driverAlloc, proc);
         for (auto& listener : manager.procListeners)
-            listener(result.procedures.back());
+            listener(proc);
     }
 
     void visit(const SubroutineSymbol& symbol) {

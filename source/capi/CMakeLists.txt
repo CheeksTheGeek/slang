@@ -34,6 +34,7 @@ add_library(
   CApiAnalysis.cpp
   CApiDataFlow.cpp
   CApiDriver.cpp
+  CApiScript.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/SyntaxCApi.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/DiagCApi.cpp)
 add_library(slang::slang_c ALIAS slang_c)

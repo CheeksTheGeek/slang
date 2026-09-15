@@ -17,11 +17,12 @@
 
 use core::cell::Cell;
 use core::ffi::c_void;
+use core::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use sv_lang_sys as sys;
 
-use crate::{Error, EvalSession, Expression, Symbol, ffi};
+use crate::{ConstantValue, Error, EvalSession, Expression, Statement, Symbol, ffi};
 
 /// The kind of a [`DfaEvent`].
 ///
@@ -105,6 +106,99 @@ pub trait Lattice: Clone {
 
     /// Applies a read/write/call event to the state.
     fn transfer(&mut self, event: DfaEvent<'_>);
+
+    /// Called when the analysis begins visiting a case statement, before any
+    /// of its branches (`slang::analysis::AbstractFlowAnalysis::
+    /// visitStmt(const CaseStatement&)`, exposed to pyslang's PyFlowAnalysis
+    /// as its `onCaseBegin` callback). The default implementation is a no-op.
+    fn on_case_begin(&mut self, _stmt: Statement<'_>, _ctx: &FlowContext<'_>) {}
+
+    /// Called when the analysis begins visiting a conditional (`if`/`else`)
+    /// statement, before its branches (exposed to pyslang's PyFlowAnalysis as
+    /// its `onConditionalBegin` callback). The default implementation is a
+    /// no-op.
+    fn on_conditional_begin(&mut self, _stmt: Statement<'_>, _ctx: &FlowContext<'_>) {}
+
+    /// Called when the analysis begins visiting any loop statement (`for`,
+    /// `while`, `do`-`while`, `forever`, `foreach`, `repeat`), before its
+    /// body (exposed to pyslang's PyFlowAnalysis as its `onLoopBegin`
+    /// callback). The default implementation is a no-op.
+    fn on_loop_begin(&mut self, _stmt: Statement<'_>, _ctx: &FlowContext<'_>) {}
+}
+
+/// Context handed to [`Lattice`]'s observer hooks (`on_case_begin`,
+/// `on_conditional_begin`, `on_loop_begin`): access to analysis-wide state
+/// that is not part of the statement being observed.
+///
+/// Valid only for the duration of the callback that received it — do not let
+/// it escape.
+pub struct FlowContext<'a> {
+    raw: sys::slang_dfa_ctx,
+    _marker: PhantomData<&'a ()>,
+}
+
+impl FlowContext<'_> {
+    /// True if the analysis has recorded an unrecoverable error — an
+    /// `InvalidStatement` or `InvalidExpression` was visited (`slang::
+    /// analysis::FlowAnalysisBase::bad`, exposed to pyslang as
+    /// `PyFlowAnalysis::isBad`).
+    ///
+    /// ```
+    /// use sv_lang::dataflow::{Lattice, DfaEvent, FlowContext};
+    /// #[derive(Clone)]
+    /// struct S;
+    /// impl Lattice for S {
+    ///     fn top() -> Self { S }
+    ///     fn join(&mut self, _other: &Self) {}
+    ///     fn transfer(&mut self, _ev: DfaEvent<'_>) {}
+    ///     fn on_loop_begin(&mut self, _stmt: sv_lang::Statement<'_>, ctx: &FlowContext<'_>) {
+    ///         let _ = ctx.is_bad(); // queryable from the hook
+    ///     }
+    /// }
+    /// ```
+    pub fn is_bad(&self) -> bool {
+        // SAFETY: `raw` is valid for the duration of this callback, which is
+        // exactly the lifetime of `self`.
+        unsafe { sys::slang_dfa_ctx_is_bad(self.raw) }
+    }
+
+    /// Evaluates `expr` to a constant value using the analysis's own
+    /// evaluation context (`slang::analysis::FlowAnalysisBase::
+    /// getEvalContext`, exposed to pyslang as `PyFlowAnalysis::getEvalCtx`)
+    /// — the same context slang uses for its own constant folding, e.g. to
+    /// determine whether a `for` loop's stop condition is statically known
+    /// so it can be unrolled. `None` if `expr` is not constant.
+    pub fn eval_constant(&self, expr: Expression<'_>) -> Option<ConstantValue> {
+        // SAFETY: `raw` is valid for the duration of this callback.
+        let ectx = unsafe { sys::slang_dfa_ctx_eval_context(self.raw) };
+        if ectx.is_null() {
+            return None;
+        }
+        let mut err = ffi::error();
+        // SAFETY: `ectx` is valid for the duration of this call; `expr`'s AST
+        // node is part of the same (frozen) design being analyzed.
+        let raw = unsafe { sys::slang_eval_ctx_evaluate(ectx, expr.raw(), &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: owned handle, free on error.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { ConstantValue::from_raw(raw) }
+    }
+
+    /// The opaque address of the current flow state
+    /// (`slang::analysis::AbstractFlowAnalysis::getState`, exposed to
+    /// pyslang as `PyFlowAnalysis::getCurrentState`). This is the SAME state
+    /// your [`Lattice`] methods already operate on as `&mut Self` — the
+    /// address is exposed only for identity (e.g. logging which state
+    /// instance a hook fired on); dereferencing it is not supported.
+    pub fn current_state_addr(&self) -> usize {
+        // SAFETY: `raw` is valid for the duration of this callback.
+        unsafe { sys::slang_dfa_ctx_state(self.raw) as usize }
+    }
 }
 
 // The state slang carries is a `Box<Option<L>>`: `None` marks a poisoned state
@@ -222,6 +316,64 @@ unsafe extern "C" fn transfer<L: Lattice>(
     }
 }
 
+// Shared body for the three statement-begin-hook trampolines: read the
+// current state through `ctx` (rather than a `state` parameter, since these
+// callbacks are not per-event), wrap `stmt`, and dispatch to `f`.
+unsafe fn stmt_hook<L: Lattice>(
+    user: *mut c_void,
+    dfa_ctx: sys::slang_dfa_ctx,
+    stmt: sys::slang_ast,
+    f: fn(&mut L, crate::Statement<'_>, &FlowContext<'_>),
+) {
+    // SAFETY: `user` is the &Ctx passed to slang_dfa_run.
+    let c = unsafe { ctx(user) };
+    // SAFETY: `dfa_ctx` is valid for the duration of this callback.
+    let state_ptr = unsafe { sys::slang_dfa_ctx_state(dfa_ctx) };
+    if state_ptr.is_null() {
+        return;
+    }
+    // SAFETY: `state_ptr` is a Box<State<L>> we created.
+    let s = unsafe { &mut *(state_ptr as *mut State<L>) };
+    let Some(l) = s.as_mut() else { return };
+    let Some(stmt) = crate::ast::statement_opt_from_raw(stmt) else {
+        return;
+    };
+    let flow_ctx = FlowContext {
+        raw: dfa_ctx,
+        _marker: PhantomData,
+    };
+    if catch_unwind(AssertUnwindSafe(|| f(l, stmt, &flow_ctx))).is_err() {
+        c.poison();
+    }
+}
+
+unsafe extern "C" fn on_case_begin<L: Lattice>(
+    user: *mut c_void,
+    dfa_ctx: sys::slang_dfa_ctx,
+    stmt: sys::slang_ast,
+) {
+    // SAFETY: forwards the raw pointers from slang_dfa_run unchanged.
+    unsafe { stmt_hook::<L>(user, dfa_ctx, stmt, L::on_case_begin) };
+}
+
+unsafe extern "C" fn on_conditional_begin<L: Lattice>(
+    user: *mut c_void,
+    dfa_ctx: sys::slang_dfa_ctx,
+    stmt: sys::slang_ast,
+) {
+    // SAFETY: forwards the raw pointers from slang_dfa_run unchanged.
+    unsafe { stmt_hook::<L>(user, dfa_ctx, stmt, L::on_conditional_begin) };
+}
+
+unsafe extern "C" fn on_loop_begin<L: Lattice>(
+    user: *mut c_void,
+    dfa_ctx: sys::slang_dfa_ctx,
+    stmt: sys::slang_ast,
+) {
+    // SAFETY: forwards the raw pointers from slang_dfa_run unchanged.
+    unsafe { stmt_hook::<L>(user, dfa_ctx, stmt, L::on_loop_begin) };
+}
+
 unsafe extern "C" fn drop_state<L: Lattice>(user: *mut c_void, state: *mut c_void) {
     // SAFETY: reclaim the Box<State<L>> we created.
     let boxed = unsafe { Box::from_raw(state as *mut State<L>) };
@@ -302,6 +454,9 @@ impl<'d> EvalSession<'d> {
             meet: Some(meet::<L>),
             transfer: Some(transfer::<L>),
             drop: Some(drop_state::<L>),
+            on_case_begin: Some(on_case_begin::<L>),
+            on_conditional_begin: Some(on_conditional_begin::<L>),
+            on_loop_begin: Some(on_loop_begin::<L>),
         };
         let mut err = ffi::error();
         // SAFETY: the compilation and procedure are valid; the lattice callbacks

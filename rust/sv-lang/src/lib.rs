@@ -46,17 +46,40 @@ pub mod dataflow;
 mod driver;
 mod error;
 mod ffi;
+mod script;
 mod syntax;
+mod system_subroutine_kinds;
 
 pub use ast::{
-    Analysis, AnalysisFlags, AnalysisListener, AnalyzedProcedure, BinaryOp, Compilation,
-    CompileErrors, DefinitionKind, Design, DriverKind, EvalSession, Expression, FreezeReport,
-    IntoOwned, Options, OwnedExpression, OwnedStatement, OwnedSymbol, OwnedType, SemNode,
-    Statement, Symbol, SymbolId, Type, UnaryOp,
+    Analysis, AnalysisFlags, AnalysisListener, AnalyzedAssertion, AnalyzedProcedure,
+    AnonymousTypeStyle, ArgumentDirection, AssertionInstanceArg, AssertionKind, BinaryOp,
+    CallExtraKind, CaseItem, CaseStatementCondition, ChargeStrength, CheckerConnection,
+    ClockingSkew, Compilation, CompilationId, CompilationOptions, CompileErrors, Condition,
+    ConfigRule, ConstantRange, ConstraintBlockFlags, CoverageBinKind, CoverageOption,
+    DefinitionKind, DefinitionLookupResult, Design, DimensionKind, DistItem, DistWeight,
+    DistWeightKind, DpiExport, DriveStrength, DriveStrengthPair, DriverKind, DriverSource,
+    EdgeKind, ElabSystemTaskKind, EvalSession, EvaluatedDimension, ExpansionHint, ExprCondition,
+    Expression, ExternImpl, FloatKind, ForwardTypeRestriction, FreezeReport, GenerateBranchKind,
+    ImplicitEventReadSet, IndexSetter, IntegralFlags, IntoOwned, LValue, LookupLocation,
+    LookupResult, LookupResultFlags, LookupSelector, LoopDim, MemberSetter, MethodFlags, NetKind,
+    NetTypeKind, Options, OwnedExpression, OwnedStatement, OwnedSymbol, OwnedType, Pattern,
+    PatternCaseItem, PredefinedIntegerKind, PrimitiveKind, PrimitivePortDirection,
+    ProceduralBlockKind, PulseStyleKind, RandCaseItem, RandMode, RandSeqProd, RandSeqProdKind,
+    RawDiagnostics, RawDriverFlags, ReadRange, RepeatKind, ScalarKind, SemNode, SensitivityKind,
+    SensitivityList, SourceLibrary, SourceLoc, SourceSpan, Statement, StatementBlockKind,
+    StatementEvalResult, StreamExpr, Symbol, SymbolId, SystemMethod, SystemTimingCheckArg,
+    SystemTimingCheckKind, TimeScale, TimeScaleValue, TimeUnit, TimingPathConnectionKind,
+    TimingPathPolarity, TransRange, TransSet, Type, TypePrinter, TypePrintingOptions, TypeSetter,
+    UnaryOp, UnconnectedDrive, UnfreezeGuard, UniquePriorityCheck, ValueDriver, ValuePath,
+    VariableFlags, VariableLifetime, Visibility, WithClauseMode,
 };
-pub use constant::{Bit, ConstantValue, SVInt};
-pub use driver::Driver;
+pub use constant::{Bit, ConstantValue, Digit, LiteralBase, OwnedSVInt, SVInt};
+pub use driver::{
+    AnalysisOptions, CommandFileMetadata, DiagEngine, Driver, DriverAnalysis, LoadedSourceBuffer,
+    OptionKind, ParseOptions, PreprocessFlags, SourceLoader, SourceOptions, TextDiagClient,
+};
 pub use error::{Diagnostic, Diagnostics, Error};
+pub use script::{ScriptCompilation, ScriptSession};
 /// Typed views of every slang syntax node, generated from slang's schema.
 pub use syntax::nodes;
 /// A generated `syn::visit`-style visitor over the typed syntax tree.
@@ -65,6 +88,7 @@ pub use syntax::{
     AstNode, Child, Descendants, Node, SeparatedList, SyntaxList, SyntaxTree, Token, TokenList,
     Walk,
 };
+pub use system_subroutine_kinds::{KnownSystemName, SubroutineKind};
 
 /// Re-export of the kind enumerations.
 pub use sv_lang_kinds as kinds;
@@ -184,6 +208,25 @@ impl Default for Session {
         Self::new()
     }
 }
+
+impl core::fmt::Debug for Session {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Session")
+            .field("source_manager", &self.inner.sm)
+            .finish()
+    }
+}
+
+/// Two sessions are equal iff they share the same underlying source manager
+/// (e.g. one obtained via [`Compilation::source_manager`](crate::Compilation::source_manager)
+/// pointing back at the session it was built from), not merely equal content.
+impl PartialEq for Session {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.sm == other.inner.sm
+    }
+}
+
+impl Eq for Session {}
 
 /// Verifies, once per process, that the linked slang-c library matches what
 /// these bindings were generated and reasoned about: built with assertions on

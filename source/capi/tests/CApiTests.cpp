@@ -576,6 +576,7 @@ endmodule
     REQUIRE(slang_analysis_driver(analysis, driven, 0, &info));
     CHECK(slang_source_manager_line(s.sm, info.range.start) >= 1);
     CHECK(!slang_ast_is_null(info.containing_symbol));
+    CHECK(info.kind == SLANG_DRIVER_PROCEDURAL);
 
     auto o = slang_scope_find(body, "o", 1, &s.err);
     REQUIRE(slang_analysis_driver_count(analysis, o) >= 1);

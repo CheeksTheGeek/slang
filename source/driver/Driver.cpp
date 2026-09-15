@@ -1282,7 +1282,7 @@ analysis::AnalysisOptions Driver::getAnalysisOptions() const {
     return ao;
 }
 
-std::unique_ptr<Compilation> Driver::createCompilation() {
+std::unique_ptr<Compilation> Driver::createCompilation(bitmask<CompilationFlags> extraFlags) {
     SourceLibrary* defaultLib;
     if (options.defaultLibName && !options.defaultLibName->empty())
         defaultLib = sourceLoader.getOrAddLibrary(*options.defaultLibName);
@@ -1292,7 +1292,14 @@ std::unique_ptr<Compilation> Driver::createCompilation() {
     SLANG_ASSERT(defaultLib);
     defaultLib->isDefault = true;
 
-    auto compilation = std::make_unique<Compilation>(createOptionBag(), defaultLib);
+    Bag bag = createOptionBag();
+    if (extraFlags) {
+        auto compOpts = bag.getOrDefault<CompilationOptions>();
+        compOpts.flags |= extraFlags;
+        bag.set(compOpts);
+    }
+
+    auto compilation = std::make_unique<Compilation>(bag, defaultLib);
     for (auto& tree : sourceLoader.getLibraryMaps())
         compilation->addSyntaxTree(tree);
     for (auto& tree : syntaxTrees)

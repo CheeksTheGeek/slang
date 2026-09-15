@@ -49,7 +49,14 @@ static void w_drop(void* user, void* state) {
 
 __attribute__((export_name("slang_wasm_dfa_run"))) void* slang_wasm_dfa_run(
     slang_compilation comp, slang_ast procedure, void* user, slang_error* err) {
-    slang_dfa_lattice lat;
+    /* Zero-initialize so the observer hooks (on_case_begin / on_conditional_begin
+     * / on_loop_begin) are null. slang null-checks each before calling, so null
+     * means "skip" — exactly matching a native Lattice's default no-op observers.
+     * WasmLattice exposes no observer methods, so there is nothing to forward
+     * them to; leaving them as uninitialized stack garbage made slang indirect-
+     * call a bogus table slot ("undefined element") on any design with an
+     * if/case/loop. */
+    slang_dfa_lattice lat = {0};
     lat.top = w_top;
     lat.bottom = w_bottom;
     lat.clone = w_clone;

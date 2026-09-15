@@ -221,8 +221,17 @@ private:
     void analyzeCheckerInstance(const ast::CheckerInstanceSymbol& symbol,
                                 const AnalyzedProcedure& parentProcedure);
 
-    AnalyzedProcedure analyzeProcedure(AnalysisContext& context, const ast::Symbol& symbol,
-                                       const AnalyzedProcedure* parentProcedure = nullptr);
+    // Analyzes `symbol` as a procedure and constructs the result directly in
+    // its final slot at the end of `dest` (returning a reference to it),
+    // rather than building a temporary AnalyzedProcedure and moving/emplacing
+    // that afterward. This matters because AnalyzedProcedure's constructor can
+    // itself register concurrent assertions that capture a pointer back to
+    // `*this` (AnalyzedAssertion::procedure); that pointer must already be the
+    // procedure's FINAL, stable address, or it dangles the moment an
+    // intermediate temporary goes out of scope.
+    AnalyzedProcedure& emplaceProcedure(AnalysisContext& context, const ast::Symbol& symbol,
+                                        const AnalyzedProcedure* parentProcedure,
+                                        std::vector<AnalyzedProcedure>& dest);
     const AnalyzedProcedure& analyzeSubroutine(AnalysisContext& context,
                                                const ast::SubroutineSymbol& symbol,
                                                const AnalyzedProcedure* parentProcedure = nullptr);

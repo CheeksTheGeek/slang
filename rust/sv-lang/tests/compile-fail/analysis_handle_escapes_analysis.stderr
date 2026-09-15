@@ -1,0 +1,11 @@
+error[E0597]: `a` does not live long enough
+  --> tests/compile-fail/analysis_handle_escapes_analysis.rs:22:9
+   |
+20 |     let d = {
+   |         - borrow later stored here
+21 |         let a = design.analyze(AnalysisFlags::NONE, 1).unwrap();
+   |             - binding `a` declared here
+22 |         a.driver_handles(z).next().unwrap()
+   |         ^ borrowed value does not live long enough
+23 |     };
+   |     - `a` dropped here while still borrowed

@@ -399,18 +399,27 @@ void AnalysisManager::addScopeResult(const Scope& scope, const AnalyzedScope& re
         listener(result);
 }
 
-AnalyzedProcedure AnalysisManager::analyzeProcedure(AnalysisContext& context, const Symbol& symbol,
-                                                    const AnalyzedProcedure* parentProcedure) {
-    if (customDFAProvider)
-        return customDFAProvider(context, symbol, parentProcedure);
+AnalyzedProcedure& AnalysisManager::emplaceProcedure(AnalysisContext& context, const Symbol& symbol,
+                                                     const AnalyzedProcedure* parentProcedure,
+                                                     std::vector<AnalyzedProcedure>& dest) {
+    if (customDFAProvider) {
+        // The provider's own signature returns an AnalyzedProcedure by value,
+        // so this still incurs one intermediate move (a narrower, pre-existing
+        // limitation of that extensibility point, which cannot be handed a
+        // destination to construct into directly).
+        return dest.emplace_back(customDFAProvider(context, symbol, parentProcedure));
+    }
 
     DefaultDFA dfa(context, symbol, true);
     dfa.run();
 
+    // Forward the *real* constructor arguments into their final slot instead
+    // of building a temporary AnalyzedProcedure and then moving/emplacing that
+    // — see the comment on the declaration for why (assertion analysis run by
+    // the 4-arg constructor captures `this`, which must already be stable).
     if (dfa.bad)
-        return AnalyzedProcedure(symbol, parentProcedure);
-    else
-        return AnalyzedProcedure(context, symbol, parentProcedure, dfa);
+        return dest.emplace_back(symbol, parentProcedure);
+    return dest.emplace_back(context, symbol, parentProcedure, dfa);
 }
 
 const AnalyzedProcedure& AnalysisManager::analyzeSubroutine(
@@ -420,8 +429,26 @@ const AnalyzedProcedure& AnalysisManager::analyzeSubroutine(
     if (auto result = getAnalyzedSubroutine(symbol))
         return *result;
 
-    auto proc = std::make_unique<AnalyzedProcedure>(
-        analyzeProcedure(context, symbol, parentProcedure));
+    std::unique_ptr<AnalyzedProcedure> proc;
+    if (customDFAProvider) {
+        // See the comment in emplaceProcedure: the provider's return-by-value
+        // signature keeps this one pre-existing intermediate move.
+        proc = std::make_unique<AnalyzedProcedure>(
+            customDFAProvider(context, symbol, parentProcedure));
+    }
+    else {
+        DefaultDFA dfa(context, symbol, true);
+        dfa.run();
+
+        // As in emplaceProcedure, construct the heap object directly from the
+        // real constructor arguments rather than moving a pre-built value into
+        // it, so any assertions analyzed inside the constructor capture this
+        // (permanent, heap-owned) address.
+        if (dfa.bad)
+            proc = std::make_unique<AnalyzedProcedure>(symbol, parentProcedure);
+        else
+            proc = std::make_unique<AnalyzedProcedure>(context, symbol, parentProcedure, dfa);
+    }
 
     const AnalyzedProcedure* result = nullptr;
     auto updater = [&result](auto& item) { result = item.second.get(); };

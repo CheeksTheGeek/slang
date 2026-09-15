@@ -21,7 +21,7 @@
 use core::marker::PhantomData;
 use std::sync::Arc;
 
-use sv_lang_kinds::{ExpressionKind, SymbolKind};
+use sv_lang_kinds::{ExpressionKind, SymbolKind, SyntaxKind};
 use sv_lang_sys as sys;
 
 use crate::{Diagnostic, Diagnostics, Error, Session, SyntaxTree, ffi, syntax::Node};
@@ -132,6 +132,50 @@ impl Compilation {
         })
     }
 
+    /// The raw handle, for passing to a C accessor that takes a `slang_compilation`.
+    pub(crate) fn raw(&self) -> sys::slang_compilation {
+        self.raw
+    }
+
+    /// The session this compilation was built with, for a caller (elsewhere
+    /// in the crate) that needs its raw source manager (e.g. to resolve
+    /// diagnostic locations from a driver-run analysis over this compilation).
+    pub(crate) fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// The source manager backing this compilation
+    /// (`slang_compilation_source_manager`), as a [`Session`] — the same one
+    /// this compilation was built from ([`new`](Self::new) and
+    /// [`new_with`](Self::new_with) both borrow it in), but obtained from the
+    /// compilation itself rather than a `Session` kept alongside it — unlike
+    /// [`Design`], which is always produced by consuming a `Compilation` and
+    /// so can just hand back the same session directly
+    /// ([`Design::session`]), a bare `Compilation` has no such public
+    /// accessor otherwise. Useful for code that only has a `&Compilation`
+    /// and needs a session to e.g. parse another tree into the same source
+    /// space.
+    ///
+    /// The manager is adopted from the first tree [`add`](Self::add)ed (every
+    /// tree in a compilation must share one), so on an empty compilation this
+    /// returns a [`Session`] wrapping a null manager, unequal to any real
+    /// session — add a tree first.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let session = sv_lang::Session::new();
+    /// let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source("module m; endmodule\n")?;
+    /// assert_eq!(comp.source_manager(), session);
+    /// # Ok(()) }
+    /// ```
+    pub fn source_manager(&self) -> Session {
+        // SAFETY: `self.raw` is a valid, live compilation.
+        let sm = unsafe { sys::slang_compilation_source_manager(self.raw) };
+        Session::from_borrowed(sm, Arc::new(self.session.clone()))
+    }
+
     /// Adds a syntax tree. Fails if the tree came from a different session, or
     /// if the compilation has already been finalized.
     ///
@@ -170,6 +214,21 @@ impl Compilation {
     pub fn add_source(&mut self, text: &str) -> Result<(), Error> {
         let tree = self.session.parse(text)?;
         self.add(&tree)
+    }
+
+    /// Merges externally-produced diagnostics — typically another design's
+    /// [`raw_diagnostics`](Design::raw_diagnostics) — into this compilation's
+    /// own diagnostic list. The diagnostics being merged must have been
+    /// reported against a symbol (i.e. be semantic, not parse, diagnostics).
+    ///
+    /// # Examples
+    /// (see [`Design::raw_diagnostics`])
+    pub fn add_diagnostics(&mut self, diags: &RawDiagnostics) -> Result<(), Error> {
+        let mut err = ffi::error();
+        // SAFETY: both handles are valid (or `diags.raw` is null, which the C
+        // side rejects as an invalid argument); out-error checked.
+        unsafe { sys::slang_compilation_add_diagnostics(self.raw, diags.raw, &mut err) };
+        ffi::check(&err)
     }
 
     /// Finalizes, fully elaborates, constant-folds and seals the compilation,
@@ -309,6 +368,17 @@ impl FreezeReport {
     }
 }
 
+/// An opaque, comparable identity for a [`Design`]'s underlying compilation
+/// (`slang::ast::Compilation`). Two ids compare equal iff they were read
+/// from the same design — see [`Design::compilation_id`] and
+/// [`Symbol::compilation`] (`slang::ast::Scope::getCompilation`), which is
+/// where a scope's id comes from. Carries no lifetime brand of its own (it
+/// is just an address, never dereferenced), so it can be stored and compared
+/// after the design it names is gone; it must not be used for anything but
+/// equality.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct CompilationId(usize);
+
 /// A finalized, fully elaborated and sealed design. `Send + Sync`: every read
 /// accessor is a genuine read of the frozen arena, so a design may be
 /// traversed from any number of threads concurrently. Cloning is a cheap
@@ -392,6 +462,124 @@ impl Design {
         self.inner.raw
     }
 
+    /// True once the design has been compiled (via [`root`](Self::root) or
+    /// [`diagnostics`](Self::diagnostics)) and can no longer accept new
+    /// syntax trees. A [`Design`] is always finalized — it is the result of
+    /// [`Compilation::compile`]. A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert!(design.is_finalized());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_finalized(&self) -> bool {
+        // SAFETY: the compilation is valid.
+        unsafe { sys::slang_compilation_is_finalized(self.raw()) }
+    }
+
+    /// True once the design has been elaborated such that the AST is fully
+    /// resolved and every symbol has been created — distinct from
+    /// [`is_finalized`](Self::is_finalized), which only means syntax trees
+    /// were added. A [`Design`] is always elaborated: [`Compilation::compile`]
+    /// forces it. A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert!(design.is_elaborated());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_elaborated(&self) -> bool {
+        // SAFETY: the compilation is valid.
+        unsafe { sys::slang_compilation_is_elaborated(self.raw()) }
+    }
+
+    /// True if any errors were issued on any scope within this compilation.
+    /// A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; assign x = missing; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert!(design.has_issued_errors());
+    ///
+    /// # let mut comp2 = sv_lang::Compilation::new(&session)?;
+    /// # comp2.add_source("module n; endmodule\n")?;
+    /// # let clean = comp2.compile()?;
+    /// assert!(!clean.has_issued_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn has_issued_errors(&self) -> bool {
+        // SAFETY: the compilation is valid.
+        unsafe { sys::slang_compilation_has_issued_errors(self.raw()) }
+    }
+
+    /// True if there were any fatal errors, or the configured error limit was
+    /// hit and elaboration stopped early because of it. A pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.has_fatal_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn has_fatal_errors(&self) -> bool {
+        // SAFETY: the compilation is valid.
+        unsafe { sys::slang_compilation_has_fatal_errors(self.raw()) }
+    }
+
+    /// The syntax trees added to this design (see [`Compilation::add`] /
+    /// [`Compilation::add_source`]), in the order they were added.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let session = sv_lang::Session::new();
+    /// let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source("module a; endmodule\n")?;
+    /// comp.add_source("module b; endmodule\n")?;
+    /// let design = comp.compile()?;
+    /// let trees = design.syntax_trees();
+    /// assert_eq!(trees.len(), 2);
+    /// assert_eq!(trees[0].module_names().collect::<Vec<_>>(), ["a"]);
+    /// assert_eq!(trees[1].module_names().collect::<Vec<_>>(), ["b"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn syntax_trees(&self) -> Vec<SyntaxTree> {
+        // SAFETY: the compilation is valid.
+        let count = unsafe { sys::slang_compilation_syntax_tree_count(self.raw()) };
+        (0..count)
+            .filter_map(|i| {
+                // SAFETY: index is in range.
+                let raw = unsafe { sys::slang_compilation_syntax_tree_at(self.raw(), i) };
+                (!raw.is_null()).then(|| {
+                    // The compilation owns the tree; retain it for our handle
+                    // so it is not freed while we hold it.
+                    // SAFETY: `raw` is a valid tree handle.
+                    unsafe { sys::slang_syntax_tree_retain(raw) };
+                    SyntaxTree::from_raw(raw, self.inner.session.clone())
+                })
+            })
+            .collect()
+    }
+
     /// The root symbol of the design.
     ///
     /// # Examples
@@ -411,6 +599,70 @@ impl Design {
         // SAFETY: the compilation is valid.
         let ast = unsafe { sys::slang_compilation_root(self.raw(), &mut err) };
         Symbol::from_raw(ast)
+    }
+
+    /// An opaque, comparable identity for this design's underlying
+    /// compilation — the same identity [`Symbol::compilation`]
+    /// (`slang::ast::Scope::getCompilation`) returns for any scope reached
+    /// through this design. A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert_eq!(design.compilation_id(), design.compilation_id());
+    /// # Ok(()) }
+    /// ```
+    pub fn compilation_id(&self) -> CompilationId {
+        CompilationId(self.raw() as usize)
+    }
+
+    /// The [`LookupLocation`] that compares after every other location in
+    /// the same scope (`slang::ast::LookupLocation::max`) — what a normal
+    /// (declaration-order-insensitive) name lookup uses.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let a = design.top_instances().next().unwrap().instance_body().unwrap().find("a").unwrap();
+    /// assert!(a.lookup_location_after().index() < design.lookup_location_max().index());
+    /// # Ok(()) }
+    /// ```
+    pub fn lookup_location_max(&self) -> LookupLocation<'_> {
+        LookupLocation {
+            // SAFETY: the compilation is valid.
+            raw: unsafe { sys::slang_lookup_location_max(self.raw()) },
+            _design: PhantomData,
+        }
+    }
+
+    /// The [`LookupLocation`] that compares before every other location in
+    /// the same scope (`slang::ast::LookupLocation::min`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let a = design.top_instances().next().unwrap().instance_body().unwrap().find("a").unwrap();
+    /// assert!(design.lookup_location_min().index() < a.lookup_location_after().index());
+    /// # Ok(()) }
+    /// ```
+    pub fn lookup_location_min(&self) -> LookupLocation<'_> {
+        LookupLocation {
+            // SAFETY: the compilation is valid.
+            raw: unsafe { sys::slang_lookup_location_min(self.raw()) },
+            _design: PhantomData,
+        }
     }
 
     /// The top-level module/program instances.
@@ -506,6 +758,953 @@ impl Design {
         crate::collect_diagnostics(self.inner.session.raw(), diags)
     }
 
+    /// The design's diagnostics (parse and semantic), in the raw form
+    /// [`Compilation::add_diagnostics`] accepts — for merging into a
+    /// *different* compilation rather than reading directly (use
+    /// [`diagnostics`](Self::diagnostics) for that). Unlike the materialized
+    /// [`Diagnostics`], the returned value borrows the symbols the
+    /// diagnostics were reported against, so this design must stay alive for
+    /// as long as it (and anything built by merging it elsewhere) is used.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let session_a = sv_lang::Session::new();
+    /// let mut comp_a = sv_lang::Compilation::new(&session_a)?;
+    /// comp_a.add_source("module m; logic x; initial x = undefined_thing; endmodule\n")?;
+    /// let design_a = comp_a.compile()?;
+    /// assert!(design_a.diagnostics().has_errors());
+    ///
+    /// // A second, otherwise-clean compilation absorbs design_a's diagnostics.
+    /// let session_b = sv_lang::Session::new();
+    /// let mut comp_b = sv_lang::Compilation::new(&session_b)?;
+    /// comp_b.add_source("module n; endmodule\n")?;
+    /// comp_b.add_diagnostics(&design_a.raw_diagnostics())?;
+    /// let design_b = comp_b.compile()?;
+    /// assert!(design_b.diagnostics().has_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn raw_diagnostics(&self) -> RawDiagnostics {
+        let mut err = ffi::error();
+        // SAFETY: the compilation is valid.
+        let diags = unsafe { sys::slang_compilation_diagnostics(self.raw(), &mut err) };
+        RawDiagnostics { raw: diags }
+    }
+
+    /// The compilation's built-in 2-state `bit` type. Set at construction —
+    /// never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let bit = design.bit_type();
+    /// assert!(bit.is_integral());
+    /// assert_eq!(bit.bit_width(), 1);
+    /// assert!(!bit.is_four_state());
+    /// # Ok(()) }
+    /// ```
+    pub fn bit_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; the built-in type is set at
+        // construction and is never null.
+        let ast = unsafe { sys::slang_compilation_get_bit_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in 2-state `byte` type. Set at construction —
+    /// never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let byte = design.byte_type();
+    /// assert!(byte.is_integral());
+    /// assert_eq!(byte.bit_width(), 8);
+    /// assert!(!byte.is_four_state());
+    /// # Ok(()) }
+    /// ```
+    pub fn byte_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_byte_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation units (one per syntax tree) added to this design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert_eq!(design.compilation_units().count(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn compilation_units(&self) -> impl Iterator<Item = Symbol<'_>> {
+        // SAFETY: the compilation is valid.
+        let count = unsafe { sys::slang_compilation_unit_count(self.raw()) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: the compilation is valid; index is in range.
+            let ast = unsafe { sys::slang_compilation_unit_at(self.raw(), i) };
+            wrap(ast)
+        })
+    }
+
+    /// Gets the compilation-unit symbol for the given compilation-unit syntax
+    /// node — the root of one of this design's trees (see [`SyntaxTree::root`]).
+    /// `None` if `node` is not such a root, or belongs to a different design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let session = sv_lang::Session::new();
+    /// let tree = session.parse("module m; endmodule\n")?;
+    /// let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add(&tree)?;
+    /// let design = comp.compile()?;
+    /// let unit = design.compilation_unit_for_syntax(tree.root()).unwrap();
+    /// assert!(design.compilation_units().any(|u| u.id() == unit.id()));
+    /// # Ok(()) }
+    /// ```
+    pub fn compilation_unit_for_syntax(&self, node: Node<'_>) -> Option<Symbol<'_>> {
+        // SAFETY: the compilation is valid; `node` is a valid cursor into some
+        // syntax tree (its own lifetime brand proves that).
+        let ast = unsafe { sys::slang_compilation_unit_for_syntax(self.raw(), node.raw()) };
+        wrap(ast)
+    }
+
+    /// Creates a new compilation unit that can be modified dynamically —
+    /// useful for runtime scripting scenarios (mirrors slang's
+    /// `ScriptSession`). This allocates into the arena, so it requires
+    /// exclusive (`&mut`) access to the design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let scope = design.create_script_scope()?;
+    /// assert!(scope.is_scope());
+    /// // It is a fresh, empty scope added under the design root...
+    /// assert_eq!(scope.members().count(), 0);
+    /// assert!(scope.parent().is_some());
+    /// // ...distinct from the (unrelated) per-tree compilation units.
+    /// assert_eq!(design.compilation_units().count(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn create_script_scope(&mut self) -> Result<Symbol<'_>, Error> {
+        let mut err = ffi::error();
+        // SAFETY: we hold exclusive access (`&mut self`); out-error checked.
+        let ast = unsafe { sys::slang_compilation_create_script_scope(self.raw(), &mut err) };
+        ffi::check(&err)?;
+        Ok(Symbol::from_raw(ast))
+    }
+
+    /// Parses `name` as a hierarchical/scoped name — mostly for testing and
+    /// API convenience; normal compilation never does this. Returns an error
+    /// (mirroring slang's own exception) if `name` fails to parse cleanly.
+    /// Requires that a syntax tree has already been added to the compilation
+    /// (so it has a source manager). This allocates into the arena, so it
+    /// requires exclusive (`&mut`) access, exactly like
+    /// [`create_script_scope`](Self::create_script_scope).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let name = design.parse_name("foo.bar")?;
+    /// assert_eq!(name.text(), "foo.bar");
+    ///
+    /// assert!(design.parse_name("###not a name###").is_err());
+    /// # Ok(()) }
+    /// ```
+    pub fn parse_name(&mut self, name: &str) -> Result<ParsedName<'_>, Error> {
+        let (n, nl) = ffi::as_ptr_len(name);
+        let mut err = ffi::error();
+        // SAFETY: we hold exclusive access (`&mut self`); out-error checked.
+        let node = unsafe { sys::slang_compilation_parse_name(self.raw(), n, nl, &mut err) };
+        ffi::check(&err)?;
+        Ok(ParsedName {
+            raw: node,
+            _design: PhantomData,
+        })
+    }
+
+    /// Parses `name` as a hierarchical/scoped name, like
+    /// [`parse_name`](Self::parse_name), but never fails: diagnostics from a
+    /// malformed name are collected into the returned [`Diagnostics`]
+    /// instead. Requires that a syntax tree has already been added to the
+    /// compilation. This allocates into the arena, so it requires exclusive
+    /// (`&mut`) access, exactly like
+    /// [`create_script_scope`](Self::create_script_scope).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let (name, diags) = design.try_parse_name("foo.bar");
+    /// assert!(!diags.has_errors());
+    /// assert_eq!(name.text(), "foo.bar");
+    ///
+    /// let (_bad, diags) = design.try_parse_name("###not a name###");
+    /// assert!(diags.has_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn try_parse_name(&mut self, name: &str) -> (ParsedName<'_>, Diagnostics) {
+        let (n, nl) = ffi::as_ptr_len(name);
+        let mut err = ffi::error();
+        let mut diags_out: sys::slang_diagnostics = core::ptr::null_mut();
+        // SAFETY: we hold exclusive access (`&mut self`); `diags_out` is a
+        // valid out-pointer; out-error checked (this call never fails).
+        let node = unsafe {
+            sys::slang_compilation_try_parse_name(self.raw(), n, nl, &mut diags_out, &mut err)
+        };
+        let diags = if diags_out.is_null() {
+            Diagnostics::default()
+        } else {
+            crate::collect_diagnostics(self.inner.session.raw(), diags_out)
+        };
+        (
+            ParsedName {
+                raw: node,
+                _design: PhantomData,
+            },
+            diags,
+        )
+    }
+
+    /// The DPI export directives (`export "DPI-C" function/task ...;`)
+    /// collected during elaboration.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source(
+    ///     "module m; function int f(); return 1; endfunction \
+    ///      export \"DPI-C\" my_f = function f; endmodule\n",
+    /// )?;
+    /// # let design = comp.compile()?;
+    /// let exports: Vec<_> = design.dpi_exports().collect();
+    /// assert_eq!(exports.len(), 1);
+    /// assert_eq!(exports[0].c_identifier(), "my_f");
+    /// assert_eq!(exports[0].subroutine().name(), "f");
+    /// # Ok(()) }
+    /// ```
+    pub fn dpi_exports(&self) -> impl Iterator<Item = DpiExport<'_>> + '_ {
+        // SAFETY: the compilation is valid.
+        let count = unsafe { sys::slang_compilation_dpi_export_count(self.raw()) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: the compilation is valid; index is in range.
+            let raw = unsafe { sys::slang_compilation_dpi_export(self.raw(), i) };
+            // SAFETY: `raw` came from the call directly above.
+            let is_null = unsafe { sys::slang_dpi_export_is_null(raw) };
+            (!is_null).then_some(DpiExport {
+                raw,
+                _design: PhantomData,
+            })
+        })
+    }
+
+    /// Looks up the definition (module/interface/program) named `name` as
+    /// visible from `scope` (a scope symbol, e.g. an instance body), taking
+    /// nested definitions and any `config` block that applies to `scope` into
+    /// account. Never issues a diagnostic when nothing is found. A pure read
+    /// of already-elaborated state.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source("module leaf; endmodule\nmodule top; leaf l(); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top_body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let found = design.try_get_definition("leaf", top_body);
+    /// assert_eq!(found.definition().unwrap().name(), "leaf");
+    /// assert!(found.config_root().is_none());
+    /// assert!(found.config_rule().is_none());
+    ///
+    /// let missing = design.try_get_definition("does_not_exist", top_body);
+    /// assert!(missing.definition().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn try_get_definition(&self, name: &str, scope: Symbol<'_>) -> DefinitionLookupResult<'_> {
+        let (n, nl) = ffi::as_ptr_len(name);
+        // SAFETY: the compilation is valid; `scope` is a valid symbol handle.
+        let raw =
+            unsafe { sys::slang_compilation_try_get_definition(self.raw(), n, nl, scope.raw) };
+        DefinitionLookupResult {
+            raw,
+            _design: PhantomData,
+        }
+    }
+
+    /// Looks up a system method for the given type-symbol kind (e.g. the
+    /// kind of a `QueueType` or `DynamicArrayType` symbol) and name (e.g.
+    /// `"push_back"`, `"size"`, `"num"`). `None` if no such method is
+    /// registered. A pure hash-map read of a table built at construction.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang_kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let push_back = design.get_system_method(SymbolKind::QueueType, "push_back").unwrap();
+    /// assert_eq!(push_back.name(), "push_back");
+    /// assert!(!push_back.is_task());
+    ///
+    /// // Right name, wrong receiver kind.
+    /// assert!(design.get_system_method(SymbolKind::EnumType, "push_back").is_none());
+    /// // Right kind, no such method.
+    /// assert!(design.get_system_method(SymbolKind::QueueType, "no_such_method").is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn get_system_method(&self, type_kind: SymbolKind, name: &str) -> Option<SystemMethod<'_>> {
+        let (n, nl) = ffi::as_ptr_len(name);
+        // SAFETY: the compilation is valid.
+        let raw = unsafe {
+            sys::slang_compilation_get_system_method(self.raw(), type_kind.as_raw() as u32, n, nl)
+        };
+        (!raw.is_null()).then_some(SystemMethod {
+            raw,
+            _design: PhantomData,
+        })
+    }
+
+    /// The compilation's built-in `int` type (a 2-state, signed, 32-bit
+    /// integer). Set at construction — never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.int_type();
+    /// assert!(t.is_integral());
+    /// assert!(t.is_signed());
+    /// assert_eq!(t.bit_width(), 32);
+    /// assert!(!t.is_four_state());
+    /// # Ok(()) }
+    /// ```
+    pub fn int_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_int_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in `integer` type (a 4-state, signed, 32-bit
+    /// integer). Set at construction — never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.integer_type();
+    /// assert!(t.is_integral());
+    /// assert!(t.is_signed());
+    /// assert_eq!(t.bit_width(), 32);
+    /// assert!(t.is_four_state());
+    /// # Ok(()) }
+    /// ```
+    pub fn integer_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_integer_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in `logic` type (a 4-state, 1-bit value).
+    /// Set at construction — never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.logic_type();
+    /// assert!(t.is_integral());
+    /// assert_eq!(t.bit_width(), 1);
+    /// assert!(t.is_four_state());
+    /// # Ok(()) }
+    /// ```
+    pub fn logic_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_logic_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in `real` type (a 64-bit floating point
+    /// value). Set at construction — never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.real_type();
+    /// assert_eq!(t.to_sv_string(), "real");
+    /// assert!(!t.is_integral());
+    /// # Ok(()) }
+    /// ```
+    pub fn real_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_real_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in `shortreal` type (a 32-bit floating point
+    /// value). Set at construction — never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.short_real_type();
+    /// assert_eq!(t.to_sv_string(), "shortreal");
+    /// assert!(!t.is_integral());
+    /// # Ok(()) }
+    /// ```
+    pub fn short_real_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_short_real_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in error type, substituted wherever type
+    /// resolution fails. Set at construction — never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.error_type();
+    /// assert_eq!(t.as_symbol().kind(), sv_lang_kinds::SymbolKind::ErrorType);
+    /// # Ok(()) }
+    /// ```
+    pub fn error_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_error_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in `null` type (the type of the null literal).
+    /// Set at construction — never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.null_type();
+    /// assert_eq!(t.as_symbol().name(), "null");
+    /// # Ok(()) }
+    /// ```
+    pub fn null_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_null_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in `std` package. Set at construction — never
+    /// null. A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let std_pkg = design.std_package();
+    /// assert_eq!(std_pkg.name(), "std");
+    /// # Ok(()) }
+    /// ```
+    pub fn std_package(&self) -> Symbol<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_std_package(self.raw()) };
+        Symbol::from_raw(ast)
+    }
+
+    /// The compilation's built-in `string` type. Set at construction — never
+    /// null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.string_type();
+    /// assert_eq!(t.to_sv_string(), "string");
+    /// assert!(!t.is_integral());
+    /// # Ok(()) }
+    /// ```
+    pub fn string_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_string_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in `void` type: the return type of a task, or
+    /// of a function declared to return nothing. Set at construction — never
+    /// null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.void_type();
+    /// assert_eq!(t.to_sv_string(), "void");
+    /// # Ok(()) }
+    /// ```
+    pub fn void_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_void_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in unbounded (`$`) type, used for queue/array
+    /// sizing expressions such as `q[$]` or `x[i:$]`. Set at construction —
+    /// never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; int q[$]; initial q = q[0:$]; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let t = design.unbounded_type();
+    /// assert_eq!(t.as_symbol().kind(), sv_lang_kinds::SymbolKind::UnboundedType);
+    /// # Ok(()) }
+    /// ```
+    pub fn unbounded_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_unbounded_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in `type()` reference type: the type of a
+    /// `type(expr)` construct passed as a value (e.g. to `$cast`). Set at
+    /// construction — never null.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.type_ref_type();
+    /// assert_eq!(t.as_symbol().kind(), sv_lang_kinds::SymbolKind::TypeRefType);
+    /// # Ok(()) }
+    /// ```
+    pub fn type_ref_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_type_ref_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// The compilation's built-in unsigned `int` type (a 2-state, unsigned,
+    /// 32-bit integer). Unlike the other built-in types, this one is not
+    /// set at construction: the first request for this exact width/flags
+    /// combination allocates and caches it, but `Compilation::compile`
+    /// forces that cache entry pre-seal, so this is a pure, allocation-free
+    /// read on any [`Design`].
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let t = design.unsigned_int_type();
+    /// assert!(t.is_integral());
+    /// assert!(!t.is_signed());
+    /// assert!(!t.is_four_state());
+    /// assert_eq!(t.bit_width(), 32);
+    /// # Ok(()) }
+    /// ```
+    pub fn unsigned_int_type(&self) -> Type<'_> {
+        // SAFETY: the compilation is valid; never null. Forced pre-seal by
+        // slang_compilation_freeze (see SOUNDNESS-MEMOS.md), so this never
+        // races even though the underlying C++ getter is non-const.
+        let ast = unsafe { sys::slang_compilation_get_unsigned_int_type(self.raw()) };
+        Type::from_raw(ast)
+    }
+
+    /// Looks up a built-in gate primitive (`and`, `nand`, `buf`, ...) by
+    /// name. `None` if `name` does not name a built-in gate primitive. A pure
+    /// hash-map read of a table built at construction.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let and_gate = design.gate_type("and").unwrap();
+    /// assert_eq!(and_gate.name(), "and");
+    /// assert!(design.gate_type("does_not_exist").is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn gate_type(&self, name: &str) -> Option<Symbol<'_>> {
+        let (n, nl) = ffi::as_ptr_len(name);
+        // SAFETY: the compilation is valid.
+        let ast = unsafe { sys::slang_compilation_get_gate_type(self.raw(), n, nl) };
+        wrap(ast)
+    }
+
+    /// Looks up a package by name. `None` if no such package has been
+    /// elaborated. A pure hash-map read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("package pkg; localparam int K = 5; endpackage\nmodule m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let pkg = design.package("pkg").unwrap();
+    /// assert_eq!(pkg.name(), "pkg");
+    /// assert!(design.package("does_not_exist").is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn package(&self, name: &str) -> Option<Symbol<'_>> {
+        let (n, nl) = ffi::as_ptr_len(name);
+        // SAFETY: the compilation is valid.
+        let ast = unsafe { sys::slang_compilation_get_package(self.raw(), n, nl) };
+        wrap(ast)
+    }
+
+    /// The built-in net type for `kind` (a symbol of kind `NetType`). Every
+    /// [`NetTypeKind`] resolves to a distinct, always-present built-in net
+    /// type set up at construction, so this never returns `None`. A pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let wire = design.net_type(sv_lang::NetTypeKind::Wire);
+    /// assert_eq!(wire.name(), "wire");
+    /// let tri0 = design.net_type(sv_lang::NetTypeKind::Tri0);
+    /// assert_eq!(tri0.name(), "tri0");
+    /// # Ok(()) }
+    /// ```
+    pub fn net_type(&self, kind: NetTypeKind) -> Symbol<'_> {
+        // SAFETY: the compilation is valid; every enum value is handled on
+        // the C side and always resolves to a present built-in net type.
+        let ast = unsafe { sys::slang_compilation_get_net_type(self.raw(), kind.to_raw()) };
+        Symbol::from_raw(ast)
+    }
+
+    /// The compilation's built-in `wire` net type — equivalent to
+    /// `net_type(NetTypeKind::Wire)`, but a direct field read rather than a
+    /// token-keyed lookup. Set at construction — never null. A pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; wire w; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let wire = design.wire_net_type();
+    /// assert_eq!(wire.name(), "wire");
+    /// assert_eq!(wire.kind(), sv_lang_kinds::SymbolKind::NetType);
+    /// # Ok(()) }
+    /// ```
+    pub fn wire_net_type(&self) -> Symbol<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let ast = unsafe { sys::slang_compilation_get_wire_net_type(self.raw()) };
+        Symbol::from_raw(ast)
+    }
+
+    /// The options this compilation was constructed with. A pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let opts = design.options();
+    /// assert_eq!(opts.error_limit, 64);
+    /// assert_eq!(opts.max_instance_depth, 128);
+    /// # Ok(()) }
+    /// ```
+    pub fn options(&self) -> CompilationOptions {
+        // SAFETY: the compilation is valid.
+        CompilationOptions::from_raw(unsafe { sys::slang_compilation_get_options(self.raw()) })
+    }
+
+    /// The default time scale used for design elements that don't specify
+    /// one explicitly, or `None` if none was configured. A pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// // No explicit default configured for this compilation.
+    /// assert!(design.default_time_scale().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn default_time_scale(&self) -> Option<TimeScale> {
+        let mut raw = sys::slang_time_scale {
+            base_unit: 0,
+            base_magnitude: 0,
+            precision_unit: 0,
+            precision_magnitude: 0,
+        };
+        // SAFETY: the compilation is valid; `raw` is a valid out-pointer.
+        let set = unsafe { sys::slang_compilation_get_default_time_scale(self.raw(), &mut raw) };
+        set.then(|| TimeScale::from_raw(raw))
+    }
+
+    /// The explicitly configured top-level module names
+    /// (`CompilationOptions::topModules`, e.g. from `--top` on the driver's
+    /// command line). Empty if no explicit list was given, in which case top
+    /// modules are instead inferred from which modules are unreferenced
+    /// elsewhere — see [`Design::top_instances`](Self::top_instances) for the
+    /// modules actually chosen either way. A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// // No explicit --top given, so none are recorded here.
+    /// assert!(design.top_modules().is_empty());
+    /// # Ok(()) }
+    /// ```
+    pub fn top_modules(&self) -> Vec<String> {
+        // SAFETY: the compilation is valid.
+        let count = unsafe { sys::slang_compilation_top_module_count(self.raw()) };
+        (0..count)
+            .map(|i| {
+                // SAFETY: `i` is in range; the returned string is borrowed
+                // from the (never-mutated-after-construction) options set.
+                ffi::borrowed_str(unsafe { sys::slang_compilation_top_module_at(self.raw(), i) })
+            })
+            .collect()
+    }
+
+    /// The configured parameter override strings
+    /// (`CompilationOptions::paramOverrides`, e.g. from `-G name=value` on the
+    /// driver's command line), each of the form `"name=value"`. A pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert!(design.param_overrides().is_empty());
+    /// # Ok(()) }
+    /// ```
+    pub fn param_overrides(&self) -> Vec<String> {
+        // SAFETY: the compilation is valid.
+        let count = unsafe { sys::slang_compilation_param_override_count(self.raw()) };
+        (0..count)
+            .map(|i| {
+                // SAFETY: `i` is in range; borrowed from the options vector.
+                ffi::borrowed_str(unsafe {
+                    sys::slang_compilation_param_override_at(self.raw(), i)
+                })
+            })
+            .collect()
+    }
+
+    /// The configured default liblist search order
+    /// (`CompilationOptions::defaultLiblist`, e.g. from `-L name` on the
+    /// driver's command line). A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert!(design.default_liblist().is_empty());
+    /// # Ok(()) }
+    /// ```
+    pub fn default_liblist(&self) -> Vec<String> {
+        // SAFETY: the compilation is valid.
+        let count = unsafe { sys::slang_compilation_default_liblist_count(self.raw()) };
+        (0..count)
+            .map(|i| {
+                // SAFETY: `i` is in range; borrowed from the options vector.
+                ffi::borrowed_str(unsafe {
+                    sys::slang_compilation_default_liblist_at(self.raw(), i)
+                })
+            })
+            .collect()
+    }
+
+    /// The compilation's default source library. Set at construction —
+    /// never `None`. A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let lib = design.default_library();
+    /// assert!(lib.is_default());
+    /// assert_eq!(lib.name(), "work");
+    /// # Ok(()) }
+    /// ```
+    pub fn default_library(&self) -> SourceLibrary<'_> {
+        // SAFETY: the compilation is valid; never null.
+        let raw = unsafe { sys::slang_compilation_get_default_library(self.raw()) };
+        SourceLibrary {
+            raw,
+            _design: PhantomData,
+        }
+    }
+
+    /// Looks up a source library by name. `None` if no such library is
+    /// known to this compilation. A pure hash-map read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let work = design.source_library("work").unwrap();
+    /// assert_eq!(work.name(), "work");
+    /// assert!(design.source_library("does_not_exist").is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn source_library(&self, name: &str) -> Option<SourceLibrary<'_>> {
+        let (n, nl) = ffi::as_ptr_len(name);
+        // SAFETY: the compilation is valid.
+        let raw = unsafe { sys::slang_compilation_get_source_library(self.raw(), n, nl) };
+        (!raw.is_null()).then_some(SourceLibrary {
+            raw,
+            _design: PhantomData,
+        })
+    }
+
+    /// The diagnostics produced during lexing, preprocessing, and syntax
+    /// parsing — a subset of [`diagnostics`](Self::diagnostics). Already
+    /// forced and cached by [`Compilation::compile`], so this is a pure read
+    /// of the cached list on a frozen design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let diags = design.parse_diagnostics();
+    /// assert!(!diags.has_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn parse_diagnostics(&self) -> Diagnostics {
+        let mut err = ffi::error();
+        // SAFETY: the compilation is valid; the handle is consumed by collect.
+        let diags = unsafe { sys::slang_compilation_get_parse_diagnostics(self.raw(), &mut err) };
+        if diags.is_null() {
+            return Diagnostics::default();
+        }
+        crate::collect_diagnostics(self.inner.session.raw(), diags)
+    }
+
+    /// The diagnostics produced during semantic analysis: symbol creation,
+    /// type checking, and name lookup — a subset of
+    /// [`diagnostics`](Self::diagnostics). Already forced and cached by
+    /// [`Compilation::compile`], so this is a pure read of the cached list
+    /// on a frozen design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; initial x = y; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let diags = design.semantic_diagnostics();
+    /// assert!(diags.has_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn semantic_diagnostics(&self) -> Diagnostics {
+        let mut err = ffi::error();
+        // SAFETY: the compilation is valid; the handle is consumed by collect.
+        let diags =
+            unsafe { sys::slang_compilation_get_semantic_diagnostics(self.raw(), &mut err) };
+        if diags.is_null() {
+            return Diagnostics::default();
+        }
+        crate::collect_diagnostics(self.inner.session.raw(), diags)
+    }
+
     /// Looks up a (possibly dotted) hierarchical name from the design root
     /// using full SystemVerilog lookup rules.
     ///
@@ -555,6 +1754,106 @@ impl Design {
             _not_sync: PhantomData,
         }
     }
+
+    /// True once this design has been sealed (every [`Compilation::compile`]
+    /// result starts out sealed), until a matching [`unfreeze`](Self::unfreeze)
+    /// clears it and the returned guard re-seals it again. A pure,
+    /// allocation-free read of the compilation's own bookkeeping flag.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// let mut design = comp.compile()?;
+    /// assert!(design.is_sealed());
+    /// {
+    ///     let guard = design.unfreeze();
+    ///     assert!(!guard.design().is_sealed());
+    /// }
+    /// assert!(design.is_sealed());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_sealed(&self) -> bool {
+        // SAFETY: the compilation is valid.
+        unsafe { sys::slang_compilation_is_sealed(self.raw()) }
+    }
+
+    /// Lifts this design's seal, letting its arena accept allocations again,
+    /// for as long as the returned [`UnfreezeGuard`] lives; dropping the
+    /// guard re-seals it. This is the same seal-lift slang's own gated,
+    /// allocating operations ([`eval_session`](Self::eval_session),
+    /// [`lookup`](Self::lookup)) perform internally around themselves —
+    /// prefer those; reach for this directly only when building a new gated
+    /// operation of your own that this crate does not yet wrap.
+    ///
+    /// Takes `&mut self`, so no other reference to *this* [`Design`] handle
+    /// can coexist with the guard, and dropping it restores the invariant
+    /// that a shared `&Design` is always frozen. As with
+    /// [`eval_session`](Self::eval_session), that invariant is only as good
+    /// as the caller's own discipline: a [`Design`] is [`Clone`] (a cheap
+    /// `Arc` bump), and this guards the *arena*, not the handle, so a clone
+    /// read concurrently from another thread while the guard is alive would
+    /// still race — never hold a clone across an unfreeze window.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// assert!(design.is_sealed());
+    /// let guard = design.unfreeze();
+    /// assert!(!guard.design().is_sealed());
+    /// drop(guard);
+    /// assert!(design.is_sealed());
+    /// # Ok(()) }
+    /// ```
+    pub fn unfreeze(&mut self) -> UnfreezeGuard<'_> {
+        let mut err = ffi::error();
+        // SAFETY: the compilation is valid; out-error checked. Exclusive
+        // access to the arena for the guard's lifetime is proven by `&mut
+        // self` being reborrowed into the guard below.
+        unsafe { sys::slang_compilation_unfreeze(self.raw(), &mut err) };
+        UnfreezeGuard { design: self }
+    }
+}
+
+/// A guard that re-seals a [`Design`] on drop (see [`Design::unfreeze`]).
+/// Re-sealing repeats no elaboration or folding work — it is exactly
+/// `slang_compilation_freeze(comp, SLANG_FREEZE_SEAL, ...)` — so it is cheap,
+/// but it also does not re-validate anything a mutation performed while the
+/// guard was alive; that is the caller's responsibility.
+pub struct UnfreezeGuard<'d> {
+    design: &'d mut Design,
+}
+
+impl Drop for UnfreezeGuard<'_> {
+    fn drop(&mut self) {
+        let mut err = ffi::error();
+        // SAFETY: the compilation is valid; out-error checked. Re-sealing
+        // with SEAL alone cannot fail once construction (freeze/unfreeze)
+        // has already succeeded, so any error here is unreachable in
+        // practice; there is nothing sensible to do with it in a `Drop`.
+        unsafe {
+            sys::slang_compilation_freeze(
+                self.design.raw(),
+                sys::SLANG_FREEZE_SEAL,
+                core::ptr::null_mut(),
+                &mut err,
+            )
+        };
+        debug_assert!(ffi::check(&err).is_ok(), "failed to re-seal after unfreeze");
+    }
+}
+
+impl UnfreezeGuard<'_> {
+    /// Read access to the (currently unfrozen) design.
+    pub fn design(&self) -> &Design {
+        self.design
+    }
 }
 
 /// An exclusive evaluation session over a [`Design`] (see
@@ -566,6 +1865,38 @@ pub struct EvalSession<'d> {
     // Cell<()> is Send but not Sync: it makes EvalSession non-Sync so the
     // interior mutation in `eval(&self)` cannot be shared across threads.
     _not_sync: PhantomData<core::cell::Cell<()>>,
+}
+
+/// The kind of an evaluated array dimension (see [`EvaluatedDimension`]).
+/// Mirrors `slang::ast::DimensionKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DimensionKind {
+    /// Not yet resolved / invalid.
+    Unknown,
+    /// A `[msb:lsb]` range.
+    Range,
+    /// A `[width]` abbreviated range (unpacked only).
+    AbbreviatedRange,
+    /// A dynamic array `[]`.
+    Dynamic,
+    /// An associative array `[key_t]` / `[*]`.
+    Associative,
+    /// A queue `[$]` / `[$:max]`.
+    Queue,
+    /// An open (unsized) DPI array argument dimension.
+    DpiOpenArray,
+}
+
+/// One resolved array dimension of a symbol's declared type (see
+/// [`EvalSession::resolved_dimensions`]). `bounds` is meaningful for
+/// [`DimensionKind::Range`] / [`DimensionKind::AbbreviatedRange`] only.
+/// Mirrors `slang::ast::EvaluatedDimension` (kind + range only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvaluatedDimension {
+    /// The dimension's kind.
+    pub kind: DimensionKind,
+    /// The resolved bounds, for `Range`/`AbbreviatedRange` kinds.
+    pub bounds: ConstantRange,
 }
 
 impl<'d> EvalSession<'d> {
@@ -622,6 +1953,77 @@ impl<'d> EvalSession<'d> {
         (ok && ffi::check(&err).is_ok()).then(|| ffi::owned_str(out))
     }
 
+    /// Evaluates a statement now for its side effects (assignments, jumps
+    /// out of loops/functions/blocks) — mirrors
+    /// `slang::ast::Statement::eval`. Runs under a fresh, scratch
+    /// `EvalContext` built just for this call, in "script" evaluation mode
+    /// with a single empty top-level variable frame (the same setup
+    /// `slang::ast::ScriptSession` uses to run a standalone statement): any
+    /// local variable the statement declares or writes lives only in that
+    /// scratch frame and is discarded when the call returns, so this never
+    /// mutates the design's own storage, and a variable read that was not
+    /// itself created in this same call (e.g. one belonging to an enclosing
+    /// scope the statement was originally elaborated in) evaluates as
+    /// not-constant, which fails the containing expression/statement. Like
+    /// [`eval`](Self::eval), this may allocate into the design's arena.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// use sv_lang::StatementEvalResult;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; initial begin : blk\n\
+    /// #     int x;\n\
+    /// #     x = 1;\n\
+    /// #     disable blk;\n\
+    /// #   end endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// // The three statements share one implicit `List` (block.body() is the
+    /// // named `begin : blk ... end` wrapper, whose one child is that list).
+    /// let stmts = block.body().unwrap().statements()[0].statements();
+    /// assert_eq!(stmts[0].kind(), StatementKind::VariableDeclaration);
+    /// assert_eq!(stmts[1].kind(), StatementKind::ExpressionStatement);
+    /// assert_eq!(stmts[2].kind(), StatementKind::Disable);
+    ///
+    /// let mut eval = design.eval_session();
+    /// let stmts = eval.design().top_instances().next().unwrap().instance_body().unwrap()
+    ///     .members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap()
+    ///     .body().unwrap().statements()[0].statements();
+    ///
+    /// // Declaring `x` needs no outside state, so it succeeds under its own
+    /// // fresh scratch frame.
+    /// assert_eq!(eval.eval_stmt(stmts[0]), StatementEvalResult::Success);
+    /// // But each call's frame is discarded when it returns: writing `x` in
+    /// // its OWN separate call finds no such local (this call never declared
+    /// // it), so it fails rather than reusing the earlier declaration.
+    /// assert_eq!(eval.eval_stmt(stmts[1]), StatementEvalResult::Fail);
+    /// // `disable` needs no local state either, so it always succeeds in
+    /// // unwinding to its named block, reported as `Disable`.
+    /// assert_eq!(eval.eval_stmt(stmts[2]), StatementEvalResult::Disable);
+    /// # Ok(()) }
+    /// ```
+    pub fn eval_stmt(&self, stmt: Statement<'_>) -> StatementEvalResult {
+        // As with `eval`: verify the compilation identity at runtime, since a
+        // lifetime brand alone cannot prove "same design".
+        assert!(
+            stmt.raw.compilation == self.design.raw_compilation(),
+            "eval_stmt: statement belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves `stmt` belongs to the design
+        // this session holds exclusively (`&mut Design`, and the session is
+        // !Sync), so the allocating eval cannot race; out-error checked.
+        let raw = unsafe { sys::slang_stmt_eval(stmt.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            return StatementEvalResult::Fail;
+        }
+        StatementEvalResult::from_raw(raw).unwrap_or(StatementEvalResult::Fail)
+    }
+
     /// Evaluates an expression to a structured [`ConstantValue`](crate::ConstantValue) (see
     /// [`Expression::constant_value`]), or `None` if it is not constant. Like
     /// [`eval`](Self::eval), this may allocate into the design's arena.
@@ -642,6 +2044,2460 @@ impl<'d> EvalSession<'d> {
         }
         // SAFETY: `raw` is a valid owned handle (or null); consumed.
         unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// Evaluates `expr` as a compile-time lvalue (mirrors `slang::ast::
+    /// Expression::evalLValue`): a storage location that can be read
+    /// ([`LValue::load`]) and written ([`LValue::store_int`]). Runs under a
+    /// fresh, scratch `EvalContext` built just for this call (the same
+    /// "script" setup [`eval_stmt`](Self::eval_stmt) uses); if `expr`
+    /// resolves to a referenced value symbol (see
+    /// [`Expression::referenced_symbol`]), a local is materialized for it,
+    /// seeded with its type's default value — so like `eval_stmt`, this
+    /// never mutates the design's own storage, and the returned lvalue is
+    /// scratch storage independent of any other evaluation. Returns `None`
+    /// if `expr` does not represent an lvalue (e.g. a non-assignable
+    /// expression kind), or references no value symbol the evaluation could
+    /// resolve. Like [`eval`](Self::eval), this may allocate into the
+    /// design's arena.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; initial x = 5; endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let mut eval = design.eval_session();
+    /// let block_expr = {
+    ///     let body = eval.design().top_instances().next().unwrap().instance_body().unwrap();
+    ///     let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    ///     block.body().unwrap().expr().unwrap() // `x = 5`
+    /// };
+    /// let lhs = block_expr.left().unwrap(); // the `x` reference
+    /// let mut lval = eval.eval_lvalue(lhs).unwrap();
+    /// // Seeded with `int`'s default value (0), independent of the design.
+    /// assert_eq!(lval.load().as_deref(), Some("0"));
+    /// assert!(lval.store_int(42));
+    /// assert_eq!(lval.load().as_deref(), Some("42"));
+    /// # Ok(()) }
+    /// ```
+    pub fn eval_lvalue(&self, expr: Expression<'_>) -> Option<LValue> {
+        assert!(
+            expr.raw.compilation == self.design.raw_compilation(),
+            "eval_lvalue: expression belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves `expr` belongs to the design
+        // this session holds exclusively (`&mut Design`, and the session is
+        // !Sync), so the allocating eval cannot race; out-error checked.
+        let raw = unsafe { sys::slang_expr_eval_lvalue(expr.raw, &mut err) };
+        if ffi::check(&err).is_err() || raw.is_null() {
+            return None;
+        }
+        Some(LValue {
+            raw,
+            // The handle's internal EvalContext holds a reference into the
+            // design's compilation, so keep it alive for as long as the
+            // handle is.
+            inner: Arc::clone(&self.design.inner),
+        })
+    }
+
+    /// Re-runs `slang::ast::SystemSubroutine::checkArguments` for a system `call` (see
+    /// [`Expression::system_subroutine`]), against the exact arguments,
+    /// source range, and call context slang itself elaborated the call with,
+    /// returning the resulting type. `None` if `call` is not a bound system
+    /// call. May allocate a fresh type node into the design's arena.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let call = eval.design().top_instances().next().unwrap()
+    ///     .instance_body().unwrap().find("W").unwrap().initializer().unwrap();
+    /// let ty = eval.check_system_call(call).unwrap();
+    /// assert_eq!(ty.to_sv_string(), call.expr_type().unwrap().to_sv_string());
+    /// # Ok(()) }
+    /// ```
+    pub fn check_system_call(&self, call: Expression<'_>) -> Option<Type<'d>> {
+        assert!(
+            call.raw.compilation == self.design.raw_compilation(),
+            "check_system_call: expression belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error checked.
+        let raw = unsafe { sys::slang_system_subroutine_check_arguments(call.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        wrap(raw)
+    }
+
+    /// Re-runs `slang::ast::SystemSubroutine::bindArgument` for
+    /// one argument of a system `call` (see [`Self::check_system_call`]),
+    /// re-binding the *original* argument syntax at zero-based `arg_index`
+    /// against the subroutine's own binding logic, with every earlier
+    /// argument passed exactly as slang bound them. Returns the freshly
+    /// bound expression (newly allocated into the design's arena), or `None`
+    /// if `call` is not a bound system call, `arg_index` is out of range, or
+    /// the argument at that index was not bound from ordinary syntax (e.g. a
+    /// `with`-clause iterator/randomize argument).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let call = eval.design().top_instances().next().unwrap()
+    ///     .instance_body().unwrap().find("W").unwrap().initializer().unwrap();
+    /// let arg = eval.bind_system_call_argument(call, 0).unwrap();
+    /// assert_eq!(eval.eval_constant(arg).unwrap().as_i64(), Some(8));
+    /// # Ok(()) }
+    /// ```
+    pub fn bind_system_call_argument(
+        &self,
+        call: Expression<'_>,
+        arg_index: u32,
+    ) -> Option<Expression<'d>> {
+        assert!(
+            call.raw.compilation == self.design.raw_compilation(),
+            "bind_system_call_argument: expression belongs to a different Design than this \
+             EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error checked.
+        let raw =
+            unsafe { sys::slang_system_subroutine_bind_argument(call.raw, arg_index, &mut err) };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        wrap(raw)
+    }
+
+    /// Re-runs `slang::ast::SystemSubroutine::eval` for a system
+    /// `call` (see [`Self::check_system_call`]), evaluating it in a fresh
+    /// constant-evaluation context against its own already-bound arguments.
+    /// `None` if evaluation failed (e.g. `call` is not a bound system call,
+    /// or the subroutine is not allowed in a constant context).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let call = eval.design().top_instances().next().unwrap()
+    ///     .instance_body().unwrap().find("W").unwrap().initializer().unwrap();
+    /// let value = eval.eval_system_call(call).unwrap();
+    /// assert_eq!(value.as_i64(), Some(3)); // ceil(log2(8))
+    /// # Ok(()) }
+    /// ```
+    pub fn eval_system_call(&self, call: Expression<'_>) -> Option<crate::ConstantValue> {
+        assert!(
+            call.raw.compilation == self.design.raw_compilation(),
+            "eval_system_call: expression belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error checked.
+        let raw = unsafe { sys::slang_system_subroutine_eval(call.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: owned handle, free on error.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// Re-runs the protected `slang::ast::SystemSubroutine::badArg` helper for
+    /// the system `call`'s argument at zero-based `arg_index` (see
+    /// [`Self::check_system_call`]): reports a diagnostic against that
+    /// argument (see [`Design::has_issued_errors`]) and returns the
+    /// compilation's [`Design::error_type`], exactly as a built-in does when
+    /// it rejects one of its own arguments. `None` if `call` is not a bound
+    /// system call or `arg_index` is out of range. May allocate a diagnostic
+    /// into the design's arena.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// assert!(!design.has_issued_errors());
+    /// let eval = design.eval_session();
+    /// let call = eval.design().top_instances().next().unwrap()
+    ///     .instance_body().unwrap().find("W").unwrap().initializer().unwrap();
+    /// let ty = eval.bad_arg(call, 0).unwrap();
+    /// assert_eq!(ty.as_symbol().kind(), sv_lang::kinds::SymbolKind::ErrorType);
+    /// drop(eval);
+    /// assert!(design.has_issued_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn bad_arg(&self, call: Expression<'_>, arg_index: u32) -> Option<Type<'d>> {
+        assert!(
+            call.raw.compilation == self.design.raw_compilation(),
+            "bad_arg: expression belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error checked.
+        let raw = unsafe { sys::slang_system_subroutine_bad_arg(call.raw, arg_index, &mut err) };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        wrap(raw)
+    }
+
+    /// Re-runs the protected `slang::ast::SystemSubroutine::checkArgCount`
+    /// helper for the system `call` (see [`Self::check_system_call`]),
+    /// checking whether its already-bound argument count (adjusted by
+    /// `is_method`) falls within `[min, max]`; reports a diagnostic (see
+    /// [`Design::has_issued_errors`]) and returns `false` if not. `None` if
+    /// `call` is not a bound system call. May allocate a diagnostic into the
+    /// design's arena.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let call = eval.design().top_instances().next().unwrap()
+    ///     .instance_body().unwrap().find("W").unwrap().initializer().unwrap();
+    /// // $clog2(8) was bound with exactly 1 argument.
+    /// assert_eq!(eval.check_arg_count(call, false, 1, 1), Some(true));
+    /// assert_eq!(eval.check_arg_count(call, false, 2, 3), Some(false));
+    /// # Ok(()) }
+    /// ```
+    pub fn check_arg_count(
+        &self,
+        call: Expression<'_>,
+        is_method: bool,
+        min: u32,
+        max: u32,
+    ) -> Option<bool> {
+        assert!(
+            call.raw.compilation == self.design.raw_compilation(),
+            "check_arg_count: expression belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error checked.
+        let ok = unsafe {
+            sys::slang_system_subroutine_check_arg_count(call.raw, is_method, min, max, &mut err)
+        };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        Some(ok)
+    }
+
+    /// Re-runs the protected `slang::ast::SystemSubroutine::noHierarchical`
+    /// helper for the system `call`'s argument at zero-based `arg_index` (see
+    /// [`Self::check_system_call`]): returns `false` (and reports a
+    /// diagnostic) if that argument contains a hierarchical reference, `true`
+    /// otherwise. `None` if `call` is not a bound system call or `arg_index`
+    /// is out of range. Like [`Self::not_const`], this reports through a
+    /// scratch `EvalContext` whose diagnostics are never flushed, so only the
+    /// `bool` return value is observable here — not
+    /// [`Design::has_issued_errors`].
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let call = eval.design().top_instances().next().unwrap()
+    ///     .instance_body().unwrap().find("W").unwrap().initializer().unwrap();
+    /// // The literal `8` argument has no hierarchical reference.
+    /// assert_eq!(eval.no_hierarchical(call, 0), Some(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn no_hierarchical(&self, call: Expression<'_>, arg_index: u32) -> Option<bool> {
+        assert!(
+            call.raw.compilation == self.design.raw_compilation(),
+            "no_hierarchical: expression belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error checked.
+        let ok =
+            unsafe { sys::slang_system_subroutine_no_hierarchical(call.raw, arg_index, &mut err) };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        Some(ok)
+    }
+
+    /// Re-runs the protected `slang::ast::SystemSubroutine::notConst` helper
+    /// for the system `call` (see [`Self::check_system_call`]):
+    /// unconditionally reports a diagnostic and returns `false`, exactly as a
+    /// `slang::ast::NonConstantFunction`'s `eval` does. `None` if `call` is
+    /// not a bound system call. Unlike [`Self::bad_arg`] and
+    /// [`Self::check_arg_count`] (which report through the call's own
+    /// `ASTContext`, directly into the compilation), this reports through a
+    /// fresh, scratch `EvalContext` built just for the replay — slang buffers
+    /// `EvalContext` diagnostics locally until something calls
+    /// `reportAllDiags`, which this replay does not do, so the report is not
+    /// observable through [`Design::has_issued_errors`]; only the `false`
+    /// return value is.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let call = eval.design().top_instances().next().unwrap()
+    ///     .instance_body().unwrap().find("W").unwrap().initializer().unwrap();
+    /// assert_eq!(eval.not_const(call), Some(false));
+    /// # Ok(()) }
+    /// ```
+    pub fn not_const(&self, call: Expression<'_>) -> Option<bool> {
+        assert!(
+            call.raw.compilation == self.design.raw_compilation(),
+            "not_const: expression belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error checked.
+        let ok = unsafe { sys::slang_system_subroutine_not_const(call.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        Some(ok)
+    }
+
+    /// Re-runs the protected static
+    /// `slang::ast::SystemSubroutine::unevaluatedContext` helper against a
+    /// synthetic `ASTContext` built over the system `call`'s own scope, and
+    /// reports whether the transformation it performs (clearing the
+    /// `StaticInitializer` flag while leaving every other flag untouched)
+    /// actually took place. `None` if `call` is not a bound system call.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let call = eval.design().top_instances().next().unwrap()
+    ///     .instance_body().unwrap().find("W").unwrap().initializer().unwrap();
+    /// assert_eq!(eval.unevaluated_context_clears_static_initializer(call), Some(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn unevaluated_context_clears_static_initializer(
+        &self,
+        call: Expression<'_>,
+    ) -> Option<bool> {
+        assert!(
+            call.raw.compilation == self.design.raw_compilation(),
+            "unevaluated_context_clears_static_initializer: expression belongs to a different \
+             Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error checked.
+        let ok = unsafe {
+            sys::slang_system_subroutine_unevaluated_context_clears_static_initializer(
+                call.raw, &mut err,
+            )
+        };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        Some(ok)
+    }
+
+    /// The resolved packed-then-unpacked dimensions of `sym`'s declared
+    /// type, in declaration order (`slang::ast::DeclaredType::
+    /// getResolvedDimensions`). Empty if `sym` has no declared type.
+    ///
+    /// UNLIKE every other declared-type accessor ([`Symbol::declared_type`]
+    /// and friends), this is NOT cached by slang: it re-binds each
+    /// dimension's syntax on EVERY call, allocating fresh `Expression` nodes
+    /// into the arena — hence the `EvalSession` gate, mirroring
+    /// [`Self::eval`]'s contract.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::DimensionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] mem [3:0][1:0]; endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let mut eval = design.eval_session();
+    /// let mem = eval.design().top_instances().next().unwrap()
+    ///     .instance_body().unwrap().find("mem").unwrap();
+    /// let dims = eval.resolved_dimensions(mem);
+    /// assert_eq!(dims.len(), 3);
+    /// assert_eq!(dims[0].kind, DimensionKind::Range);
+    /// assert_eq!(dims[0].bounds, sv_lang::ConstantRange { left: 7, right: 0 });
+    /// assert_eq!(dims[1].bounds, sv_lang::ConstantRange { left: 3, right: 0 });
+    /// assert_eq!(dims[2].bounds, sv_lang::ConstantRange { left: 1, right: 0 });
+    /// # Ok(()) }
+    /// ```
+    pub fn resolved_dimensions(&self, sym: Symbol<'_>) -> Vec<EvaluatedDimension> {
+        assert!(
+            sym.raw.compilation == self.design.raw_compilation(),
+            "resolved_dimensions: symbol belongs to a different Design than this EvalSession"
+        );
+        let raw = sym.raw;
+        // getResolvedDimensions() collects once, fills up to `cap`, and
+        // returns the true total (same shape as slang_ast_sem_children) — a
+        // small guess covers common cases in one call, and a wider result
+        // needs one exact-capacity retry.
+        let mut cap = 4usize;
+        loop {
+            let mut buf = vec![sys::slang_evaluated_dimension::default(); cap];
+            let mut err = ffi::error();
+            // SAFETY: the assertion above proves `sym` belongs to the design
+            // this session holds exclusively (`&mut Design`, and the session
+            // is `!Sync`), so the allocating call cannot race; `buf` has
+            // `cap` slots and the callee fills at most `cap`.
+            let total = unsafe {
+                sys::slang_declared_type_resolved_dimensions(
+                    raw,
+                    buf.as_mut_ptr(),
+                    cap as u32,
+                    &mut err,
+                )
+            };
+            if ffi::check(&err).is_err() {
+                return Vec::new();
+            }
+            let total = total as usize;
+            if total > cap {
+                cap = total; // buffer too small; retry once with the exact size
+                continue;
+            }
+            buf.truncate(total);
+            return buf
+                .into_iter()
+                .map(|d| EvaluatedDimension {
+                    kind: match d.kind {
+                        sys::SLANG_DIM_RANGE => DimensionKind::Range,
+                        sys::SLANG_DIM_ABBREVIATED_RANGE => DimensionKind::AbbreviatedRange,
+                        sys::SLANG_DIM_DYNAMIC => DimensionKind::Dynamic,
+                        sys::SLANG_DIM_ASSOCIATIVE => DimensionKind::Associative,
+                        sys::SLANG_DIM_QUEUE => DimensionKind::Queue,
+                        sys::SLANG_DIM_DPI_OPEN_ARRAY => DimensionKind::DpiOpenArray,
+                        _ => DimensionKind::Unknown,
+                    },
+                    bounds: ConstantRange::from_raw(d.bounds),
+                })
+                .collect();
+        }
+    }
+
+    /// Forces and returns a specialization of a `GenericClassDef` symbol
+    /// with every parameter set to an invalid placeholder value, letting
+    /// callers inspect members that don't depend on parameter values. `None`
+    /// if `sym` is not a `GenericClassDef` symbol.
+    ///
+    /// UNLIKE [`Symbol::generic_class_default_specialization`], a fresh,
+    /// uncached specialization is (re)computed on EVERY call, allocating
+    /// into the arena — hence the `EvalSession` gate. Mirrors
+    /// `slang::ast::GenericClassDefSymbol::getInvalidSpecialization`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("class C #(type T = int); T x; endclass\nmodule m; endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let mut eval = design.eval_session();
+    /// let generic = eval.design().compilation_units().next().unwrap().find("C").unwrap();
+    /// assert_eq!(generic.kind(), SymbolKind::GenericClassDef);
+    /// let spec = eval.generic_class_invalid_specialization(generic).unwrap();
+    /// assert_eq!(spec.as_symbol().kind(), SymbolKind::ClassType);
+    /// # Ok(()) }
+    /// ```
+    pub fn generic_class_invalid_specialization(&self, sym: Symbol<'_>) -> Option<Type<'_>> {
+        assert!(
+            sym.raw.compilation == self.design.raw_compilation(),
+            "generic_class_invalid_specialization: symbol belongs to a different Design than \
+             this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error checked.
+        let ast = unsafe { sys::slang_generic_class_invalid_specialization(sym.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        wrap(ast)
+    }
+
+    /// Checks visibility exactly as [`Symbol::is_visible_from`], but through
+    /// slang's diagnostic-issuing entry point (`slang::ast::Lookup::
+    /// ensureVisible`) rather than the pure predicate: builds a fresh
+    /// `ASTContext` rooted at `context_scope` (`LookupLocation::max`, no
+    /// randomize/assertion details) and calls with no source range, so it
+    /// issues no diagnostic. Returns the same boolean
+    /// `symbol.is_visible_from(context_scope)` would for this pair — kept as
+    /// a distinct binding because slang exposes them as separate API
+    /// surfaces (`ensureVisible` is what expression binding actually calls).
+    /// `false` if `symbol` or `context_scope` is invalid.
+    ///
+    /// UNLIKE [`Symbol::is_visible_from`], this allocates a (possibly empty)
+    /// diagnostic report into the design's arena — hence the `EvalSession`
+    /// gate.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C;\n\
+    /// #        local int x;\n\
+    /// #      endclass\n\
+    /// #      module m;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let unit = eval.design().compilation_units().next().unwrap();
+    /// let c = unit.find("C").unwrap();
+    /// let x = c.find("x").unwrap();
+    /// let m_body = eval.design().top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(!eval.ensure_visible(x, m_body));
+    /// assert!(eval.ensure_visible(x, c));
+    /// # Ok(()) }
+    /// ```
+    pub fn ensure_visible(&self, symbol: Symbol<'_>, context_scope: Symbol<'_>) -> bool {
+        assert!(
+            symbol.raw.compilation == self.design.raw_compilation(),
+            "ensure_visible: symbol belongs to a different Design than this EvalSession"
+        );
+        assert!(
+            context_scope.raw.compilation == self.design.raw_compilation(),
+            "ensure_visible: context_scope belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertions above prove both handles belong to the
+        // design this session holds exclusively (`&mut Design`, and the
+        // session is `!Sync`), so the allocating call cannot race;
+        // out-error checked.
+        let ok =
+            unsafe { sys::slang_lookup_ensure_visible(symbol.raw, context_scope.raw, &mut err) };
+        ffi::check(&err).is_ok() && ok
+    }
+
+    /// Checks whether `symbol` (an instance class member) is accessible for
+    /// non-static use from `context_scope`, per `slang::ast::Lookup::
+    /// ensureAccessible`: `false` when `context_scope` is a static-only
+    /// context (e.g. outside any instance of the owning class) or a
+    /// different, unrelated class than the one that declares `symbol`;
+    /// `true` for anything that isn't a class instance member. Called with
+    /// no source range, so it issues no diagnostic. `false` if `symbol` or
+    /// `context_scope` is invalid.
+    ///
+    /// Allocates a (possibly empty) diagnostic report into the design's
+    /// arena — hence the `EvalSession` gate, like
+    /// [`ensure_visible`](Self::ensure_visible).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C;\n\
+    /// #        int x;\n\
+    /// #        function void f();\n\
+    /// #        endfunction\n\
+    /// #      endclass\n\
+    /// #      module m;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let unit = eval.design().compilation_units().next().unwrap();
+    /// let c = unit.find("C").unwrap();
+    /// let x = c.find("x").unwrap();
+    /// // From inside a non-static method of the same class, an instance
+    /// // property is accessible...
+    /// let f = c.find("f").unwrap();
+    /// assert!(eval.ensure_accessible(x, f));
+    /// // ...but not from an unrelated scope with no containing class at all.
+    /// let m_body = eval.design().top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(!eval.ensure_accessible(x, m_body));
+    /// # Ok(()) }
+    /// ```
+    pub fn ensure_accessible(&self, symbol: Symbol<'_>, context_scope: Symbol<'_>) -> bool {
+        assert!(
+            symbol.raw.compilation == self.design.raw_compilation(),
+            "ensure_accessible: symbol belongs to a different Design than this EvalSession"
+        );
+        assert!(
+            context_scope.raw.compilation == self.design.raw_compilation(),
+            "ensure_accessible: context_scope belongs to a different Design than this \
+             EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertions above prove both handles belong to the
+        // design this session holds exclusively; out-error checked.
+        let ok =
+            unsafe { sys::slang_lookup_ensure_accessible(symbol.raw, context_scope.raw, &mut err) };
+        ffi::check(&err).is_ok() && ok
+    }
+
+    /// Looks up `name` (parsed fresh) starting in `context_scope`, following
+    /// full SystemVerilog name-resolution rules through `slang::ast::
+    /// Lookup::name` directly — unlike [`Design::lookup`] (a simplified
+    /// dot-walk), this supports the complete grammar a name lookup can
+    /// involve (e.g. `::`-qualified class-scoped names). `None` if nothing
+    /// was found, or if `context_scope` is invalid.
+    ///
+    /// Allocates (parses a fresh syntax subtree into the arena and records
+    /// reference-tracking state) — hence the `EvalSession` gate.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; endmodule\n")?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let root = eval.design().root();
+    /// let x = eval.lookup_name(root, "m.x").unwrap();
+    /// assert_eq!(x.name(), "x");
+    /// # Ok(()) }
+    /// ```
+    pub fn lookup_name(&self, context_scope: Symbol<'_>, name: &str) -> Option<Symbol<'_>> {
+        assert!(
+            context_scope.raw.compilation == self.design.raw_compilation(),
+            "lookup_name: context_scope belongs to a different Design than this EvalSession"
+        );
+        let (n, nl) = ffi::as_ptr_len(name);
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error
+        // checked.
+        let ast = unsafe { sys::slang_lookup_name(context_scope.raw, n, nl, &mut err) };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        wrap(ast)
+    }
+
+    /// Resolves `name` to a class type, per `slang::ast::Lookup::findClass`:
+    /// looks it up as a type name starting in `context_scope`, and returns
+    /// it only if it names a class. `None` if nothing was found, the name
+    /// doesn't resolve to a class, or `context_scope` is invalid.
+    ///
+    /// Allocates like [`lookup_name`](Self::lookup_name) — hence the
+    /// `EvalSession` gate.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        class Foo;\n\
+    /// #        endclass\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let body = eval.design().top_instances().next().unwrap().instance_body().unwrap();
+    /// let foo = eval.find_class(body, "Foo").unwrap();
+    /// assert_eq!(foo.kind(), SymbolKind::ClassType);
+    /// assert_eq!(foo.name(), "Foo");
+    ///
+    /// assert!(eval.find_class(body, "NoSuchClass").is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn find_class(&self, context_scope: Symbol<'_>, name: &str) -> Option<Symbol<'_>> {
+        assert!(
+            context_scope.raw.compilation == self.design.raw_compilation(),
+            "find_class: context_scope belongs to a different Design than this EvalSession"
+        );
+        let (n, nl) = ffi::as_ptr_len(name);
+        let mut err = ffi::error();
+        // SAFETY: the assertion above proves exclusive access; out-error
+        // checked.
+        let ast = unsafe { sys::slang_lookup_find_class(context_scope.raw, n, nl, &mut err) };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        wrap(ast)
+    }
+
+    /// Searches the local variables materialized in the body of an
+    /// `AssertionInstance` expression (see
+    /// [`Expression::assertion_local_vars`]) for one named `name`, per
+    /// `slang::ast::Lookup::findAssertionLocalVar`: builds a fresh
+    /// `AssertionInstanceDetails` from `assertion_inst`'s already-elaborated
+    /// local-variable list, then calls the real
+    /// `Lookup::findAssertionLocalVar` against it. `None` if `assertion_inst`
+    /// is not an AssertionInstance expression, `context_scope` is invalid,
+    /// or no local variable named `name` exists.
+    ///
+    /// Allocates like [`lookup_name`](Self::lookup_name) — hence the
+    /// `EvalSession` gate.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        sequence s;\n\
+    /// #          int x;\n\
+    /// #          (1, x = 1) ##1 (x == 1);\n\
+    /// #        endsequence\n\
+    /// #        initial begin cover property (s); end\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let body = eval.design().top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let cover_stmt = block.body().unwrap().statements()[0];
+    /// let spec = cover_stmt.children()[0]; // the property-spec AssertionExpr
+    /// let inst = spec.children()[0].as_expression().unwrap(); // the `s` instance
+    /// assert_eq!(inst.assertion_local_vars()[0].name(), "x");
+    ///
+    /// let x = eval.find_assertion_local_var(inst, body, "x").unwrap();
+    /// assert_eq!(x.name(), "x");
+    ///
+    /// assert!(eval.find_assertion_local_var(inst, body, "nope").is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn find_assertion_local_var(
+        &self,
+        assertion_inst: Expression<'_>,
+        context_scope: Symbol<'_>,
+        name: &str,
+    ) -> Option<Symbol<'_>> {
+        assert!(
+            assertion_inst.raw.compilation == self.design.raw_compilation(),
+            "find_assertion_local_var: assertion_inst belongs to a different Design than this \
+             EvalSession"
+        );
+        assert!(
+            context_scope.raw.compilation == self.design.raw_compilation(),
+            "find_assertion_local_var: context_scope belongs to a different Design than this \
+             EvalSession"
+        );
+        let (n, nl) = ffi::as_ptr_len(name);
+        let mut err = ffi::error();
+        let mut out = sys::slang_ast::default();
+        // SAFETY: the assertions above prove both handles belong to the
+        // design this session holds exclusively; `out` is a valid out-
+        // pointer; out-error checked.
+        let found = unsafe {
+            sys::slang_lookup_find_assertion_local_var(
+                assertion_inst.raw,
+                context_scope.raw,
+                n,
+                nl,
+                &mut out,
+                &mut err,
+            )
+        };
+        if ffi::check(&err).is_err() || !found {
+            return None;
+        }
+        wrap(out)
+    }
+
+    /// Searches the linked list of temporary variables headed by `temp_var`
+    /// (a `TempVarSymbol` — e.g. an `Iterator` symbol created for an array
+    /// method's `with` clause, see [`Expression::iterator_var`]) for one
+    /// named `name`, per `slang::ast::Lookup::findTempVar`. `context_scope`
+    /// supplies the `ASTContext`'s scope (used only for further
+    /// member-selection, which a plain identifier never needs). `None` if
+    /// `temp_var` is not a TempVarSymbol, `context_scope` is invalid, or no
+    /// match is found.
+    ///
+    /// Allocates like [`lookup_name`](Self::lookup_name) — hence the
+    /// `EvalSession` gate.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; int q[$]; int r[$];\n\
+    /// #     initial r = q.find_first(item) with (item > 0); endmodule\n",
+    /// # )?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let body = eval.design().top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap(); // `r = q.find_first(...) with (...)`
+    /// let call = assign.right().unwrap();
+    /// let iter_var = call.iterator_var().unwrap();
+    /// let item = eval.find_temp_var(iter_var, body, "item").unwrap();
+    /// assert_eq!(item.name(), "item");
+    ///
+    /// assert!(eval.find_temp_var(iter_var, body, "nope").is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn find_temp_var(
+        &self,
+        temp_var: Symbol<'_>,
+        context_scope: Symbol<'_>,
+        name: &str,
+    ) -> Option<Symbol<'_>> {
+        assert!(
+            temp_var.raw.compilation == self.design.raw_compilation(),
+            "find_temp_var: temp_var belongs to a different Design than this EvalSession"
+        );
+        assert!(
+            context_scope.raw.compilation == self.design.raw_compilation(),
+            "find_temp_var: context_scope belongs to a different Design than this EvalSession"
+        );
+        let (n, nl) = ffi::as_ptr_len(name);
+        let mut err = ffi::error();
+        let mut out = sys::slang_ast::default();
+        // SAFETY: the assertions above prove both handles belong to the
+        // design this session holds exclusively; `out` is a valid out-
+        // pointer; out-error checked.
+        let found = unsafe {
+            sys::slang_lookup_find_temp_var(
+                temp_var.raw,
+                context_scope.raw,
+                n,
+                nl,
+                &mut out,
+                &mut err,
+            )
+        };
+        if ffi::check(&err).is_err() || !found {
+            return None;
+        }
+        wrap(out)
+    }
+
+    /// Performs a lookup within a class `randomize()` scope, per
+    /// `slang::ast::Lookup::withinClassRandomize`: resolves `name` (a plain
+    /// identifier, `this[.super].name`, or `super.name`) against
+    /// `class_type`'s members first — a plain identifier that starts with
+    /// `local::` or isn't found there is expected to then be looked up
+    /// normally in `context_scope` by the caller. `this_var` is the class
+    /// handle symbol for a dotted-handle randomize call (`obj.randomize()
+    /// with {...}`), or `None` for a bare/static randomize.
+    ///
+    /// Returns whether a symbol was found, together with the populated
+    /// [`LookupResult`] (see [`LookupResult::found`] and friends) — the
+    /// diagnostics collected along the way (e.g. a `local::`-shadow warning)
+    /// are readable through it even when this returns `false`.
+    ///
+    /// Allocates (parses a fresh syntax subtree and records reference-
+    /// tracking state) — hence the `EvalSession` gate.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        class C;\n\
+    /// #          rand int x;\n\
+    /// #          constraint c1 { x > 0; }\n\
+    /// #        endclass\n\
+    /// #        int x;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let body = eval.design().top_instances().next().unwrap().instance_body().unwrap();
+    /// let c = eval.find_class(body, "C").unwrap();
+    ///
+    /// // "x.y": resolves to C's `x` (a value), deferring `.y` as a selector.
+    /// let (found, result) = eval.within_class_randomize(c, None, body, "x.y");
+    /// assert!(found);
+    /// let x = result.found().unwrap();
+    /// assert_eq!(x.name(), "x");
+    /// assert_eq!(x.kind(), SymbolKind::ClassProperty);
+    ///
+    /// assert_eq!(result.selector_count(), 1);
+    /// let sel = result.selector(0).unwrap();
+    /// assert!(sel.is_member());
+    /// assert_eq!(sel.name(), "y");
+    /// assert!(sel.dot_location().buffer != 0);
+    ///
+    /// // `x` also exists as a local in `body`, so the shadow warning fired.
+    /// assert!(!result.diagnostics().items().is_empty());
+    /// assert!(!result.has_error()); // it's only a warning
+    /// # Ok(()) }
+    /// ```
+    pub fn within_class_randomize(
+        &self,
+        class_type: Symbol<'_>,
+        this_var: Option<Symbol<'_>>,
+        context_scope: Symbol<'_>,
+        name: &str,
+    ) -> (bool, LookupResult<'_>) {
+        assert!(
+            class_type.raw.compilation == self.design.raw_compilation(),
+            "within_class_randomize: class_type belongs to a different Design than this \
+             EvalSession"
+        );
+        if let Some(tv) = this_var {
+            assert!(
+                tv.raw.compilation == self.design.raw_compilation(),
+                "within_class_randomize: this_var belongs to a different Design than this \
+                 EvalSession"
+            );
+        }
+        assert!(
+            context_scope.raw.compilation == self.design.raw_compilation(),
+            "within_class_randomize: context_scope belongs to a different Design than this \
+             EvalSession"
+        );
+        let (n, nl) = ffi::as_ptr_len(name);
+        let this_raw = this_var.map(|s| s.raw).unwrap_or_default();
+        let mut err = ffi::error();
+        // SAFETY: a scratch buffer this call exclusively owns; freed by
+        // `LookupResult::drop`. `slang_lookup_result_destroy` tolerates a
+        // null handle, so this stays sound even on an (unreachable in
+        // practice) allocation failure.
+        let raw = unsafe { sys::slang_lookup_result_create() };
+        // SAFETY: the assertions above prove every handle belongs to the
+        // design this session holds exclusively; out-error checked.
+        let found = unsafe {
+            sys::slang_lookup_within_class_randomize(
+                class_type.raw,
+                this_raw,
+                context_scope.raw,
+                n,
+                nl,
+                raw,
+                &mut err,
+            )
+        };
+        let found = ffi::check(&err).is_ok() && found;
+        (
+            found,
+            LookupResult {
+                raw,
+                sm: self.design.inner.session.raw(),
+                _design: PhantomData,
+            },
+        )
+    }
+
+    /// Issues a diagnostic (an error) if `result` has any pending selectors
+    /// (see [`LookupResult::selector_count`]), per `slang::ast::
+    /// LookupResult::errorIfSelectors` — for a caller that wants to reject
+    /// `name.member`-style selections it cannot itself apply. The
+    /// diagnostic goes to `context_scope`'s compilation, **not** into
+    /// `result`'s own [`diagnostics`](LookupResult::diagnostics). Because
+    /// [`Design::diagnostics`] caches its result on first call — already
+    /// forced once, pre-seal, by the freeze that produced this (frozen)
+    /// design — a diagnostic issued here is never visible through it;
+    /// [`Design::has_issued_errors`], which reads the compilation's live
+    /// error counter instead, is the only way to observe it (mirrors
+    /// [`Self::no_hierarchical`]'s sibling note on
+    /// [`Design::has_issued_errors`]). A no-op, returning `true`, if
+    /// `result` has no selectors. Returns `false` if `context_scope` is
+    /// invalid.
+    ///
+    /// Allocates the diagnostic report into the design's arena — hence the
+    /// `EvalSession` gate.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        class C;\n\
+    /// #          rand int x;\n\
+    /// #          constraint c1 { x > 0; }\n\
+    /// #        endclass\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let mut design = comp.compile()?;
+    /// assert!(!design.has_issued_errors());
+    /// let eval = design.eval_session();
+    /// let body = eval.design().top_instances().next().unwrap().instance_body().unwrap();
+    /// let c = eval.find_class(body, "C").unwrap();
+    /// let (_, result) = eval.within_class_randomize(c, None, body, "x.y");
+    /// assert_eq!(result.selector_count(), 1);
+    ///
+    /// assert!(eval.error_if_selectors(&result, body));
+    /// assert!(eval.design().has_issued_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn error_if_selectors(&self, result: &LookupResult<'_>, context_scope: Symbol<'_>) -> bool {
+        assert!(
+            context_scope.raw.compilation == self.design.raw_compilation(),
+            "error_if_selectors: context_scope belongs to a different Design than this \
+             EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: `result.raw` is a valid handle for the life of `result`;
+        // the assertion above proves `context_scope` belongs to the design
+        // this session holds exclusively; out-error checked.
+        let ok = unsafe {
+            sys::slang_lookup_result_error_if_selectors(result.raw, context_scope.raw, &mut err)
+        };
+        ffi::check(&err).is_ok() && ok
+    }
+
+    /// Reports every diagnostic collected while populating `result` (see
+    /// [`LookupResult::diagnostics`]) to `context_scope`'s compilation, per
+    /// `slang::ast::LookupResult::reportDiags` — for a caller that wants
+    /// slang's own diagnostic engine to see them rather than silently
+    /// dropping or re-formatting them itself. `result`'s own
+    /// [`diagnostics`](LookupResult::diagnostics) are left unchanged (this
+    /// does not clear or consume them — unlike [`Self::error_if_selectors`],
+    /// which issues a brand-new `UnexpectedSelection` diagnostic of its
+    /// own, this re-delivers `result`'s *existing* ones). Because
+    /// [`Design::diagnostics`] caches its result on first call — already
+    /// forced once, pre-seal, by the freeze that produced this (frozen)
+    /// design — a diagnostic reported here is never visible through it
+    /// (mirrors [`Self::error_if_selectors`]'s sibling note on
+    /// [`Design::has_issued_errors`], which would only change here for a
+    /// `result` whose diagnostics happen to include an error, not merely a
+    /// warning like the shadow diagnostic below). Returns `false` if
+    /// `context_scope` is invalid.
+    ///
+    /// Allocates the diagnostic reports into the design's arena — hence the
+    /// `EvalSession` gate.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        class C;\n\
+    /// #          rand int x;\n\
+    /// #          constraint c1 { x > 0; }\n\
+    /// #        endclass\n\
+    /// #        int x;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let body = eval.design().top_instances().next().unwrap().instance_body().unwrap();
+    /// let c = eval.find_class(body, "C").unwrap();
+    /// let (_, result) = eval.within_class_randomize(c, None, body, "x.y");
+    /// assert!(!result.diagnostics().items().is_empty()); // the shadow warning
+    ///
+    /// // Re-delivering it to the compilation succeeds and leaves `result`'s
+    /// // own copy untouched.
+    /// assert!(eval.report_diags(&result, body));
+    /// assert!(!result.diagnostics().items().is_empty());
+    /// # Ok(()) }
+    /// ```
+    pub fn report_diags(&self, result: &LookupResult<'_>, context_scope: Symbol<'_>) -> bool {
+        assert!(
+            context_scope.raw.compilation == self.design.raw_compilation(),
+            "report_diags: context_scope belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: `result.raw` is a valid handle for the life of `result`;
+        // the assertion above proves `context_scope` belongs to the design
+        // this session holds exclusively; out-error checked.
+        let ok = unsafe {
+            sys::slang_lookup_result_report_diags(result.raw, context_scope.raw, &mut err)
+        };
+        ffi::check(&err).is_ok() && ok
+    }
+}
+
+/// The result of a name lookup operation (`slang::ast::LookupResult`) — an
+/// owned scratch buffer populated by
+/// [`EvalSession::within_class_randomize`]. Freed on drop. Neither `Send`
+/// nor `Sync` — confined to the thread that created it.
+pub struct LookupResult<'d> {
+    raw: sys::slang_lookup_result,
+    sm: sys::slang_source_manager,
+    _design: PhantomData<&'d Design>,
+}
+
+impl Drop for LookupResult<'_> {
+    fn drop(&mut self) {
+        // SAFETY: we own this handle exclusively.
+        unsafe { sys::slang_lookup_result_destroy(self.raw) };
+    }
+}
+
+impl<'d> LookupResult<'d> {
+    /// The symbol that was found, or `None` if nothing was (see
+    /// [`EvalSession::within_class_randomize`]'s own `bool` return for
+    /// whether the lookup as a whole succeeded).
+    pub fn found(&self) -> Option<Symbol<'d>> {
+        // SAFETY: `raw` is a valid handle for the life of `self`.
+        wrap(unsafe { sys::slang_lookup_result_found(self.raw) })
+    }
+
+    /// This result's flags.
+    pub fn flags(&self) -> LookupResultFlags {
+        // SAFETY: `raw` is a valid handle for the life of `self`.
+        LookupResultFlags(unsafe { sys::slang_lookup_result_flags(self.raw) })
+    }
+
+    /// True if an error occurred during the lookup that populated this
+    /// result: either nothing was found despite an explicit import being
+    /// expected, or one of [`diagnostics`](Self::diagnostics) is itself an
+    /// error.
+    pub fn has_error(&self) -> bool {
+        // SAFETY: `raw` is a valid handle for the life of `self`.
+        unsafe { sys::slang_lookup_result_has_error(self.raw) }
+    }
+
+    /// The system subroutine this result's lookup found, if the name
+    /// resolved to one — in that case [`found`](Self::found) returns
+    /// `None` (the two are mutually exclusive).
+    pub fn system_subroutine(&self) -> Option<SystemMethod<'d>> {
+        // SAFETY: `raw` is a valid handle for the life of `self`.
+        let raw = unsafe { sys::slang_lookup_result_system_subroutine(self.raw) };
+        (!raw.is_null()).then_some(SystemMethod {
+            raw,
+            _design: PhantomData,
+        })
+    }
+
+    /// The number of scope levels this result's lookup walked upward
+    /// through the hierarchy before descending back down to the found
+    /// symbol (0 for a non-hierarchical lookup, or one that never needed to
+    /// go upward).
+    pub fn upward_count(&self) -> u32 {
+        // SAFETY: `raw` is a valid handle for the life of `self`.
+        unsafe { sys::slang_lookup_result_upward_count(self.raw) }
+    }
+
+    /// Resets this result to the same empty state a freshly populated
+    /// (never looked-up) result would have.
+    pub fn clear(&mut self) {
+        // SAFETY: `raw` is a valid, exclusively-borrowed handle.
+        unsafe { sys::slang_lookup_result_clear(self.raw) };
+    }
+
+    /// The diagnostics collected while populating this result (e.g. the
+    /// `RandomizeConstraintShadow` warning [`EvalSession::
+    /// within_class_randomize`] can leave behind) — distinct from
+    /// [`EvalSession::error_if_selectors`]'s diagnostic, which goes to the
+    /// compilation instead.
+    pub fn diagnostics(&self) -> Diagnostics {
+        // SAFETY: `raw` is a valid handle; the returned handle is consumed
+        // by `collect_diagnostics`.
+        let diags = unsafe { sys::slang_lookup_result_diagnostics(self.raw) };
+        if diags.is_null() {
+            return Diagnostics::default();
+        }
+        crate::collect_diagnostics(self.sm, diags)
+    }
+
+    /// The number of selectors queued on this result: entries recorded when
+    /// a dotted name resolved partway through to a value and the remaining
+    /// `.member`/`[index]` components were deferred for the caller to apply
+    /// itself.
+    pub fn selector_count(&self) -> u32 {
+        // SAFETY: `raw` is a valid handle for the life of `self`.
+        unsafe { sys::slang_lookup_result_selector_count(self.raw) }
+    }
+
+    /// The selector at `index`, or `None` if out of range.
+    pub fn selector(&self, index: u32) -> Option<LookupSelector<'_>> {
+        (index < self.selector_count()).then_some(LookupSelector {
+            raw: self.raw,
+            index,
+            _borrow: PhantomData,
+        })
+    }
+
+    /// All queued selectors, in order.
+    pub fn selectors(&self) -> impl Iterator<Item = LookupSelector<'_>> + '_ {
+        (0..self.selector_count()).map(move |i| LookupSelector {
+            raw: self.raw,
+            index: i,
+            _borrow: PhantomData,
+        })
+    }
+}
+
+/// One deferred selector on a [`LookupResult`] (`slang::ast::LookupResult::
+/// selectors`), applied by the caller since `Lookup` itself does not know
+/// how. Currently only dotted member selections
+/// (`slang::ast::LookupResult::MemberSelector`) are exposed in detail: an
+/// indexed element select (`foo[i]`) reports [`is_member`](Self::is_member)
+/// `false`, with every other accessor returning empty/zeroed data.
+#[derive(Clone, Copy)]
+pub struct LookupSelector<'r> {
+    raw: sys::slang_lookup_result,
+    index: u32,
+    _borrow: PhantomData<&'r ()>,
+}
+
+impl LookupSelector<'_> {
+    /// True if this selector is a dotted member selection (as opposed to an
+    /// indexed element selection this API does not yet expose in detail).
+    pub fn is_member(&self) -> bool {
+        // SAFETY: `raw`/`index` were validated by `LookupResult::selector`.
+        unsafe { sys::slang_lookup_result_selector_is_member(self.raw, self.index) }
+    }
+
+    /// The member name, per `slang::ast::LookupResult::MemberSelector::
+    /// name`. Empty if this selector [is not a member selection]
+    /// (Self::is_member).
+    pub fn name(&self) -> String {
+        // SAFETY: `raw`/`index` were validated by `LookupResult::selector`.
+        ffi::borrowed_str(unsafe { sys::slang_lookup_result_selector_name(self.raw, self.index) })
+    }
+
+    /// The source location of the `.` that led to this selector, per
+    /// `slang::ast::LookupResult::MemberSelector::dotLocation`. A
+    /// no-location value if this selector is not a member selection.
+    pub fn dot_location(&self) -> SourceLoc {
+        // SAFETY: `raw`/`index` were validated by `LookupResult::selector`.
+        unsafe { sys::slang_lookup_result_selector_dot_location(self.raw, self.index) }.into()
+    }
+
+    /// The source range of the member name, per `slang::ast::LookupResult::
+    /// MemberSelector::nameRange`. A zero-width range at the no-location
+    /// point if this selector is not a member selection.
+    pub fn name_range(&self) -> SourceSpan {
+        // SAFETY: `raw`/`index` were validated by `LookupResult::selector`.
+        unsafe { sys::slang_lookup_result_selector_name_range(self.raw, self.index) }.into()
+    }
+}
+
+/// The raw flag bitmask of a [`LookupResult`] (`slang::ast::
+/// LookupResultFlags`), combined with `|`. See [`LookupResult::flags`].
+///
+/// # Examples
+/// ```
+/// use sv_lang::LookupResultFlags;
+/// let flags = LookupResultFlags::IS_HIERARCHICAL | LookupResultFlags::WAS_IMPORTED;
+/// assert!(flags.contains(LookupResultFlags::IS_HIERARCHICAL));
+/// assert!(!flags.contains(LookupResultFlags::IFACE_PORT));
+/// assert_eq!(LookupResultFlags::NONE.bits(), 0);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LookupResultFlags(u32);
+
+impl LookupResultFlags {
+    /// No flags.
+    pub const NONE: LookupResultFlags = LookupResultFlags(sys::SLANG_LOOKUP_RESULT_NONE);
+    /// The found symbol was imported from a package.
+    pub const WAS_IMPORTED: LookupResultFlags =
+        LookupResultFlags(sys::SLANG_LOOKUP_RESULT_WAS_IMPORTED);
+    /// The symbol was found via hierarchical lookup.
+    pub const IS_HIERARCHICAL: LookupResultFlags =
+        LookupResultFlags(sys::SLANG_LOOKUP_RESULT_IS_HIERARCHICAL);
+    /// There were problems during lookup that indicate the lack of a found
+    /// symbol should be ignored, because the context may expect such a
+    /// failure (e.g. a generic class default instantiation whose base class
+    /// fails to resolve).
+    pub const SUPPRESS_UNDECLARED: LookupResultFlags =
+        LookupResultFlags(sys::SLANG_LOOKUP_RESULT_SUPPRESS_UNDECLARED);
+    /// The lookup was resolved through a type parameter.
+    pub const FROM_TYPE_PARAM: LookupResultFlags =
+        LookupResultFlags(sys::SLANG_LOOKUP_RESULT_FROM_TYPE_PARAM);
+    /// The lookup was resolved through a forwarded typedef.
+    pub const FROM_FORWARD_TYPEDEF: LookupResultFlags =
+        LookupResultFlags(sys::SLANG_LOOKUP_RESULT_FROM_FORWARD_TYPEDEF);
+    /// The lookup was resolved through an interface port connection.
+    pub const IFACE_PORT: LookupResultFlags =
+        LookupResultFlags(sys::SLANG_LOOKUP_RESULT_IFACE_PORT);
+
+    /// The raw bitmask.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// True if all of `other`'s flags are set.
+    pub const fn contains(self, other: LookupResultFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl core::ops::BitOr for LookupResultFlags {
+    type Output = LookupResultFlags;
+    fn bitor(self, rhs: LookupResultFlags) -> LookupResultFlags {
+        LookupResultFlags(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for LookupResultFlags {
+    fn bitor_assign(&mut self, rhs: LookupResultFlags) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// The raw flag bitmask of a `MethodPrototype` symbol (`slang::ast::
+/// MethodFlags`), combined with `|`. See
+/// [`Symbol::method_prototype_flags`].
+///
+/// # Examples
+/// ```
+/// use sv_lang::MethodFlags;
+/// let flags = MethodFlags::VIRTUAL | MethodFlags::PURE;
+/// assert!(flags.contains(MethodFlags::VIRTUAL));
+/// assert!(!flags.contains(MethodFlags::STATIC));
+/// assert_eq!(MethodFlags::NONE.bits(), 0);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MethodFlags(u32);
+
+impl MethodFlags {
+    /// No flags.
+    pub const NONE: MethodFlags = MethodFlags(sys::SLANG_METHOD_NONE);
+    /// The method is virtual.
+    pub const VIRTUAL: MethodFlags = MethodFlags(sys::SLANG_METHOD_VIRTUAL);
+    /// The method is `pure` virtual: it requires an implementation in
+    /// derived classes.
+    pub const PURE: MethodFlags = MethodFlags(sys::SLANG_METHOD_PURE);
+    /// The method is static: invocable without an object instance handle.
+    pub const STATIC: MethodFlags = MethodFlags(sys::SLANG_METHOD_STATIC);
+    /// The method is a class constructor.
+    pub const CONSTRUCTOR: MethodFlags = MethodFlags(sys::SLANG_METHOD_CONSTRUCTOR);
+    /// The method is declared `extern` from an interface, so its body must
+    /// be exported by a module elsewhere.
+    pub const INTERFACE_EXTERN: MethodFlags = MethodFlags(sys::SLANG_METHOD_INTERFACE_EXTERN);
+    /// The method is imported via a modport.
+    pub const MODPORT_IMPORT: MethodFlags = MethodFlags(sys::SLANG_METHOD_MODPORT_IMPORT);
+    /// The method is exported via a modport.
+    pub const MODPORT_EXPORT: MethodFlags = MethodFlags(sys::SLANG_METHOD_MODPORT_EXPORT);
+    /// The method is a DPI import.
+    pub const DPI_IMPORT: MethodFlags = MethodFlags(sys::SLANG_METHOD_DPI_IMPORT);
+    /// The method is a DPI import marked `context`.
+    pub const DPI_CONTEXT: MethodFlags = MethodFlags(sys::SLANG_METHOD_DPI_CONTEXT);
+    /// The method is built in via language rules, as opposed to defined by
+    /// the user.
+    pub const BUILT_IN: MethodFlags = MethodFlags(sys::SLANG_METHOD_BUILT_IN);
+    /// This method is a `std::randomize` built-in.
+    pub const RANDOMIZE: MethodFlags = MethodFlags(sys::SLANG_METHOD_RANDOMIZE);
+    /// Used with `InterfaceExtern` methods: more than one module is allowed
+    /// to export the same task.
+    pub const FORK_JOIN: MethodFlags = MethodFlags(sys::SLANG_METHOD_FORK_JOIN);
+    /// The method is a constructor with a `default` argument indicating the
+    /// parent class's argument list should be inserted.
+    pub const DEFAULTED_SUPER_ARG: MethodFlags = MethodFlags(sys::SLANG_METHOD_DEFAULTED_SUPER_ARG);
+    /// The method is marked `initial`: it should not override a base-class
+    /// method.
+    pub const INITIAL: MethodFlags = MethodFlags(sys::SLANG_METHOD_INITIAL);
+    /// The method is marked `extends`: it must override a base-class
+    /// method (and is also virtual).
+    pub const EXTENDS: MethodFlags = MethodFlags(sys::SLANG_METHOD_EXTENDS);
+    /// The method is marked `final`: it cannot be overridden in a derived
+    /// class.
+    pub const FINAL: MethodFlags = MethodFlags(sys::SLANG_METHOD_FINAL);
+    /// The method is a special `pre_randomize`/`post_randomize` function.
+    pub const PRE_POST_RANDOMIZE: MethodFlags = MethodFlags(sys::SLANG_METHOD_PRE_POST_RANDOMIZE);
+
+    /// The raw bitmask.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// True if all of `other`'s flags are set.
+    pub const fn contains(self, other: MethodFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl core::ops::BitOr for MethodFlags {
+    type Output = MethodFlags;
+    fn bitor(self, rhs: MethodFlags) -> MethodFlags {
+        MethodFlags(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for MethodFlags {
+    fn bitor_assign(&mut self, rhs: MethodFlags) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// An owned compile-time lvalue — a storage location produced by
+/// [`EvalSession::eval_lvalue`] (mirrors `slang::ast::Expression::
+/// evalLValue`, whose result, `slang::ast::LValue`, may internally be a
+/// plain storage location or a `std::vector`-backed tree of concatenated
+/// lvalues). Backed by the scratch evaluation frame [`eval_lvalue`]
+/// (Self::eval_lvalue) built for it, kept alive alongside this handle
+/// together with the design's compilation; dropping it frees that frame.
+/// Neither `Send` nor `Sync` — confined to the thread that created it.
+pub struct LValue {
+    raw: sys::slang_lvalue,
+    // Keeps the design's compilation alive: the internal EvalContext this
+    // handle owns (via the C API) holds a reference into it.
+    #[allow(dead_code)]
+    inner: Arc<DesignInner>,
+}
+
+impl LValue {
+    /// True if the lvalue could not be resolved to a storage location (e.g.
+    /// the referenced value symbol had no local materialized for it in the
+    /// scratch frame this was evaluated against).
+    pub fn is_bad(&self) -> bool {
+        // SAFETY: `raw` is a valid handle for the life of `self`.
+        unsafe { sys::slang_lvalue_is_bad(self.raw) }
+    }
+
+    /// Loads the lvalue's current value, printed as SystemVerilog. `None` if
+    /// the lvalue is bad.
+    ///
+    /// See [`EvalSession::eval_lvalue`] for an example.
+    pub fn load(&self) -> Option<String> {
+        if self.is_bad() {
+            return None;
+        }
+        // SAFETY: `raw` is a valid, non-bad handle.
+        Some(ffi::owned_str(unsafe { sys::slang_lvalue_load(self.raw) }))
+    }
+
+    /// Stores `value` into the lvalue, reencoded at its own current bit width
+    /// and signedness (mirrors `slang::ast::LValue::store`). Returns `false`,
+    /// storing nothing, if the lvalue is bad or does not currently hold an
+    /// integer.
+    ///
+    /// See [`EvalSession::eval_lvalue`] for an example.
+    pub fn store_int(&mut self, value: i64) -> bool {
+        // SAFETY: `raw` is a valid handle for the life of `self`.
+        unsafe { sys::slang_lvalue_store_int(self.raw, value) }
+    }
+}
+
+impl Drop for LValue {
+    fn drop(&mut self) {
+        // SAFETY: `raw` is an owned handle this struct alone holds.
+        unsafe { sys::slang_lvalue_destroy(self.raw) };
+    }
+}
+
+impl core::fmt::Debug for LValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LValue")
+            .field("bad", &self.is_bad())
+            .finish()
+    }
+}
+
+/// An unmaterialized list of diagnostics — the raw form
+/// [`Compilation::add_diagnostics`] accepts. Get one from
+/// [`Design::raw_diagnostics`]. Unlike the materialized [`Diagnostics`], this
+/// borrows the *symbols* the diagnostics were reported against, so the
+/// [`Design`] it came from must stay alive for as long as it (and anything
+/// built by merging it into a [`Compilation`]) is used.
+pub struct RawDiagnostics {
+    raw: sys::slang_diagnostics,
+}
+
+impl Drop for RawDiagnostics {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            // SAFETY: we own this handle exclusively.
+            unsafe { sys::slang_diagnostics_destroy(self.raw) };
+        }
+    }
+}
+
+/// A DPI export directive (`export "DPI-C" function/task ...;`) collected
+/// during elaboration (see [`Design::dpi_exports`]). `Copy` and pointer-sized.
+#[derive(Clone, Copy)]
+pub struct DpiExport<'d> {
+    raw: sys::slang_dpi_export,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for DpiExport<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for DpiExport<'_> {}
+
+impl<'d> DpiExport<'d> {
+    /// The exported subroutine symbol.
+    pub fn subroutine(&self) -> Symbol<'d> {
+        // SAFETY: `raw` is a valid, non-null DPI export cursor.
+        let ast = unsafe { sys::slang_dpi_export_subroutine(self.raw) };
+        Symbol::from_raw(ast)
+    }
+
+    /// The C identifier the subroutine is exported under.
+    pub fn c_identifier(&self) -> String {
+        // SAFETY: `raw` is a valid, non-null DPI export cursor.
+        unsafe { ffi::borrowed_str(sys::slang_dpi_export_c_identifier(self.raw)) }
+    }
+
+    /// The original `export "DPI-C"` declaration syntax node, tied to `tree`.
+    /// Returns `None` if the export does not belong to `tree`.
+    pub fn syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: `raw` is a valid, non-null DPI export cursor.
+        let node = unsafe { sys::slang_dpi_export_syntax(self.raw) };
+        if node.ptr.is_null() || node.tree != tree.raw() {
+            return None;
+        }
+        Some(Node::from_raw_node(node))
+    }
+}
+
+/// A rule from a `config` block controlling how a specific cell/instance is
+/// resolved (see [`DefinitionLookupResult::config_rule`]). Opaque for now — a
+/// future release may add field accessors; this type currently only proves
+/// whether a rule applied. `Copy` and pointer-sized.
+#[derive(Clone, Copy)]
+pub struct ConfigRule<'d> {
+    #[allow(dead_code)]
+    raw: sys::slang_config_rule,
+    _design: PhantomData<&'d Design>,
+}
+
+/// The result of a definition lookup (see [`Design::try_get_definition`]).
+/// `Copy` and pointer-sized.
+#[derive(Clone, Copy)]
+pub struct DefinitionLookupResult<'d> {
+    raw: sys::slang_definition_lookup_result,
+    _design: PhantomData<&'d Design>,
+}
+
+impl<'d> DefinitionLookupResult<'d> {
+    /// The definition that was found, or `None` if none was found.
+    pub fn definition(&self) -> Option<Symbol<'d>> {
+        wrap(self.raw.definition)
+    }
+
+    /// A config root that applies to this definition and the hierarchy
+    /// beneath it, or `None` if none.
+    pub fn config_root(&self) -> Option<Symbol<'d>> {
+        wrap(self.raw.config_root)
+    }
+
+    /// A config rule that applies to instances using this definition, or
+    /// `None` if none.
+    pub fn config_rule(&self) -> Option<ConfigRule<'d>> {
+        (!self.raw.config_rule.is_null()).then_some(ConfigRule {
+            raw: self.raw.config_rule,
+            _design: PhantomData,
+        })
+    }
+}
+
+/// A position within a scope's member list, for comparing where a lookup
+/// should be considered as occurring relative to other declarations —
+/// e.g. "can this reference see a variable declared three lines down"
+/// (`slang::ast::LookupLocation`). Construct one with
+/// [`Symbol::lookup_location_before`]/[`Symbol::lookup_location_after`] (tied
+/// to where a particular symbol sits) or [`Design::lookup_location_max`]/
+/// [`Design::lookup_location_min`] (the two sentinels that compare after/
+/// before everything). `Copy` and pointer-sized.
+#[derive(Clone, Copy)]
+pub struct LookupLocation<'d> {
+    raw: sys::slang_lookup_location,
+    _design: PhantomData<&'d Design>,
+}
+
+impl<'d> LookupLocation<'d> {
+    /// The scope this location is within (its owning symbol), or `None` for
+    /// the [`Design::lookup_location_max`]/[`Design::lookup_location_min`]
+    /// sentinels, which belong to no particular scope.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let a = body.find("a").unwrap();
+    /// assert_eq!(a.lookup_location_before().scope().unwrap(), body);
+    /// assert!(design.lookup_location_max().scope().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn scope(&self) -> Option<Symbol<'d>> {
+        // SAFETY: `raw` is a valid, trivially-copyable value.
+        wrap(unsafe { sys::slang_lookup_location_get_scope(self.raw) })
+    }
+
+    /// The member-list index within [`scope`](Self::scope) — larger for
+    /// declarations later in the scope. [`Design::lookup_location_min`] is
+    /// `0`; [`Design::lookup_location_max`] is `u32::MAX`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert_eq!(design.lookup_location_min().index(), 0);
+    /// assert_eq!(design.lookup_location_max().index(), u32::MAX);
+    /// # Ok(()) }
+    /// ```
+    pub fn index(&self) -> u32 {
+        // SAFETY: `raw` is a valid, trivially-copyable value.
+        unsafe { sys::slang_lookup_location_get_index(self.raw) }
+    }
+}
+
+/// A built-in or user-registered system task/function/method handler (see
+/// [`Design::get_system_method`]). Opaque beyond its name and task/function
+/// distinction — a future release may add richer field accessors (argument
+/// checking, effective width, ...). `Copy` and pointer-sized; outlives the
+/// `Design` it was looked up on (a built-in method's lifetime matches the
+/// whole process).
+#[derive(Clone, Copy)]
+pub struct SystemMethod<'d> {
+    raw: sys::slang_system_subroutine,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: a `SystemMethod` is a read-only cursor into a table built once at
+// process startup (or, for a compilation-local registration, before the
+// design was frozen); nothing here mutates.
+unsafe impl Send for SystemMethod<'_> {}
+// SAFETY: as above.
+unsafe impl Sync for SystemMethod<'_> {}
+
+impl<'d> SystemMethod<'d> {
+    /// The subroutine's name, including the leading `$` for a built-in
+    /// system task/function (e.g. `"$cast"`), or the plain method name for a
+    /// type method (e.g. `"push_back"`).
+    pub fn name(&self) -> String {
+        // SAFETY: `raw` is a valid, non-null system-subroutine handle.
+        unsafe { ffi::borrowed_str(sys::slang_system_subroutine_name(self.raw)) }
+    }
+
+    /// True if this is a task (as opposed to a function).
+    pub fn is_task(&self) -> bool {
+        // SAFETY: `raw` is a valid, non-null system-subroutine handle.
+        unsafe { sys::slang_system_subroutine_is_task(self.raw) }
+    }
+
+    /// True if this subroutine allows an empty argument (e.g. the middle
+    /// slot of `$display(a, , c)`) at the given zero-based argument index.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap();
+    /// let sub = call.system_subroutine().unwrap();
+    /// assert!(!sub.allow_empty_argument(0));
+    /// # Ok(()) }
+    /// ```
+    pub fn allow_empty_argument(&self, arg_index: u32) -> bool {
+        // SAFETY: `raw` is a valid, non-null system-subroutine handle.
+        unsafe { sys::slang_system_subroutine_allow_empty_argument(self.raw, arg_index) }
+    }
+
+    /// True if this subroutine allows a clocking event (e.g.
+    /// `@(posedge clk)`) to be passed as the argument at the given zero-based
+    /// argument index.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap();
+    /// let sub = call.system_subroutine().unwrap();
+    /// assert!(!sub.allow_clocking_argument(0));
+    /// # Ok(()) }
+    /// ```
+    pub fn allow_clocking_argument(&self, arg_index: u32) -> bool {
+        // SAFETY: `raw` is a valid, non-null system-subroutine handle.
+        unsafe { sys::slang_system_subroutine_allow_clocking_argument(self.raw, arg_index) }
+    }
+
+    /// True if this subroutine has output (or ref / inout) arguments.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap();
+    /// let sub = call.system_subroutine().unwrap();
+    /// assert!(!sub.has_output_args());
+    /// # Ok(()) }
+    /// ```
+    pub fn has_output_args(&self) -> bool {
+        // SAFETY: `raw` is a valid, non-null system-subroutine handle.
+        unsafe { sys::slang_system_subroutine_has_output_args(self.raw) }
+    }
+
+    /// Whether this subroutine is a task or a function.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap();
+    /// let sub = call.system_subroutine().unwrap();
+    /// assert_eq!(sub.kind(), sv_lang::SubroutineKind::Function);
+    /// # Ok(()) }
+    /// ```
+    pub fn kind(&self) -> crate::SubroutineKind {
+        // SAFETY: `raw` is a valid, non-null system-subroutine handle.
+        let raw = unsafe { sys::slang_system_subroutine_kind(self.raw) };
+        crate::SubroutineKind::from_raw(raw)
+            .unwrap_or_else(|| unreachable!("unknown SubroutineKind raw value {raw}"))
+    }
+
+    /// The [`KnownSystemName`](crate::KnownSystemName) this subroutine is
+    /// registered under, or [`KnownSystemName::Unknown`](crate::KnownSystemName::Unknown)
+    /// for a not-yet-exposed user-registered subroutine.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap();
+    /// let sub = call.system_subroutine().unwrap();
+    /// assert_eq!(sub.known_name_id(), sv_lang::KnownSystemName::Clog2);
+    /// # Ok(()) }
+    /// ```
+    pub fn known_name_id(&self) -> crate::KnownSystemName {
+        // SAFETY: `raw` is a valid, non-null system-subroutine handle.
+        let raw = unsafe { sys::slang_system_subroutine_known_name_id(self.raw) };
+        crate::KnownSystemName::from_raw(raw)
+            .unwrap_or_else(|| unreachable!("unknown KnownSystemName raw value {raw}"))
+    }
+
+    /// The way in which this subroutine may use a `with` clause (see
+    /// [`WithClauseMode`]).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap();
+    /// let sub = call.system_subroutine().unwrap();
+    /// assert_eq!(sub.with_clause_mode(), sv_lang::WithClauseMode::None);
+    /// # Ok(()) }
+    /// ```
+    pub fn with_clause_mode(&self) -> WithClauseMode {
+        // SAFETY: `raw` is a valid, non-null system-subroutine handle.
+        let raw = unsafe { sys::slang_system_subroutine_with_clause_mode(self.raw) };
+        WithClauseMode::from_raw(raw)
+            .unwrap_or_else(|| unreachable!("unknown WithClauseMode raw value {raw}"))
+    }
+
+    /// `"task"` or `"function"`, matching [`kind`](Self::kind).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap();
+    /// let sub = call.system_subroutine().unwrap();
+    /// assert_eq!(sub.kind_str(), "function");
+    /// # Ok(()) }
+    /// ```
+    pub fn kind_str(&self) -> String {
+        // SAFETY: `raw` is a valid, non-null system-subroutine handle.
+        unsafe { ffi::borrowed_str(sys::slang_system_subroutine_kind_str(self.raw)) }
+    }
+}
+
+/// Possible ways in which a [`SystemMethod`] may use a `with` clause (see
+/// [`SystemMethod::with_clause_mode`]). Mirrors
+/// `slang::ast::SystemSubroutine::WithClauseMode`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WithClauseMode {
+    /// The subroutine does not use a `with` clause.
+    None = 0,
+    /// The subroutine is an iterator method (e.g. `find_first`).
+    Iterator = 1,
+    /// The subroutine is a `randomize` method.
+    Randomize = 2,
+}
+
+impl WithClauseMode {
+    fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::None),
+            1 => Some(Self::Iterator),
+            2 => Some(Self::Randomize),
+            _ => None,
+        }
+    }
+}
+
+impl core::fmt::Debug for SystemMethod<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SystemMethod")
+            .field("name", &self.name())
+            .field("is_task", &self.is_task())
+            .finish()
+    }
+}
+
+/// A single `extern` implementation registered against a
+/// [`MethodPrototype`](crate::kinds::SymbolKind::MethodPrototype) symbol
+/// (`slang::ast::MethodPrototypeSymbol::ExternImpl`) — one node of the
+/// singly-linked list [`Symbol::method_prototype_first_extern_impl`] /
+/// [`ExternImpl::next`] walks (built when an `extern` interface method is
+/// implemented by one or more modules). `Copy` and pointer-sized; borrowed
+/// from the owning compilation.
+#[derive(Clone, Copy)]
+pub struct ExternImpl<'d> {
+    raw: sys::slang_extern_impl,
+    compilation: sys::slang_compilation,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: an `ExternImpl` is a read-only cursor into the design's already-
+// elaborated arena (built during elaboration, before this node is ever
+// reachable through a frozen &Design); nothing here mutates.
+unsafe impl Send for ExternImpl<'_> {}
+// SAFETY: as above.
+unsafe impl Sync for ExternImpl<'_> {}
+
+impl<'d> ExternImpl<'d> {
+    /// The subroutine symbol this implementation wraps. Never absent for a
+    /// handle obtained from [`Symbol::method_prototype_first_extern_impl`]
+    /// or [`Self::next`].
+    pub fn implementation(&self) -> Symbol<'d> {
+        // SAFETY: `raw` is a valid, non-null extern-impl handle.
+        wrap(unsafe { sys::slang_extern_impl_impl(self.raw, self.compilation) })
+            .expect("ExternImpl::impl is never null")
+    }
+
+    /// The next implementation registered against the same prototype (see
+    /// [`Symbol::method_prototype_first_extern_impl`]), or `None` at the
+    /// end of the list.
+    pub fn next(&self) -> Option<ExternImpl<'d>> {
+        // SAFETY: `raw` is a valid, non-null extern-impl handle.
+        let raw = unsafe { sys::slang_extern_impl_next(self.raw) };
+        (!raw.is_null()).then_some(ExternImpl {
+            raw,
+            compilation: self.compilation,
+            _design: PhantomData,
+        })
+    }
+}
+
+impl core::fmt::Debug for ExternImpl<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ExternImpl")
+            .field("implementation", &self.implementation().name())
+            .finish()
+    }
+}
+
+/// A name parsed by [`Design::parse_name`] or [`Design::try_parse_name`] —
+/// mostly for testing and API convenience; normal compilation never produces
+/// one of these directly. Allocated into the design's own arena, so it stays
+/// valid for as long as the [`Design`] is alive. Unlike [`Node`], it does not
+/// belong to any registered [`SyntaxTree`](crate::SyntaxTree): it is a
+/// detached cursor whose structural navigation, source text, and
+/// children/tokens all still work. `Copy` and pointer-sized.
+#[derive(Clone, Copy)]
+pub struct ParsedName<'d> {
+    raw: sys::slang_node,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: a `ParsedName` is a read cursor into an already-parsed, immutable
+// subtree; nothing here mutates.
+unsafe impl Send for ParsedName<'_> {}
+// SAFETY: as above.
+unsafe impl Sync for ParsedName<'_> {}
+
+impl ParsedName<'_> {
+    /// The parsed name's syntax kind (e.g. `IdentifierName`, `ScopedName`).
+    pub fn kind(&self) -> SyntaxKind {
+        SyntaxKind::from_raw(self.raw.kind as u16).unwrap_or(SyntaxKind::Unknown)
+    }
+
+    /// Re-renders the parsed name back to source text.
+    pub fn text(&self) -> String {
+        let mut err = ffi::error();
+        // SAFETY: `raw` is a valid node cursor, live for as long as the
+        // design that produced it.
+        unsafe { ffi::owned_str(sys::slang_node_to_string(self.raw, &mut err)) }
+    }
+}
+
+impl core::fmt::Debug for ParsedName<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ParsedName")
+            .field("kind", &self.kind())
+            .field("text", &self.text())
+            .finish()
+    }
+}
+
+/// The keyword-introduced built-in net types [`Design::net_type`] can fetch.
+/// Mirrors the subset of slang's `NetType::NetKind` that is reachable via a
+/// keyword lookup; user-defined nettypes are ordinary scope members, found
+/// via scope/symbol lookup instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum NetTypeKind {
+    /// `wire`
+    Wire,
+    /// `wand`
+    WAnd,
+    /// `wor`
+    WOr,
+    /// `tri`
+    Tri,
+    /// `triand`
+    TriAnd,
+    /// `trior`
+    TriOr,
+    /// `tri0`
+    Tri0,
+    /// `tri1`
+    Tri1,
+    /// `trireg`
+    TriReg,
+    /// `supply0`
+    Supply0,
+    /// `supply1`
+    Supply1,
+    /// `uwire`
+    UWire,
+    /// `interconnect`
+    Interconnect,
+}
+
+impl NetTypeKind {
+    fn to_raw(self) -> sys::slang_net_type_kind {
+        match self {
+            NetTypeKind::Wire => sys::SLANG_NET_TYPE_WIRE,
+            NetTypeKind::WAnd => sys::SLANG_NET_TYPE_WAND,
+            NetTypeKind::WOr => sys::SLANG_NET_TYPE_WOR,
+            NetTypeKind::Tri => sys::SLANG_NET_TYPE_TRI,
+            NetTypeKind::TriAnd => sys::SLANG_NET_TYPE_TRIAND,
+            NetTypeKind::TriOr => sys::SLANG_NET_TYPE_TRIOR,
+            NetTypeKind::Tri0 => sys::SLANG_NET_TYPE_TRI0,
+            NetTypeKind::Tri1 => sys::SLANG_NET_TYPE_TRI1,
+            NetTypeKind::TriReg => sys::SLANG_NET_TYPE_TRIREG,
+            NetTypeKind::Supply0 => sys::SLANG_NET_TYPE_SUPPLY0,
+            NetTypeKind::Supply1 => sys::SLANG_NET_TYPE_SUPPLY1,
+            NetTypeKind::UWire => sys::SLANG_NET_TYPE_UWIRE,
+            NetTypeKind::Interconnect => sys::SLANG_NET_TYPE_INTERCONNECT,
+        }
+    }
+}
+
+/// The full set of net-type kinds a [`Symbol`]'s [`Symbol::net_kind`] can
+/// report. Unlike [`NetTypeKind`]'s keyword-lookup subset, this also covers
+/// the error placeholder ([`NetKind::Unknown`]) and user-defined nettypes.
+/// Mirrors `slang::ast::NetType::NetKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum NetKind {
+    /// An error placeholder (not a real nettype).
+    Unknown,
+    /// `wire`
+    Wire,
+    /// `wand`
+    WAnd,
+    /// `wor`
+    WOr,
+    /// `tri`
+    Tri,
+    /// `triand`
+    TriAnd,
+    /// `trior`
+    TriOr,
+    /// `tri0`
+    Tri0,
+    /// `tri1`
+    Tri1,
+    /// `trireg`
+    TriReg,
+    /// `supply0`
+    Supply0,
+    /// `supply1`
+    Supply1,
+    /// `uwire`
+    UWire,
+    /// A generic interconnect net.
+    Interconnect,
+    /// A user-defined nettype (`nettype T name;`).
+    UserDefined,
+}
+
+impl NetKind {
+    fn from_raw(raw: sys::slang_net_kind) -> NetKind {
+        match raw {
+            sys::SLANG_NET_WIRE => NetKind::Wire,
+            sys::SLANG_NET_WAND => NetKind::WAnd,
+            sys::SLANG_NET_WOR => NetKind::WOr,
+            sys::SLANG_NET_TRI => NetKind::Tri,
+            sys::SLANG_NET_TRIAND => NetKind::TriAnd,
+            sys::SLANG_NET_TRIOR => NetKind::TriOr,
+            sys::SLANG_NET_TRI0 => NetKind::Tri0,
+            sys::SLANG_NET_TRI1 => NetKind::Tri1,
+            sys::SLANG_NET_TRIREG => NetKind::TriReg,
+            sys::SLANG_NET_SUPPLY0 => NetKind::Supply0,
+            sys::SLANG_NET_SUPPLY1 => NetKind::Supply1,
+            sys::SLANG_NET_UWIRE => NetKind::UWire,
+            sys::SLANG_NET_INTERCONNECT => NetKind::Interconnect,
+            sys::SLANG_NET_USER_DEFINED => NetKind::UserDefined,
+            _ => NetKind::Unknown,
+        }
+    }
+}
+
+/// A read-only snapshot of a compilation's options (see
+/// [`Design::options`]). The variable-length fields of slang's
+/// `CompilationOptions` (top modules, parameter overrides, default liblist)
+/// are set at construction time only and are not part of this snapshot.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct CompilationOptions {
+    /// Bitmask of compilation flags (see [`Options::with_flags`]).
+    pub flags: u32,
+    /// Maximum depth of nested module/interface/program instances.
+    pub max_instance_depth: u32,
+    /// Maximum depth of nested checker instances.
+    pub max_checker_instance_depth: u32,
+    /// Maximum number of steps when expanding a single generate construct.
+    pub max_generate_steps: u32,
+    /// Maximum depth of nested function calls in constant expressions.
+    pub max_constexpr_depth: u32,
+    /// Maximum number of steps when evaluating a constant expression.
+    pub max_constexpr_steps: u32,
+    /// Maximum call-stack frames shown in a constant-evaluation diagnostic.
+    pub max_constexpr_backtrace: u32,
+    /// Maximum number of bits a single constant value may occupy.
+    pub max_constant_size: u64,
+    /// Maximum number of iterations when resolving defparams.
+    pub max_defparam_steps: u32,
+    /// Maximum number of blocks allowed during defparam resolution.
+    pub max_defparam_blocks: u32,
+    /// Maximum number of instances in a single instance array.
+    pub max_instance_array: u32,
+    /// Maximum number of members in a single enum declaration.
+    pub max_enum_values: u32,
+    /// Maximum depth of recursive generic class specializations.
+    pub max_recursive_class_specialization: u32,
+    /// Maximum number of UDP coverage notes generated per warning.
+    pub max_udp_coverage_notes: u32,
+    /// Maximum number of errors before elaboration is short-circuited.
+    pub error_limit: u32,
+    /// Maximum number of typo-correction attempts.
+    pub typo_correction_limit: u32,
+    /// Raw `slang::ast::MinTypMax` value: 0 = Min, 1 = Typ, 2 = Max.
+    pub min_typ_max: u32,
+    /// Raw `slang::LanguageVersion` value: 0 = 1364-2005, 1 = 1800-2017,
+    /// 2 = 1800-2023.
+    pub language_version: u32,
+}
+
+impl CompilationOptions {
+    fn from_raw(o: sys::slang_compilation_options) -> Self {
+        CompilationOptions {
+            flags: o.flags,
+            max_instance_depth: o.max_instance_depth,
+            max_checker_instance_depth: o.max_checker_instance_depth,
+            max_generate_steps: o.max_generate_steps,
+            max_constexpr_depth: o.max_constexpr_depth,
+            max_constexpr_steps: o.max_constexpr_steps,
+            max_constexpr_backtrace: o.max_constexpr_backtrace,
+            max_constant_size: o.max_constant_size,
+            max_defparam_steps: o.max_defparam_steps,
+            max_defparam_blocks: o.max_defparam_blocks,
+            max_instance_array: o.max_instance_array,
+            max_enum_values: o.max_enum_values,
+            max_recursive_class_specialization: o.max_recursive_class_specialization,
+            max_udp_coverage_notes: o.max_udp_coverage_notes,
+            error_limit: o.error_limit,
+            typo_correction_limit: o.typo_correction_limit,
+            min_typ_max: o.min_typ_max,
+            language_version: o.language_version,
+        }
+    }
+}
+
+/// The scale unit of a [`TimeScaleValue`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TimeUnit {
+    /// `s`
+    Seconds,
+    /// `ms`
+    Milliseconds,
+    /// `us`
+    Microseconds,
+    /// `ns`
+    Nanoseconds,
+    /// `ps`
+    Picoseconds,
+    /// `fs`
+    Femtoseconds,
+    /// A raw value this crate does not yet know the name of.
+    Other(u8),
+}
+
+impl TimeUnit {
+    fn from_raw(v: u8) -> Self {
+        match v {
+            0 => TimeUnit::Seconds,
+            1 => TimeUnit::Milliseconds,
+            2 => TimeUnit::Microseconds,
+            3 => TimeUnit::Nanoseconds,
+            4 => TimeUnit::Picoseconds,
+            5 => TimeUnit::Femtoseconds,
+            other => TimeUnit::Other(other),
+        }
+    }
+
+    fn to_raw(self) -> u8 {
+        match self {
+            TimeUnit::Seconds => 0,
+            TimeUnit::Milliseconds => 1,
+            TimeUnit::Microseconds => 2,
+            TimeUnit::Nanoseconds => 3,
+            TimeUnit::Picoseconds => 4,
+            TimeUnit::Femtoseconds => 5,
+            TimeUnit::Other(v) => v,
+        }
+    }
+}
+
+/// A unit+magnitude pair, e.g. the `1ns` of a `` `timescale 1ns/1ps`` directive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TimeScaleValue {
+    /// The scale unit.
+    pub unit: TimeUnit,
+    /// The magnitude: 1, 10, or 100.
+    pub magnitude: u8,
+}
+
+impl TimeScaleValue {
+    fn from_raw(v: sys::slang_time_scale_value) -> Self {
+        TimeScaleValue {
+            unit: TimeUnit::from_raw(v.unit),
+            magnitude: v.magnitude,
+        }
+    }
+
+    fn to_raw(self) -> sys::slang_time_scale_value {
+        sys::slang_time_scale_value {
+            unit: self.unit.to_raw(),
+            magnitude: self.magnitude,
+        }
+    }
+
+    /// The scale unit — mirrors the `slang::TimeScaleValue::unit` field. A
+    /// pure, allocation-free read (exposed as a method here, over the
+    /// [`unit`](Self::unit) field, for parity with the C API's
+    /// `slang_time_scale_value_unit`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("`timescale 1ns/1ps\nmodule m; realtime t = 1.5ns; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let t = body.find("t").unwrap().initializer().unwrap();
+    /// let scale = t.time_literal_scale().unwrap();
+    /// assert_eq!(scale.base().unit(), sv_lang::TimeUnit::Nanoseconds);
+    /// # Ok(()) }
+    /// ```
+    pub fn unit(&self) -> TimeUnit {
+        // SAFETY: `slang_time_scale_value` is a plain value struct; this is a
+        // pure function of its argument.
+        TimeUnit::from_raw(unsafe { sys::slang_time_scale_value_unit(self.to_raw()) })
+    }
+
+    /// The magnitude (1, 10, or 100) — mirrors the
+    /// `slang::TimeScaleValue::magnitude` field (a `TimeScaleMagnitude`). A
+    /// pure, allocation-free read (exposed as a method here, over the
+    /// [`magnitude`](Self::magnitude) field, for parity with the C API's
+    /// `slang_time_scale_value_magnitude`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("`timescale 10ns/1ps\nmodule m; realtime t = 1.5ns; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let t = body.find("t").unwrap().initializer().unwrap();
+    /// let scale = t.time_literal_scale().unwrap();
+    /// assert_eq!(scale.base().magnitude(), 10);
+    /// # Ok(()) }
+    /// ```
+    pub fn magnitude(&self) -> u8 {
+        // SAFETY: `slang_time_scale_value` is a plain value struct; this is a
+        // pure function of its argument.
+        unsafe { sys::slang_time_scale_value_magnitude(self.to_raw()) }
+    }
+
+    /// Constructs a value from a numeric literal and unit — mirrors the
+    /// static `slang::TimeScaleValue::fromLiteral`. Returns `None` if
+    /// `value` is not exactly 1, 10, or 100 (the only magnitudes a time
+    /// scale value may have). A pure function of its arguments.
+    ///
+    /// # Examples
+    /// ```
+    /// let v = sv_lang::TimeScaleValue::from_literal(10.0, sv_lang::TimeUnit::Nanoseconds)
+    ///     .unwrap();
+    /// assert_eq!(v.magnitude, 10);
+    /// assert_eq!(v.unit, sv_lang::TimeUnit::Nanoseconds);
+    /// assert!(sv_lang::TimeScaleValue::from_literal(7.0, sv_lang::TimeUnit::Nanoseconds).is_none());
+    /// ```
+    pub fn from_literal(value: f64, unit: TimeUnit) -> Option<TimeScaleValue> {
+        let mut raw = sys::slang_time_scale_value {
+            unit: 0,
+            magnitude: 0,
+        };
+        // SAFETY: `out` points at a valid, properly aligned local; the
+        // callee is a pure function of its arguments.
+        let ok =
+            unsafe { sys::slang_time_scale_value_from_literal(value, unit.to_raw(), &mut raw) };
+        ok.then(|| TimeScaleValue::from_raw(raw))
+    }
+
+    /// Parses a single unit+magnitude token (e.g. `"10ns"`, as opposed to the
+    /// base/precision pair parsed by [`TimeScale::parse`]) — mirrors the
+    /// static `slang::TimeScaleValue::fromString`. Returns `None` if `s`
+    /// does not parse.
+    ///
+    /// # Examples
+    /// ```
+    /// let v = sv_lang::TimeScaleValue::parse("10ns").unwrap();
+    /// assert_eq!(v.magnitude, 10);
+    /// assert_eq!(v.unit, sv_lang::TimeUnit::Nanoseconds);
+    /// assert!(sv_lang::TimeScaleValue::parse("not a time value").is_none());
+    /// ```
+    pub fn parse(s: &str) -> Option<TimeScaleValue> {
+        let mut raw = sys::slang_time_scale_value {
+            unit: 0,
+            magnitude: 0,
+        };
+        let (p, l) = ffi::as_ptr_len(s);
+        // SAFETY: `p`/`l` describe a valid byte range for the duration of
+        // this call; `raw` is a valid out-pointer.
+        let ok = unsafe { sys::slang_time_scale_value_from_string(p, l, &mut raw) };
+        ok.then(|| TimeScaleValue::from_raw(raw))
+    }
+}
+
+/// A base and precision time scale (see [`Design::default_time_scale`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TimeScale {
+    /// The base time unit, e.g. the `1ns` of `` `timescale 1ns/1ps``.
+    pub base: TimeScaleValue,
+    /// The precision, e.g. the `1ps` of `` `timescale 1ns/1ps``.
+    pub precision: TimeScaleValue,
+}
+
+impl TimeScale {
+    fn from_raw(t: sys::slang_time_scale) -> Self {
+        TimeScale {
+            base: TimeScaleValue {
+                unit: TimeUnit::from_raw(t.base_unit),
+                magnitude: t.base_magnitude,
+            },
+            precision: TimeScaleValue {
+                unit: TimeUnit::from_raw(t.precision_unit),
+                magnitude: t.precision_magnitude,
+            },
+        }
+    }
+
+    fn to_raw(self) -> sys::slang_time_scale {
+        sys::slang_time_scale {
+            base_unit: self.base.unit.to_raw(),
+            base_magnitude: self.base.magnitude,
+            precision_unit: self.precision.unit.to_raw(),
+            precision_magnitude: self.precision.magnitude,
+        }
+    }
+
+    /// The base time unit+magnitude — mirrors the `slang::TimeScale::base`
+    /// field. A pure, allocation-free read (exposed as a method here, over
+    /// the [`base`](Self::base) field, for parity with `precision`/`apply`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("`timescale 1ns/1ps\nmodule m; realtime t = 1.5ns; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let t = body.find("t").unwrap().initializer().unwrap();
+    /// let scale = t.time_literal_scale().unwrap();
+    /// assert_eq!(scale.base(), scale.base);
+    /// # Ok(()) }
+    /// ```
+    pub fn base(&self) -> TimeScaleValue {
+        // SAFETY: `slang_time_scale` is a plain value struct; this is a pure
+        // function of its argument.
+        TimeScaleValue::from_raw(unsafe { sys::slang_time_scale_base(self.to_raw()) })
+    }
+
+    /// The precision unit+magnitude — mirrors the
+    /// `slang::TimeScale::precision` field. A pure, allocation-free read
+    /// (exposed as a method here, over the [`precision`](Self::precision)
+    /// field, for parity with `base`/`apply`).
+    pub fn precision(&self) -> TimeScaleValue {
+        // SAFETY: as `base`.
+        TimeScaleValue::from_raw(unsafe { sys::slang_time_scale_precision(self.to_raw()) })
+    }
+
+    /// Scales `value` (given in `unit`) to the number of this time scale's
+    /// base-unit ticks it represents, optionally rounded to this scale's
+    /// precision — mirrors `slang::TimeScale::apply`. A pure function of its
+    /// arguments.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("`timescale 1ns/1ps\nmodule m; realtime t = 1.5ns; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let t = body.find("t").unwrap().initializer().unwrap();
+    /// let scale = t.time_literal_scale().unwrap();
+    /// // 1.5ns, expressed in the 1ns base scale, is 1.5 base ticks.
+    /// assert_eq!(scale.apply(1.5, sv_lang::TimeUnit::Nanoseconds, false), 1.5);
+    /// # Ok(()) }
+    /// ```
+    pub fn apply(&self, value: f64, unit: TimeUnit, round_to_precision: bool) -> f64 {
+        // SAFETY: `slang_time_scale` is a plain value struct; this is a pure
+        // function of its arguments.
+        unsafe {
+            sys::slang_time_scale_apply(self.to_raw(), value, unit.to_raw(), round_to_precision)
+        }
+    }
+
+    /// Parses a time scale from SystemVerilog `` `timescale`` syntax (e.g.
+    /// `"1ns/1ps"`) — mirrors the static `slang::TimeScale::fromString`.
+    /// `None` if `s` does not parse.
+    ///
+    /// # Examples
+    /// ```
+    /// let scale = sv_lang::TimeScale::parse("1ns/1ps").unwrap();
+    /// assert_eq!(scale.base.unit, sv_lang::TimeUnit::Nanoseconds);
+    /// assert_eq!(scale.base.magnitude, 1);
+    /// assert_eq!(scale.precision.unit, sv_lang::TimeUnit::Picoseconds);
+    /// assert_eq!(scale.precision.magnitude, 1);
+    /// assert!(sv_lang::TimeScale::parse("not a time scale").is_none());
+    /// ```
+    pub fn parse(s: &str) -> Option<TimeScale> {
+        let mut raw = sys::slang_time_scale {
+            base_unit: 0,
+            base_magnitude: 0,
+            precision_unit: 0,
+            precision_magnitude: 0,
+        };
+        let (p, l) = ffi::as_ptr_len(s);
+        // SAFETY: `p`/`l` describe a valid byte range for the duration of
+        // this call; `raw` is a valid out-pointer.
+        let ok = unsafe { sys::slang_time_scale_from_string(p, l, &mut raw) };
+        ok.then(|| TimeScale::from_raw(raw))
+    }
+}
+
+/// A source library (see [`Design::default_library`] and
+/// [`Design::source_library`]). Borrowed from the owning [`Design`]. `Copy`
+/// and pointer-sized.
+#[derive(Clone, Copy)]
+pub struct SourceLibrary<'d> {
+    raw: sys::slang_source_library,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into data fixed at
+// construction time (never mutated after).
+unsafe impl Send for SourceLibrary<'_> {}
+// SAFETY: as above — reads never mutate.
+unsafe impl Sync for SourceLibrary<'_> {}
+
+impl<'d> SourceLibrary<'d> {
+    /// The library's name.
+    pub fn name(&self) -> String {
+        // SAFETY: `raw` is a valid, non-null source library handle.
+        unsafe { ffi::borrowed_str(sys::slang_source_library_name(self.raw)) }
+    }
+
+    /// The library's search priority; lower numbers are higher priority.
+    pub fn priority(&self) -> i32 {
+        // SAFETY: `raw` is a valid, non-null source library handle.
+        unsafe { sys::slang_source_library_priority(self.raw) }
+    }
+
+    /// True if this is the compilation's default library.
+    pub fn is_default(&self) -> bool {
+        // SAFETY: `raw` is a valid, non-null source library handle.
+        unsafe { sys::slang_source_library_is_default(self.raw) }
+    }
+}
+
+impl core::fmt::Debug for SourceLibrary<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SourceLibrary")
+            .field("name", &self.name())
+            .field("priority", &self.priority())
+            .field("is_default", &self.is_default())
+            .finish()
     }
 }
 
@@ -702,12 +4558,428 @@ macro_rules! impl_handle {
         }
     )+ };
 }
-impl_handle!(Symbol, Type, Expression, Statement, SemNode);
+impl_handle!(Symbol, Type, Expression, Statement, SemNode, Pattern);
 
 /// Wraps a raw ast as a borrowed handle, or `None` if it is null. The single
 /// place the null-check-and-wrap pattern lives.
 fn wrap<'d, T: Handle<'d>>(raw: sys::slang_ast) -> Option<T> {
     (!raw.ptr.is_null()).then(|| T::from_raw(raw))
+}
+
+/// One production element within a [`Symbol::randseq_rule_prods`] rule (one
+/// of the four variants ProdItem/CodeBlockProd/IfElseProd/CaseProd of
+/// `slang::ast::RandSeqProductionSymbol::ProdBase`; see [`RandSeqProd::kind`]
+/// to distinguish them). Deliberately a separate handle type from
+/// [`Symbol`]/[`Expression`]/etc.: these C++ nodes are plain arena-allocated
+/// structs private to a `RandSeqProductionSymbol`'s rule tree, not AST
+/// symbols/expressions in their own right. A borrowed read cursor into a
+/// [`Design`], exactly like the other handle types — see the module docs on
+/// [`Handle`].
+#[derive(Clone, Copy)]
+pub struct RandSeqProd<'d> {
+    raw: sys::slang_randseq_prod,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design`, which is Send because Design is Sync.
+unsafe impl Send for RandSeqProd<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for RandSeqProd<'_> {}
+
+impl<'d> RandSeqProd<'d> {
+    fn from_raw(raw: sys::slang_randseq_prod) -> Self {
+        RandSeqProd {
+            raw,
+            _design: PhantomData,
+        }
+    }
+}
+
+/// Wraps a raw randseq-prod as a borrowed handle, or `None` if it is null.
+/// The [`RandSeqProd`] analogue of [`wrap`].
+fn wrap_prod<'d>(raw: sys::slang_randseq_prod) -> Option<RandSeqProd<'d>> {
+    (!raw.ptr.is_null()).then(|| RandSeqProd::from_raw(raw))
+}
+
+/// The kind of a [`RandSeqProd`] node. See [`RandSeqProd::kind`]. Mirrors
+/// the nested `slang::ast::RandSeqProductionSymbol::ProdKind` enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RandSeqProdKind {
+    /// A plain production reference (`prodName(args)`). Read via
+    /// [`RandSeqProd::item_target`] / [`RandSeqProd::item_args`].
+    Item,
+    /// An inline `{ ... }` statement block. Read via
+    /// [`RandSeqProd::code_block_block`].
+    CodeBlock,
+    /// An `if (expr) item [else item]`. Read via the `if_else_*` methods.
+    IfElse,
+    /// A `repeat (expr) item`. No accessor family exposes its fields yet.
+    Repeat,
+    /// A `case (expr) ... endcase`. Read via the `case_*` methods.
+    Case,
+}
+
+impl RandSeqProdKind {
+    fn from_raw(raw: sys::slang_randseq_prod_kind) -> RandSeqProdKind {
+        match raw {
+            sys::SLANG_RANDSEQ_PROD_KIND_CODE_BLOCK => RandSeqProdKind::CodeBlock,
+            sys::SLANG_RANDSEQ_PROD_KIND_IF_ELSE => RandSeqProdKind::IfElse,
+            sys::SLANG_RANDSEQ_PROD_KIND_REPEAT => RandSeqProdKind::Repeat,
+            sys::SLANG_RANDSEQ_PROD_KIND_CASE => RandSeqProdKind::Case,
+            _ => RandSeqProdKind::Item,
+        }
+    }
+}
+
+impl<'d> RandSeqProd<'d> {
+    /// Which of the five prod variants `self` is. A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::ProdBase::kind`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::randseq_rule_prods`] for an example.
+    pub fn kind(&self) -> RandSeqProdKind {
+        // SAFETY: `self.raw` is valid.
+        RandSeqProdKind::from_raw(unsafe { sys::slang_randseq_prod_get_kind(self.raw) })
+    }
+
+    /// For an [`RandSeqProdKind::Item`] prod: the production it invokes.
+    /// `None` if `self` is not Item-kind. A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::ProdItem::target`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::randseq_rule_prods`] for an example.
+    pub fn item_target(&self) -> Option<Symbol<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap(unsafe { sys::slang_randseq_prod_item_target(self.raw) })
+    }
+
+    /// For an [`RandSeqProdKind::Item`] prod: the arguments passed at its
+    /// call site (e.g. one expression for `add("foo")`). Empty if `self` is
+    /// not Item-kind. A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::ProdItem::args`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        int x;\n\
+    /// #        initial randsequence(main)\n\
+    /// #          main : leaf(3 + 4);\n\
+    /// #          leaf(int v) : { x = v; };\n\
+    /// #        endsequence\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap().statements()[0];
+    /// let main = stmt.randsequence_first_production().unwrap();
+    /// let prod = main.randseq_rule_prods(0).next().unwrap();
+    /// let args: Vec<_> = prod.item_args().collect();
+    /// assert_eq!(args.len(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn item_args(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: `raw` is valid; 0 if not Item-kind.
+        let count = unsafe { sys::slang_randseq_prod_item_arg_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_randseq_prod_item_arg(raw, index) })
+        })
+    }
+
+    /// For a [`RandSeqProdKind::CodeBlock`] prod: its statement block.
+    /// `None` if `self` is not CodeBlock-kind. A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::CodeBlockProd::block`) — a
+    /// pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RandSeqProdKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        int x;\n\
+    /// #        initial randsequence(main)\n\
+    /// #          main : { x = 1; };\n\
+    /// #        endsequence\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap().statements()[0];
+    /// let main = stmt.randsequence_first_production().unwrap();
+    /// let prod = main.randseq_rule_prods(0).next().unwrap();
+    /// assert_eq!(prod.kind(), RandSeqProdKind::CodeBlock);
+    /// assert_eq!(prod.code_block_block().unwrap().kind(), SymbolKind::StatementBlock);
+    /// # Ok(()) }
+    /// ```
+    pub fn code_block_block(&self) -> Option<Symbol<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap(unsafe { sys::slang_randseq_prod_code_block_block(self.raw) })
+    }
+
+    /// For an [`RandSeqProdKind::IfElse`] prod: its condition expression.
+    /// `None` if `self` is not IfElse-kind. A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::IfElseProd::expr`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::randseq_rule_prods`] for an example.
+    pub fn if_else_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap(unsafe { sys::slang_randseq_prod_if_else_expr(self.raw) })
+    }
+
+    /// For an [`RandSeqProdKind::IfElse`] prod: its "if true" production
+    /// item, itself an [`RandSeqProdKind::Item`] prod (always `Some` when
+    /// `self` is itself IfElse-kind). `None` if `self` is not IfElse-kind.
+    /// A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::IfElseProd::ifItem`) — a
+    /// pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RandSeqProdKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        int x, sel;\n\
+    /// #        initial randsequence(main)\n\
+    /// #          main : if (sel) leaf(1) else leaf(2);\n\
+    /// #          leaf(int v) : { x = v; };\n\
+    /// #        endsequence\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap().statements()[0];
+    /// let main = stmt.randsequence_first_production().unwrap();
+    /// let prod = main.randseq_rule_prods(0).next().unwrap();
+    /// assert_eq!(prod.kind(), RandSeqProdKind::IfElse);
+    /// assert!(prod.if_else_expr().is_some());
+    /// let if_item = prod.if_else_if_item().unwrap();
+    /// assert_eq!(if_item.kind(), RandSeqProdKind::Item);
+    /// assert_eq!(if_item.item_target().unwrap().name(), "leaf");
+    /// assert!(prod.if_else_has_else_item());
+    /// let else_item = prod.if_else_else_item().unwrap();
+    /// assert_eq!(else_item.item_target().unwrap().name(), "leaf");
+    /// # Ok(()) }
+    /// ```
+    pub fn if_else_if_item(&self) -> Option<RandSeqProd<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap_prod(unsafe { sys::slang_randseq_prod_if_else_if_item(self.raw) })
+    }
+
+    /// True if an [`RandSeqProdKind::IfElse`] prod has an `else` clause.
+    /// `false` if `self` is not IfElse-kind, or it has no `else`. A direct
+    /// field read
+    /// (`slang::ast::RandSeqProductionSymbol::IfElseProd::elseItem`) — a
+    /// pure, allocation-free read.
+    ///
+    /// See [`RandSeqProd::if_else_if_item`] for an example.
+    pub fn if_else_has_else_item(&self) -> bool {
+        // SAFETY: `self.raw` is valid.
+        unsafe { sys::slang_randseq_prod_if_else_has_else_item(self.raw) }
+    }
+
+    /// For an [`RandSeqProdKind::IfElse`] prod: its `else` production item,
+    /// itself an [`RandSeqProdKind::Item`] prod. `None` if `self` is not
+    /// IfElse-kind, or it has no `else` clause (see
+    /// [`RandSeqProd::if_else_has_else_item`]). A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::IfElseProd::elseItem`) — a
+    /// pure, allocation-free read.
+    ///
+    /// See [`RandSeqProd::if_else_if_item`] for an example.
+    pub fn if_else_else_item(&self) -> Option<RandSeqProd<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap_prod(unsafe { sys::slang_randseq_prod_if_else_else_item(self.raw) })
+    }
+
+    /// For a [`RandSeqProdKind::Repeat`] prod (`repeat (expr) item`): its
+    /// repeat-count expression. `None` if `self` is not Repeat-kind. A
+    /// direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::RepeatProd::expr`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RandSeqProdKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        int x;\n\
+    /// #        initial randsequence(main)\n\
+    /// #          main : repeat (3) leaf;\n\
+    /// #          leaf : { x = x + 1; };\n\
+    /// #        endsequence\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap().statements()[0];
+    /// let main = stmt.randsequence_first_production().unwrap();
+    /// let prod = main.randseq_rule_prods(0).next().unwrap();
+    /// assert_eq!(prod.kind(), RandSeqProdKind::Repeat);
+    /// assert!(prod.repeat_expr().is_some());
+    /// let item = prod.repeat_item().unwrap();
+    /// assert_eq!(item.kind(), RandSeqProdKind::Item);
+    /// assert_eq!(item.item_target().unwrap().name(), "leaf");
+    /// # Ok(()) }
+    /// ```
+    pub fn repeat_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap(unsafe { sys::slang_randseq_prod_repeat_expr(self.raw) })
+    }
+
+    /// For a [`RandSeqProdKind::Repeat`] prod: the production item it
+    /// repeats, itself an [`RandSeqProdKind::Item`] prod (always `Some`
+    /// when `self` is itself Repeat-kind). `None` if `self` is not
+    /// Repeat-kind. A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::RepeatProd::item`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`RandSeqProd::repeat_expr`] for an example.
+    pub fn repeat_item(&self) -> Option<RandSeqProd<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap_prod(unsafe { sys::slang_randseq_prod_repeat_item(self.raw) })
+    }
+
+    /// For a [`RandSeqProdKind::Case`] prod: its case-selector expression.
+    /// `None` if `self` is not Case-kind. A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::CaseProd::expr`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`RandSeqProd::case_item_item`] for an example.
+    pub fn case_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap(unsafe { sys::slang_randseq_prod_case_expr(self.raw) })
+    }
+
+    /// The number of non-default case items of a [`RandSeqProdKind::Case`]
+    /// prod. 0 if `self` is not Case-kind. A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::CaseProd::items`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`RandSeqProd::case_item_item`] for an example.
+    pub fn case_item_count(&self) -> u32 {
+        // SAFETY: `self.raw` is valid.
+        unsafe { sys::slang_randseq_prod_case_item_count(self.raw) }
+    }
+
+    /// For a [`RandSeqProdKind::Case`] prod: the label expressions of its
+    /// `item_index`'th case item (e.g. two expressions for `1, 2: push;`).
+    /// Empty if `self` is not Case-kind, or `item_index` is out of range
+    /// (see [`RandSeqProd::case_item_count`]). A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::CaseItem::expressions`) — a
+    /// pure, allocation-free read.
+    ///
+    /// See [`RandSeqProd::case_item_item`] for an example.
+    pub fn case_item_expressions(
+        &self,
+        item_index: u32,
+    ) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: `raw` is valid; 0 if not Case-kind or item_index out of
+        // range.
+        let count = unsafe { sys::slang_randseq_prod_case_item_expression_count(raw, item_index) };
+        (0..count).filter_map(move |expr_index| {
+            // SAFETY: `raw` is valid; both indices in range.
+            wrap(unsafe {
+                sys::slang_randseq_prod_case_item_expression(raw, item_index, expr_index)
+            })
+        })
+    }
+
+    /// For a [`RandSeqProdKind::Case`] prod: the production item of its
+    /// `item_index`'th case item, itself an [`RandSeqProdKind::Item`] prod.
+    /// `None` if `self` is not Case-kind, or `item_index` is out of range
+    /// (see [`RandSeqProd::case_item_count`]). A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::CaseItem::item`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RandSeqProdKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        int x, sel;\n\
+    /// #        initial randsequence(main)\n\
+    /// #          main : case (sel)\n\
+    /// #                   1, 2 : leaf(1);\n\
+    /// #                   default : leaf(2);\n\
+    /// #                 endcase;\n\
+    /// #          leaf(int v) : { x = v; };\n\
+    /// #        endsequence\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap().statements()[0];
+    /// let main = stmt.randsequence_first_production().unwrap();
+    /// let prod = main.randseq_rule_prods(0).next().unwrap();
+    /// assert_eq!(prod.kind(), RandSeqProdKind::Case);
+    /// assert!(prod.case_expr().is_some());
+    /// assert_eq!(prod.case_item_count(), 1);
+    /// assert_eq!(prod.case_item_expressions(0).count(), 2);
+    /// let item = prod.case_item_item(0).unwrap();
+    /// assert_eq!(item.item_target().unwrap().name(), "leaf");
+    /// assert!(prod.case_has_default_item());
+    /// let default_item = prod.case_default_item().unwrap();
+    /// assert_eq!(default_item.item_target().unwrap().name(), "leaf");
+    /// # Ok(()) }
+    /// ```
+    pub fn case_item_item(&self, item_index: u32) -> Option<RandSeqProd<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap_prod(unsafe { sys::slang_randseq_prod_case_item_item(self.raw, item_index) })
+    }
+
+    /// True if a [`RandSeqProdKind::Case`] prod has a `default` item.
+    /// `false` if `self` is not Case-kind, or it has no `default`. A direct
+    /// field read
+    /// (`slang::ast::RandSeqProductionSymbol::CaseProd::defaultItem`) — a
+    /// pure, allocation-free read.
+    ///
+    /// See [`RandSeqProd::case_item_item`] for an example.
+    pub fn case_has_default_item(&self) -> bool {
+        // SAFETY: `self.raw` is valid.
+        unsafe { sys::slang_randseq_prod_case_has_default_item(self.raw) }
+    }
+
+    /// For a [`RandSeqProdKind::Case`] prod: its `default` production item,
+    /// itself an [`RandSeqProdKind::Item`] prod. `None` if `self` is not
+    /// Case-kind, or it has no `default` item (see
+    /// [`RandSeqProd::case_has_default_item`]). A direct field read
+    /// (`slang::ast::RandSeqProductionSymbol::CaseProd::defaultItem`) — a
+    /// pure, allocation-free read.
+    ///
+    /// See [`RandSeqProd::case_item_item`] for an example.
+    pub fn case_default_item(&self) -> Option<RandSeqProd<'d>> {
+        // SAFETY: `self.raw` is valid.
+        wrap_prod(unsafe { sys::slang_randseq_prod_case_default_item(self.raw) })
+    }
 }
 
 /// A stable, owned identity for a symbol: its hierarchical path. Unlike a
@@ -865,6 +5137,1115 @@ pub enum DefinitionKind {
     Interface,
     /// A `program`.
     Program,
+}
+
+/// The default lifetime for variables declared within a definition or
+/// subroutine (see [`Symbol::definition_default_lifetime`]). Mirrors
+/// `slang::ast::VariableLifetime`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VariableLifetime {
+    /// `automatic`: a fresh instance per invocation.
+    Automatic,
+    /// `static`: one persistent instance shared across invocations.
+    Static,
+}
+
+/// The drive setting applied to an unconnected net within a definition (see
+/// [`Symbol::definition_unconnected_drive`]). Mirrors
+/// `slang::ast::UnconnectedDrive`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnconnectedDrive {
+    /// No drive is applied (the default).
+    None,
+    /// `` `unconnected_drive pull0 ``.
+    Pull0,
+    /// `` `unconnected_drive pull1 ``.
+    Pull1,
+}
+
+/// The kind of elaboration-time system task (see
+/// [`Symbol::elab_system_task_kind`]). Mirrors
+/// `slang::ast::ElabSystemTaskKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElabSystemTaskKind {
+    /// `$fatal`.
+    Fatal,
+    /// `$error`.
+    Error,
+    /// `$warning`.
+    Warning,
+    /// `$info`.
+    Info,
+    /// `$static_assert`.
+    StaticAssert,
+}
+
+/// The floating-point kind of a `real`/`shortreal`/`realtime` type (see
+/// [`Type::floating_kind`]). Mirrors `slang::ast::FloatingType::Kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatKind {
+    /// A 64-bit `real`.
+    Real,
+    /// A 32-bit `shortreal`.
+    ShortReal,
+    /// A 64-bit `realtime`.
+    RealTime,
+}
+
+/// The kind of a `ScalarType` (`bit`/`logic`/`reg`) (see
+/// [`Type::scalar_kind`]). Mirrors `slang::ast::ScalarType::Kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalarKind {
+    /// A two-state `bit`.
+    Bit,
+    /// A four-state `logic`.
+    Logic,
+    /// A four-state `reg` (semantically identical to `logic`).
+    Reg,
+}
+
+/// The kind of a predefined integer type (see [`Type::predefined_integer_kind`]).
+/// Mirrors `slang::ast::PredefinedIntegerType::Kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PredefinedIntegerKind {
+    /// `shortint` (16-bit, signed).
+    ShortInt,
+    /// `int` (32-bit, signed).
+    Int,
+    /// `longint` (64-bit, signed).
+    LongInt,
+    /// `byte` (8-bit, signed).
+    Byte,
+    /// `integer` (32-bit, 4-state, signed).
+    Integer,
+    /// `time` (64-bit, 4-state, unsigned).
+    Time,
+}
+
+/// The kind restriction a `typedef` forward declaration places on the type it
+/// resolves to (e.g. `typedef enum e;` restricts `e` to an enum type). See
+/// [`Symbol::forwarding_typedef_type_restriction`]. Mirrors
+/// `slang::ast::ForwardTypeRestriction`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForwardTypeRestriction {
+    /// No restriction (a plain `typedef T;`).
+    None,
+    /// `typedef enum T;`.
+    Enum,
+    /// `typedef struct T;`.
+    Struct,
+    /// `typedef union T;`.
+    Union,
+    /// `typedef class T;`.
+    Class,
+    /// `typedef interface class T;`.
+    InterfaceClass,
+}
+
+/// A member visibility modifier (see
+/// [`Symbol::forwarding_typedef_visibility`]). Mirrors
+/// `slang::ast::Visibility`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visibility {
+    /// `public` (the default).
+    Public,
+    /// `protected`.
+    Protected,
+    /// `local`.
+    Local,
+}
+
+/// A `rand`/`randc` mode, as declared on a `rand`/`randc` class property
+/// (see [`Type::is_valid_for_rand`]). Mirrors `slang::ast::RandMode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RandMode {
+    /// Not `rand`/`randc` at all.
+    None,
+    /// `rand`: standard (non-cyclic) randomization.
+    Rand,
+    /// `randc`: cyclic randomization.
+    RandC,
+}
+
+impl RandMode {
+    fn to_raw(self) -> sys::slang_rand_mode {
+        match self {
+            RandMode::None => sys::SLANG_RAND_MODE_NONE,
+            RandMode::Rand => sys::SLANG_RAND_MODE_RAND,
+            RandMode::RandC => sys::SLANG_RAND_MODE_RANDC,
+        }
+    }
+}
+
+/// An assertion-item / clocking-var argument direction (see
+/// [`Symbol::assertion_port_direction`], [`Symbol::clock_var_direction`]).
+/// Mirrors `slang::ast::ArgumentDirection`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgumentDirection {
+    /// `input`.
+    In,
+    /// `output`.
+    Out,
+    /// `inout`.
+    InOut,
+    /// `ref`.
+    Ref,
+}
+
+impl ArgumentDirection {
+    fn from_raw(raw: sys::slang_argument_direction) -> Option<ArgumentDirection> {
+        match raw {
+            sys::SLANG_ARGUMENT_DIRECTION_IN => Some(ArgumentDirection::In),
+            sys::SLANG_ARGUMENT_DIRECTION_OUT => Some(ArgumentDirection::Out),
+            sys::SLANG_ARGUMENT_DIRECTION_INOUT => Some(ArgumentDirection::InOut),
+            sys::SLANG_ARGUMENT_DIRECTION_REF => Some(ArgumentDirection::Ref),
+            _ => None,
+        }
+    }
+}
+
+/// Which branch of a conditional (`if`/`case`) or loop generate construct
+/// produced a given `GenerateBlock` symbol (see
+/// [`Symbol::generate_block_branch_kind`]). Mirrors
+/// `slang::ast::GenerateBranchKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GenerateBranchKind {
+    /// The `true` branch of an `if` generate construct.
+    IfTrue,
+    /// The `else` branch of an `if` generate construct.
+    IfFalse,
+    /// A matched item of a `case` generate construct.
+    CaseItem,
+    /// The `default` item of a `case` generate construct.
+    CaseDefault,
+    /// One iteration of a `for` loop generate construct.
+    LoopIteration,
+    /// Not a valid branch (e.g. `sym` was not a GenerateBlock symbol).
+    IllegalUnconditional,
+}
+
+impl GenerateBranchKind {
+    fn from_raw(raw: sys::slang_generate_branch_kind) -> GenerateBranchKind {
+        match raw {
+            sys::SLANG_GENERATE_BRANCH_IF_TRUE => GenerateBranchKind::IfTrue,
+            sys::SLANG_GENERATE_BRANCH_IF_FALSE => GenerateBranchKind::IfFalse,
+            sys::SLANG_GENERATE_BRANCH_CASE_ITEM => GenerateBranchKind::CaseItem,
+            sys::SLANG_GENERATE_BRANCH_CASE_DEFAULT => GenerateBranchKind::CaseDefault,
+            sys::SLANG_GENERATE_BRANCH_LOOP_ITERATION => GenerateBranchKind::LoopIteration,
+            _ => GenerateBranchKind::IllegalUnconditional,
+        }
+    }
+}
+
+/// An edge kind for a clocking skew specification (see [`ClockingSkew`]).
+/// Mirrors `slang::ast::EdgeKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeKind {
+    /// No edge specified.
+    None,
+    /// `posedge`.
+    PosEdge,
+    /// `negedge`.
+    NegEdge,
+    /// `edge` (both edges).
+    BothEdges,
+}
+
+impl EdgeKind {
+    fn from_raw(raw: sys::slang_edge_kind) -> EdgeKind {
+        match raw {
+            sys::SLANG_EDGE_POSEDGE => EdgeKind::PosEdge,
+            sys::SLANG_EDGE_NEGEDGE => EdgeKind::NegEdge,
+            sys::SLANG_EDGE_BOTHEDGES => EdgeKind::BothEdges,
+            _ => EdgeKind::None,
+        }
+    }
+
+    fn to_raw(self) -> sys::slang_edge_kind {
+        match self {
+            EdgeKind::None => sys::SLANG_EDGE_NONE,
+            EdgeKind::PosEdge => sys::SLANG_EDGE_POSEDGE,
+            EdgeKind::NegEdge => sys::SLANG_EDGE_NEGEDGE,
+            EdgeKind::BothEdges => sys::SLANG_EDGE_BOTHEDGES,
+        }
+    }
+}
+
+/// A clocking-block input/output skew specification (an edge plus an
+/// optional delay), e.g. the `posedge #3` of `default input posedge #3;` or
+/// the `#1step` of `input #1step x;`. See
+/// [`Symbol::clock_var_input_skew`], [`Symbol::clock_var_output_skew`],
+/// [`Symbol::clocking_block_default_input_skew`],
+/// [`Symbol::clocking_block_default_output_skew`]. Mirrors
+/// `slang::ast::ClockingSkew`.
+#[derive(Clone, Copy, Debug)]
+pub struct ClockingSkew<'d> {
+    /// The sampling edge, or [`EdgeKind::None`] if unspecified.
+    pub edge: EdgeKind,
+    /// The delay control, if one was specified.
+    pub delay: Option<SemNode<'d>>,
+}
+
+impl<'d> ClockingSkew<'d> {
+    fn from_raw(raw: sys::slang_clocking_skew) -> ClockingSkew<'d> {
+        ClockingSkew {
+            edge: EdgeKind::from_raw(raw.edge),
+            delay: wrap(raw.delay),
+        }
+    }
+
+    fn to_raw(self) -> sys::slang_clocking_skew {
+        sys::slang_clocking_skew {
+            edge: self.edge.to_raw(),
+            delay: self.delay.map(|d| d.raw).unwrap_or_default(),
+        }
+    }
+
+    /// True if this skew carries any explicit skew information (a non-default
+    /// edge or a delay) — mirrors `slang::ast::ClockingSkew::hasValue`.
+    /// Returns `false` for a default (unspecified) skew. A pure function of
+    /// its fields (no allocation, no handle).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module test;\n\
+    /// #     wire clk;\n\
+    /// #     int a;\n\
+    /// #     clocking cb @clk;\n\
+    /// #         input a;\n\
+    /// #         default input posedge #3;\n\
+    /// #     endclocking\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cb = body.find("cb").unwrap();
+    /// assert!(cb.clocking_block_default_input_skew().has_value());
+    ///
+    /// // A plain `input a` clock var has no explicit skew of its own.
+    /// let a_var = cb.find("a").unwrap();
+    /// assert!(!a_var.clock_var_input_skew().has_value());
+    /// # Ok(()) }
+    /// ```
+    pub fn has_value(&self) -> bool {
+        // SAFETY: a pure function of its by-value argument.
+        unsafe { sys::slang_clocking_skew_has_value(self.to_raw()) }
+    }
+}
+
+/// One resolved port connection of a CheckerInstance symbol
+/// (`slang::ast::CheckerInstanceSymbol::Connection`). See
+/// [`Symbol::checker_instance_connections`].
+#[derive(Clone, Copy)]
+pub struct CheckerConnection<'d> {
+    instance_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for CheckerConnection<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for CheckerConnection<'_> {}
+
+impl<'d> CheckerConnection<'d> {
+    /// The connection's actual argument, as a [`SemNode`] whose domain
+    /// depends on the formal's kind (an expression for a plain formal
+    /// argument, an assertion expression for a sequence/property/let
+    /// actual, or a timing control for a clocking-event actual). `None` if
+    /// the connection has no resolved actual.
+    pub fn actual(&self) -> Option<SemNode<'d>> {
+        // SAFETY: `instance_raw` is a valid CheckerInstance symbol and
+        // `index` is in range of its own connection count.
+        let ast = unsafe {
+            sys::slang_symbol_checker_instance_connection_actual(self.instance_raw, self.index)
+        };
+        wrap(ast)
+    }
+
+    /// The attribute instances (e.g. `(* foo = 1 *)`) attached directly to
+    /// this port connection.
+    pub fn attributes(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let instance_raw = self.instance_raw;
+        let index = self.index;
+        // SAFETY: as in `actual`.
+        let count = unsafe {
+            sys::slang_symbol_checker_instance_connection_attribute_count(instance_raw, index)
+        };
+        (0..count).filter_map(move |attr_index| {
+            // SAFETY: `instance_raw`/`index` as above; `attr_index` in range
+            // of this connection's own attribute count.
+            let ast = unsafe {
+                sys::slang_symbol_checker_instance_connection_attribute(
+                    instance_raw,
+                    index,
+                    attr_index,
+                )
+            };
+            wrap(ast)
+        })
+    }
+
+    /// The output-port initial-value expression (the `= expr` of an output
+    /// checker formal, evaluated in the instantiation's context). `None` if
+    /// the connection's formal has no default or is not an output port.
+    pub fn output_initial_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: as in `actual`.
+        let ast = unsafe {
+            sys::slang_symbol_checker_instance_connection_output_initial_expr(
+                self.instance_raw,
+                self.index,
+            )
+        };
+        wrap(ast)
+    }
+}
+
+impl core::fmt::Debug for CheckerConnection<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CheckerConnection")
+            .field("actual", &self.actual())
+            .field("output_initial_expr", &self.output_initial_expr())
+            .finish()
+    }
+}
+
+/// One resolved port connection of an `Instance` symbol
+/// (`slang::ast::PortConnection`). See [`Symbol::instance_port_connections`].
+#[derive(Clone, Copy)]
+pub struct PortConnection<'d> {
+    instance_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for PortConnection<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for PortConnection<'_> {}
+
+impl<'d> PortConnection<'d> {
+    /// The port symbol this connection binds (a `Port`, `MultiPort`, or
+    /// `InterfacePort` symbol of the instance's body). Every valid
+    /// `PortConnection` has one.
+    pub fn port(&self) -> Symbol<'d> {
+        // SAFETY: `instance_raw` is a valid Instance symbol and `index` is
+        // in range of its own connection count (both established when this
+        // `PortConnection` was constructed).
+        let ast =
+            unsafe { sys::slang_instance_port_connection_port(self.instance_raw, self.index) };
+        wrap(ast).expect("PortConnection::port: index was in range when constructed")
+    }
+
+    /// The connection's bound expression. `None` for an unconnected port, an
+    /// interface port connection (which has no plain expression of its
+    /// own), or a default value with no syntax of its own.
+    pub fn expression(&self) -> Option<Expression<'d>> {
+        // SAFETY: as in `port`.
+        let ast = unsafe {
+            sys::slang_instance_port_connection_expression(self.instance_raw, self.index)
+        };
+        wrap(ast)
+    }
+
+    /// True if this connection was left implicit (`.name` shorthand, or
+    /// produced by a `.*` wildcard). Mirrors
+    /// `slang::ast::PortConnection::isImplicit`.
+    pub fn is_implicit(&self) -> bool {
+        // SAFETY: as in `port`.
+        unsafe { sys::slang_instance_port_connection_is_implicit(self.instance_raw, self.index) }
+    }
+
+    /// True if this connection was produced by a `.*` wildcard. Mirrors
+    /// `slang::ast::PortConnection::isWildcard`.
+    pub fn is_wildcard(&self) -> bool {
+        // SAFETY: as in `port`.
+        unsafe { sys::slang_instance_port_connection_is_wildcard(self.instance_raw, self.index) }
+    }
+
+    /// This connection's interface connection: the interface instance (and
+    /// modport, if restricted) it binds to. Both are `None` unless
+    /// [`port`](Self::port) is an `InterfacePort` symbol. Reads only plain,
+    /// non-lazy fields set when the connection was built (`slang::ast::
+    /// PortConnection::getIfaceConn`), so this is a pure, allocation-free
+    /// read — no freeze-sweep force needed.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface bus;\n\
+    /// #        logic req;\n\
+    /// #      endinterface\n\
+    /// #      module sub(bus b);\n\
+    /// #      endmodule\n\
+    /// #      module top;\n\
+    /// #        bus b();\n\
+    /// #        sub s(.b(b));\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().find(|i| i.name() == "top").unwrap();
+    /// let s = top.instance_body().unwrap().find("s").unwrap();
+    /// let conn = s.instance_port_connections().next().unwrap();
+    /// let (instance, modport) = conn.iface_conn();
+    /// assert_eq!(instance.unwrap().name(), "b");
+    /// assert!(modport.is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn iface_conn(&self) -> (Option<Symbol<'d>>, Option<Symbol<'d>>) {
+        // SAFETY: as in `port`.
+        let conn = unsafe {
+            sys::slang_instance_port_connection_iface_conn(self.instance_raw, self.index)
+        };
+        (wrap(conn.instance), wrap(conn.modport))
+    }
+}
+
+impl core::fmt::Debug for PortConnection<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PortConnection")
+            .field("port", &self.port().name())
+            .field("expression", &self.expression())
+            .field("is_implicit", &self.is_implicit())
+            .field("is_wildcard", &self.is_wildcard())
+            .finish()
+    }
+}
+
+/// A net/gate drive strength level (`supply`/`strong`/`pull`/`weak`/`highz`),
+/// independent of which value it drives. Mirrors `slang::ast::DriveStrength`.
+/// See [`Symbol::continuous_assign_drive_strength`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveStrength {
+    /// `supply0`/`supply1`.
+    Supply,
+    /// `strong0`/`strong1`.
+    Strong,
+    /// `pull0`/`pull1`.
+    Pull,
+    /// `weak0`/`weak1`.
+    Weak,
+    /// `highz0`/`highz1`.
+    HighZ,
+}
+
+impl DriveStrength {
+    fn from_raw(raw: sys::slang_drive_strength) -> DriveStrength {
+        match raw {
+            sys::SLANG_DRIVE_STRENGTH_STRONG => DriveStrength::Strong,
+            sys::SLANG_DRIVE_STRENGTH_PULL => DriveStrength::Pull,
+            sys::SLANG_DRIVE_STRENGTH_WEAK => DriveStrength::Weak,
+            sys::SLANG_DRIVE_STRENGTH_HIGHZ => DriveStrength::HighZ,
+            _ => DriveStrength::Supply,
+        }
+    }
+}
+
+/// The pair of optional drive strengths of an `assign (strength0,
+/// strength1) lhs = rhs;`. See
+/// [`Symbol::continuous_assign_drive_strength`]. Mirrors
+/// `std::pair<std::optional<slang::ast::DriveStrength>,
+/// std::optional<slang::ast::DriveStrength>>`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DriveStrengthPair {
+    /// The strength used when the net is driven to 0.
+    pub strength0: Option<DriveStrength>,
+    /// The strength used when the net is driven to 1.
+    pub strength1: Option<DriveStrength>,
+}
+
+impl DriveStrengthPair {
+    fn from_raw(raw: sys::slang_drive_strength_pair) -> DriveStrengthPair {
+        DriveStrengthPair {
+            strength0: raw
+                .has_strength0
+                .then(|| DriveStrength::from_raw(raw.strength0)),
+            strength1: raw
+                .has_strength1
+                .then(|| DriveStrength::from_raw(raw.strength1)),
+        }
+    }
+}
+
+/// A user-defined primitive (UDP) port's declared direction. See
+/// [`Symbol::primitive_port_direction`]. Mirrors
+/// `slang::ast::PrimitivePortDirection`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimitivePortDirection {
+    /// `input`.
+    In,
+    /// `output`.
+    Out,
+    /// The `output reg`-style port of a sequential UDP, which carries the
+    /// primitive's state between evaluations.
+    OutReg,
+    /// The shared bidirectional terminal of a switch-level primitive (e.g.
+    /// `tran`).
+    InOut,
+}
+
+impl PrimitivePortDirection {
+    fn from_raw(raw: sys::slang_primitive_port_direction) -> PrimitivePortDirection {
+        match raw {
+            sys::SLANG_PRIMITIVE_PORT_DIRECTION_OUT => PrimitivePortDirection::Out,
+            sys::SLANG_PRIMITIVE_PORT_DIRECTION_OUT_REG => PrimitivePortDirection::OutReg,
+            sys::SLANG_PRIMITIVE_PORT_DIRECTION_INOUT => PrimitivePortDirection::InOut,
+            _ => PrimitivePortDirection::In,
+        }
+    }
+}
+
+/// The kind of gate primitive a `Primitive` symbol represents. See
+/// [`Symbol::primitive_kind`]. Mirrors the nested
+/// `slang::ast::PrimitiveSymbol::PrimitiveKind` enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimitiveKind {
+    /// A user-defined primitive (`primitive`/`endprimitive`).
+    UserDefined,
+    /// A built-in gate with a hard-coded, fixed-arity truth table (e.g.
+    /// `not`, `bufif0`).
+    Fixed,
+    /// A built-in gate that accepts a variable number of inputs (`and`,
+    /// `or`, `nand`, `nor`, `xor`, `xnor`).
+    NInput,
+    /// A built-in gate that accepts a variable number of outputs (`buf`,
+    /// `not`).
+    NOutput,
+    /// A bidirectional switch primitive (`tran`, `rtran`, `tranif0`,
+    /// `tranif1`, `rtranif0`, `rtranif1`).
+    BiDiSwitch,
+}
+
+impl PrimitiveKind {
+    fn from_raw(raw: sys::slang_primitive_kind) -> PrimitiveKind {
+        match raw {
+            sys::SLANG_PRIMITIVE_KIND_FIXED => PrimitiveKind::Fixed,
+            sys::SLANG_PRIMITIVE_KIND_N_INPUT => PrimitiveKind::NInput,
+            sys::SLANG_PRIMITIVE_KIND_N_OUTPUT => PrimitiveKind::NOutput,
+            sys::SLANG_PRIMITIVE_KIND_BI_DI_SWITCH => PrimitiveKind::BiDiSwitch,
+            _ => PrimitiveKind::UserDefined,
+        }
+    }
+}
+
+/// The kind of procedural block a `ProceduralBlock` symbol is. See
+/// [`Symbol::procedural_block_procedure_kind`]. Mirrors
+/// `slang::ast::ProceduralBlockKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProceduralBlockKind {
+    /// An `initial` block.
+    Initial,
+    /// A `final` block.
+    Final,
+    /// A plain `always` block.
+    Always,
+    /// An `always_comb` block.
+    AlwaysComb,
+    /// An `always_latch` block.
+    AlwaysLatch,
+    /// An `always_ff` block.
+    AlwaysFF,
+}
+
+impl ProceduralBlockKind {
+    fn from_raw(raw: sys::slang_procedural_block_kind) -> ProceduralBlockKind {
+        match raw {
+            sys::SLANG_PROCEDURAL_BLOCK_KIND_FINAL => ProceduralBlockKind::Final,
+            sys::SLANG_PROCEDURAL_BLOCK_KIND_ALWAYS => ProceduralBlockKind::Always,
+            sys::SLANG_PROCEDURAL_BLOCK_KIND_ALWAYS_COMB => ProceduralBlockKind::AlwaysComb,
+            sys::SLANG_PROCEDURAL_BLOCK_KIND_ALWAYS_LATCH => ProceduralBlockKind::AlwaysLatch,
+            sys::SLANG_PROCEDURAL_BLOCK_KIND_ALWAYS_FF => ProceduralBlockKind::AlwaysFF,
+            _ => ProceduralBlockKind::Initial,
+        }
+    }
+}
+
+/// A specify-block timing path's connection kind. See
+/// [`Symbol::timing_path_connection_kind`]. Mirrors
+/// `slang::ast::TimingPathSymbol::ConnectionKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimingPathConnectionKind {
+    /// `*>` — every input bit paths to every output bit.
+    Full,
+    /// `=>` — input/output widths must match; bits are paired.
+    Parallel,
+}
+
+impl TimingPathConnectionKind {
+    fn from_raw(raw: sys::slang_timing_path_connection_kind) -> TimingPathConnectionKind {
+        match raw {
+            sys::SLANG_TIMING_PATH_CONNECTION_KIND_PARALLEL => TimingPathConnectionKind::Parallel,
+            _ => TimingPathConnectionKind::Full,
+        }
+    }
+}
+
+/// A specify-block timing path's polarity (used both for the path's overall
+/// polarity and, separately, for an edge-sensitive path's polarity). See
+/// [`Symbol::timing_path_polarity`]. Mirrors
+/// `slang::ast::TimingPathSymbol::Polarity`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimingPathPolarity {
+    /// No polarity specified.
+    Unknown,
+    /// `+`.
+    Positive,
+    /// `-`.
+    Negative,
+}
+
+impl TimingPathPolarity {
+    fn from_raw(raw: sys::slang_timing_path_polarity) -> TimingPathPolarity {
+        match raw {
+            sys::SLANG_TIMING_PATH_POLARITY_POSITIVE => TimingPathPolarity::Positive,
+            sys::SLANG_TIMING_PATH_POLARITY_NEGATIVE => TimingPathPolarity::Negative,
+            _ => TimingPathPolarity::Unknown,
+        }
+    }
+}
+
+/// The kind of a `PulseStyle` symbol declaration. See
+/// [`Symbol::pulse_style_kind`]. Mirrors `slang::ast::PulseStyleKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PulseStyleKind {
+    /// `pulsestyle_onevent`.
+    OnEvent,
+    /// `pulsestyle_ondetect`.
+    OnDetect,
+    /// `showcancelled`.
+    ShowCancelled,
+    /// `noshowcancelled`.
+    NoShowCancelled,
+}
+
+impl PulseStyleKind {
+    fn from_raw(raw: sys::slang_pulse_style_kind) -> PulseStyleKind {
+        match raw {
+            sys::SLANG_PULSE_STYLE_KIND_ON_DETECT => PulseStyleKind::OnDetect,
+            sys::SLANG_PULSE_STYLE_KIND_SHOW_CANCELLED => PulseStyleKind::ShowCancelled,
+            sys::SLANG_PULSE_STYLE_KIND_NO_SHOW_CANCELLED => PulseStyleKind::NoShowCancelled,
+            _ => PulseStyleKind::OnEvent,
+        }
+    }
+}
+
+/// The kind of a `SystemTimingCheck` symbol declaration (a `$setup`/`$hold`/
+/// ... specify-block system timing check). See
+/// [`Symbol::system_timing_check_kind`]. Mirrors
+/// `slang::ast::SystemTimingCheckKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemTimingCheckKind {
+    /// Not a recognized system timing check.
+    Unknown,
+    /// `$setup`.
+    Setup,
+    /// `$hold`.
+    Hold,
+    /// `$setuphold`.
+    SetupHold,
+    /// `$recovery`.
+    Recovery,
+    /// `$removal`.
+    Removal,
+    /// `$recrem`.
+    RecRem,
+    /// `$skew`.
+    Skew,
+    /// `$timeskew`.
+    TimeSkew,
+    /// `$fullskew`.
+    FullSkew,
+    /// `$period`.
+    Period,
+    /// `$width`.
+    Width,
+    /// `$nochange`.
+    NoChange,
+}
+
+impl SystemTimingCheckKind {
+    fn from_raw(raw: sys::slang_system_timing_check_kind) -> SystemTimingCheckKind {
+        match raw {
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_SETUP => SystemTimingCheckKind::Setup,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_HOLD => SystemTimingCheckKind::Hold,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_SETUP_HOLD => SystemTimingCheckKind::SetupHold,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_RECOVERY => SystemTimingCheckKind::Recovery,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_REMOVAL => SystemTimingCheckKind::Removal,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_REC_REM => SystemTimingCheckKind::RecRem,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_SKEW => SystemTimingCheckKind::Skew,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_TIME_SKEW => SystemTimingCheckKind::TimeSkew,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_FULL_SKEW => SystemTimingCheckKind::FullSkew,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_PERIOD => SystemTimingCheckKind::Period,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_WIDTH => SystemTimingCheckKind::Width,
+            sys::SLANG_SYSTEM_TIMING_CHECK_KIND_NO_CHANGE => SystemTimingCheckKind::NoChange,
+            _ => SystemTimingCheckKind::Unknown,
+        }
+    }
+}
+
+/// One argument of a `SystemTimingCheck` symbol, e.g. the `posedge clk`,
+/// `d`, or `10` of `$setup(d, posedge clk, 10)`. See
+/// [`Symbol::system_timing_check_arguments`]. Mirrors
+/// `slang::ast::SystemTimingCheckSymbol::Arg`.
+#[derive(Clone, Debug)]
+pub struct SystemTimingCheckArg<'d> {
+    /// The argument's main expression — the signal/event, limit value, or
+    /// notifier reference, depending on the argument's position. `None` if
+    /// the argument was elided.
+    pub expr: Option<Expression<'d>>,
+    /// The argument's `&&&`-qualified condition expression, e.g. the `en`
+    /// of `posedge clk &&& en`. Only an event argument ever carries one.
+    pub condition: Option<Expression<'d>>,
+    /// The argument's sampling edge, e.g. [`EdgeKind::PosEdge`] for
+    /// `posedge clk`. [`EdgeKind::None`] if the argument declares no edge.
+    pub edge: EdgeKind,
+    /// The argument's edge-descriptor list, e.g. `["01", "z1"]` for `edge
+    /// [01, z1] clk`. Empty if the argument has no edge-descriptor list.
+    pub edge_descriptors: Vec<String>,
+}
+
+impl<'d> SystemTimingCheckArg<'d> {
+    fn from_symbol(sym: sys::slang_ast, index: u32) -> SystemTimingCheckArg<'d> {
+        // SAFETY: `sym` is a valid SystemTimingCheck symbol; `index` is in
+        // range (both guaranteed by the only caller,
+        // `Symbol::system_timing_check_arguments`).
+        let expr = wrap(unsafe { sys::slang_symbol_system_timing_check_argument_expr(sym, index) });
+        // SAFETY: as above.
+        let condition =
+            wrap(unsafe { sys::slang_symbol_system_timing_check_argument_condition(sym, index) });
+        // SAFETY: as above.
+        let edge = EdgeKind::from_raw(unsafe {
+            sys::slang_symbol_system_timing_check_argument_edge(sym, index)
+        });
+        // SAFETY: as above.
+        let desc_count = unsafe {
+            sys::slang_symbol_system_timing_check_argument_edge_descriptor_count(sym, index)
+        };
+        let edge_descriptors = (0..desc_count)
+            .map(|desc_index| {
+                // SAFETY: `sym`/`index` are valid; `desc_index` is in range.
+                ffi::borrowed_str(unsafe {
+                    sys::slang_symbol_system_timing_check_argument_edge_descriptor(
+                        sym, index, desc_index,
+                    )
+                })
+            })
+            .collect();
+        SystemTimingCheckArg {
+            expr,
+            condition,
+            edge,
+            edge_descriptors,
+        }
+    }
+}
+
+/// The vectored/scalared expansion hint on a net declaration (`vectored`/
+/// `scalared` before the net's range, e.g. `wire vectored [7:0] w;`), which
+/// only affects how bit-selects of the net are treated for simulation
+/// purposes. See [`Symbol::net_expansion_hint`]. Mirrors the nested
+/// `slang::ast::NetSymbol::ExpansionHint` enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpansionHint {
+    /// No `vectored`/`scalared` keyword was given.
+    None,
+    /// `vectored`.
+    Vectored,
+    /// `scalared`.
+    Scalared,
+}
+
+impl ExpansionHint {
+    fn from_raw(raw: sys::slang_expansion_hint) -> ExpansionHint {
+        match raw {
+            sys::SLANG_EXPANSION_HINT_VECTORED => ExpansionHint::Vectored,
+            sys::SLANG_EXPANSION_HINT_SCALARED => ExpansionHint::Scalared,
+            _ => ExpansionHint::None,
+        }
+    }
+}
+
+/// A `trireg` net's charge strength level (`small`/`medium`/`large`). See
+/// [`Symbol::net_charge_strength`]. Mirrors `slang::ast::ChargeStrength`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChargeStrength {
+    /// `small`.
+    Small,
+    /// `medium`.
+    Medium,
+    /// `large`.
+    Large,
+}
+
+impl ChargeStrength {
+    fn from_raw(raw: sys::slang_charge_strength) -> Option<ChargeStrength> {
+        match raw {
+            sys::SLANG_CHARGE_STRENGTH_SMALL => Some(ChargeStrength::Small),
+            sys::SLANG_CHARGE_STRENGTH_MEDIUM => Some(ChargeStrength::Medium),
+            sys::SLANG_CHARGE_STRENGTH_LARGE => Some(ChargeStrength::Large),
+            _ => None,
+        }
+    }
+}
+
+/// How a [`TransRange`] repeats within a `bins` transition-set item, e.g. the
+/// `[* 2]`/`[-> 2]`/`[= 2]` suffix of `1 => 2[*2] => 3`. Mirrors
+/// `slang::ast::CoverageBinSymbol::TransRangeList::RepeatKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepeatKind {
+    /// No repeat suffix.
+    None,
+    /// `[* n]` or `[* from:to]`: consecutive repetition.
+    Consecutive,
+    /// `[= n]` or `[= from:to]`: non-consecutive repetition.
+    Nonconsecutive,
+    /// `[-> n]` or `[-> from:to]`: goto (non-consecutive) repetition.
+    GoTo,
+}
+
+impl RepeatKind {
+    fn from_raw(raw: sys::slang_repeat_kind) -> RepeatKind {
+        match raw {
+            sys::SLANG_REPEAT_KIND_CONSECUTIVE => RepeatKind::Consecutive,
+            sys::SLANG_REPEAT_KIND_NONCONSECUTIVE => RepeatKind::Nonconsecutive,
+            sys::SLANG_REPEAT_KIND_GOTO => RepeatKind::GoTo,
+            _ => RepeatKind::None,
+        }
+    }
+}
+
+/// A coverage bin's kind (`bins`, `illegal_bins`, or `ignore_bins`). See
+/// [`Symbol::coverage_bin_kind`]. Mirrors `slang::ast::CoverageBinSymbol::BinKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoverageBinKind {
+    /// A plain `bins` declaration.
+    Bins,
+    /// An `illegal_bins` declaration.
+    IllegalBins,
+    /// An `ignore_bins` declaration.
+    IgnoreBins,
+}
+
+impl CoverageBinKind {
+    fn from_raw(raw: sys::slang_coverage_bin_kind) -> CoverageBinKind {
+        match raw {
+            sys::SLANG_COVERAGE_BIN_ILLEGAL_BINS => CoverageBinKind::IllegalBins,
+            sys::SLANG_COVERAGE_BIN_IGNORE_BINS => CoverageBinKind::IgnoreBins,
+            _ => CoverageBinKind::Bins,
+        }
+    }
+}
+
+/// An `option`/`type_option` setter declared in a covergroup, coverpoint, or
+/// cover cross body (e.g. the `option.weight = 2;` of a cross). See
+/// [`Symbol::cover_cross_options`] and [`Symbol::covergroup_options`].
+/// Mirrors `slang::ast::CoverageOptionSetter`.
+#[derive(Clone, Copy)]
+pub struct CoverageOption<'d> {
+    sym_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for CoverageOption<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for CoverageOption<'_> {}
+
+impl<'d> CoverageOption<'d> {
+    /// True if this setter sets `type_option.*` (a covergroup-type-wide
+    /// option) rather than a plain per-instance `option.*`. Recomputed from
+    /// syntax on every call — a pure, allocation-free read.
+    pub fn is_type_option(&self) -> bool {
+        // SAFETY: `sym_raw` is a valid CoverCross symbol and `index` is in
+        // range of its own option count.
+        unsafe { sys::slang_symbol_cover_cross_option_is_type_option(self.sym_raw, self.index) }
+    }
+
+    /// The option name being set (e.g. `"weight"` for `option.weight = 2;`).
+    /// Empty if the setter's left-hand side doesn't parse as
+    /// `option.name`/`type_option.name`. Recomputed from syntax on every
+    /// call — a pure, allocation-free read.
+    pub fn name(&self) -> &'d str {
+        // SAFETY: as in `is_type_option`; bytes are borrowed from the frozen
+        // design for 'd.
+        unsafe {
+            ffi::str_ref(sys::slang_symbol_cover_cross_option_name(
+                self.sym_raw,
+                self.index,
+            ))
+        }
+    }
+
+    /// The bound right-hand-side expression of this setter. The underlying
+    /// memo is forced by the freeze sweep, so this is a pure read.
+    pub fn expression(&self) -> Option<Expression<'d>> {
+        // SAFETY: as in `is_type_option`.
+        let ast =
+            unsafe { sys::slang_symbol_cover_cross_option_expression(self.sym_raw, self.index) };
+        wrap(ast)
+    }
+}
+
+impl core::fmt::Debug for CoverageOption<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CoverageOption")
+            .field("is_type_option", &self.is_type_option())
+            .field("name", &self.name())
+            .field("expression", &self.expression())
+            .finish()
+    }
+}
+
+/// One `=>`-separated range within a `bins` transition-set alternative (e.g.
+/// the `1,2` or the `3` of `bins b = (1,2 => 3);`). See
+/// [`TransSet::ranges`]. Mirrors
+/// `slang::ast::CoverageBinSymbol::TransRangeList`.
+#[derive(Clone, Copy)]
+pub struct TransRange<'d> {
+    sym_raw: sys::slang_ast,
+    set_index: u32,
+    range_index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for TransRange<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for TransRange<'_> {}
+
+impl<'d> TransRange<'d> {
+    /// The value expressions of this range (e.g. `1` and `2` for the `1,2` of
+    /// `1,2 => 3`). The underlying memo is forced by the freeze sweep, so
+    /// this is a pure read.
+    pub fn items(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let sym_raw = self.sym_raw;
+        let set_index = self.set_index;
+        let range_index = self.range_index;
+        // SAFETY: `sym_raw`/`set_index`/`range_index` identify a valid,
+        // in-range transition range.
+        let count = unsafe {
+            sys::slang_symbol_coverage_bin_trans_range_item_count(sym_raw, set_index, range_index)
+        };
+        (0..count).filter_map(move |item_index| {
+            // SAFETY: as above; `item_index` in range of this range's own item count.
+            let ast = unsafe {
+                sys::slang_symbol_coverage_bin_trans_range_item(
+                    sym_raw,
+                    set_index,
+                    range_index,
+                    item_index,
+                )
+            };
+            wrap(ast)
+        })
+    }
+
+    /// This range's repeat kind ([`RepeatKind::None`] if it has no `[...]`
+    /// repeat suffix). The underlying memo is forced by the freeze sweep, so
+    /// this is a pure read.
+    pub fn repeat_kind(&self) -> RepeatKind {
+        // SAFETY: as in `items`.
+        RepeatKind::from_raw(unsafe {
+            sys::slang_symbol_coverage_bin_trans_range_repeat_kind(
+                self.sym_raw,
+                self.set_index,
+                self.range_index,
+            )
+        })
+    }
+
+    /// The count (`[* n]`) or `from` bound (`[* from:to]`) of this range's
+    /// repeat. `None` if it has no `[...]` repeat suffix at all. The
+    /// underlying memo is forced by the freeze sweep, so this is a pure
+    /// read.
+    pub fn repeat_from(&self) -> Option<Expression<'d>> {
+        // SAFETY: as in `items`.
+        let ast = unsafe {
+            sys::slang_symbol_coverage_bin_trans_range_repeat_from(
+                self.sym_raw,
+                self.set_index,
+                self.range_index,
+            )
+        };
+        wrap(ast)
+    }
+
+    /// The `to` bound of a `[* from:to]`/`[-> from:to]`/`[= from:to]`-style
+    /// range repeat. `None` if this range has no `[...]` suffix, or it is a
+    /// single fixed count (`[* n]`) rather than a `from:to` range. The
+    /// underlying memo is forced by the freeze sweep, so this is a pure
+    /// read.
+    pub fn repeat_to(&self) -> Option<Expression<'d>> {
+        // SAFETY: as in `items`.
+        let ast = unsafe {
+            sys::slang_symbol_coverage_bin_trans_range_repeat_to(
+                self.sym_raw,
+                self.set_index,
+                self.range_index,
+            )
+        };
+        wrap(ast)
+    }
+}
+
+impl core::fmt::Debug for TransRange<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TransRange")
+            .field("items", &self.items().collect::<Vec<_>>())
+            .field("repeat_kind", &self.repeat_kind())
+            .field("repeat_from", &self.repeat_from())
+            .field("repeat_to", &self.repeat_to())
+            .finish()
+    }
+}
+
+/// One comma-separated alternative within a `bins` transition list (e.g.
+/// `1,2 => 3` of `bins b = (1,2 => 3), (4=>5);`). See
+/// [`Symbol::coverage_bin_trans_sets`]. Mirrors
+/// `slang::ast::CoverageBinSymbol::TransSet`.
+#[derive(Clone, Copy)]
+pub struct TransSet<'d> {
+    sym_raw: sys::slang_ast,
+    set_index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for TransSet<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for TransSet<'_> {}
+
+impl<'d> TransSet<'d> {
+    /// The `=>`-separated ranges of this alternative (e.g. `1,2` then `3` for
+    /// `1,2 => 3`).
+    pub fn ranges(&self) -> impl Iterator<Item = TransRange<'d>> + 'd {
+        let sym_raw = self.sym_raw;
+        let set_index = self.set_index;
+        // SAFETY: `sym_raw`/`set_index` identify a valid, in-range trans-set.
+        let count = unsafe { sys::slang_symbol_coverage_bin_trans_range_count(sym_raw, set_index) };
+        (0..count).map(move |range_index| TransRange {
+            sym_raw,
+            set_index,
+            range_index,
+            _design: PhantomData,
+        })
+    }
+}
+
+impl core::fmt::Debug for TransSet<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TransSet")
+            .field("ranges", &self.ranges().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl<'d> Symbol<'d> {
@@ -1025,6 +6406,227 @@ impl<'d> Symbol<'d> {
         let mut err = ffi::error();
         // SAFETY: the symbol is valid; the string is owned.
         unsafe { ffi::owned_str(sys::slang_symbol_hierarchical_path(self.raw, &mut err)) }
+    }
+
+    /// The symbol's lexical path, walking up to the compilation unit and
+    /// joining each parent's name with `.` (or `::` between a package/
+    /// class/covergroup and its member), e.g. `"pkg::C::f"`. Unlike
+    /// [`Self::hierarchical_path`] this does not walk through instance
+    /// bodies, so it reflects the textual nesting a `resolve`-style
+    /// reference would use, not the instantiated hierarchy.
+    /// `slang::ast::Symbol::getLexicalPath` walks only already-resolved
+    /// parent-scope pointers and builds a fresh `std::string` on the
+    /// caller's own heap (no slang arena allocation), so this is a pure
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package pkg;\n\
+    /// #        class C;\n\
+    /// #          function int f(); return 1; endfunction\n\
+    /// #        endclass\n\
+    /// #      endpackage\n\
+    /// #      module sub; logic [7:0] x; endmodule\n\
+    /// #      module top; sub u1(); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let pkg = design.packages().find(|p| p.name() == "pkg").unwrap();
+    /// let f = pkg.find("C").unwrap().find("f").unwrap();
+    /// assert_eq!(f.lexical_path(), "pkg::C::f");
+    ///
+    /// // Unlike hierarchical_path (which names the instance, "top.u1.x"),
+    /// // lexical_path names the definition sub was declared in ("sub.x")
+    /// // — it never walks through an instantiated `InstanceBody`.
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let u1 = body.members().find(|s| s.name() == "u1").unwrap();
+    /// let x = u1.instance_body().unwrap().find("x").unwrap();
+    /// assert_eq!(x.hierarchical_path(), "top.u1.x");
+    /// assert_eq!(x.lexical_path(), "sub.x");
+    /// # Ok(()) }
+    /// ```
+    pub fn lexical_path(&self) -> String {
+        let mut err = ffi::error();
+        // SAFETY: the symbol is valid; the string is owned.
+        unsafe { ffi::owned_str(sys::slang_symbol_lexical_path(self.raw, &mut err)) }
+    }
+
+    /// True if the symbol carries a `slang::ast::DeclaredType` (see
+    /// [`Self::declared_type`] and friends, which all work directly off the
+    /// carrier symbol rather than a separate handle). Mirrors
+    /// `Symbol::getDeclaredType() != nullptr`. The underlying memo (when
+    /// present) is the same one the freeze sweep force-resolves for every
+    /// `DeclaredType` carrier, so this is a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("x").unwrap().has_declared_type());
+    /// assert!(!body.has_declared_type());
+    /// # Ok(()) }
+    /// ```
+    pub fn has_declared_type(&self) -> bool {
+        // SAFETY: the symbol is valid.
+        unsafe { sys::slang_symbol_has_declared_type(self.raw) }
+    }
+
+    /// The nearest enclosing definition (module/interface/program) this
+    /// symbol is declared within, as a `Definition` symbol. `None` if the
+    /// symbol isn't declared inside any definition (e.g. it lives in a
+    /// package or in `$unit`). `slang::ast::Symbol::getDeclaringDefinition`
+    /// walks already-resolved parent scope pointers up to the nearest
+    /// `InstanceBody` and reads its (constant, set-at-construction)
+    /// `Definition` reference — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package pkg;\n\
+    /// #        int y;\n\
+    /// #      endpackage\n\
+    /// #      module m; logic [7:0] x; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("x").unwrap();
+    /// assert_eq!(x.declaring_definition().unwrap().name(), "m");
+    ///
+    /// let pkg = design.packages().find(|p| p.name() == "pkg").unwrap();
+    /// let y = pkg.find("y").unwrap();
+    /// assert!(y.declaring_definition().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn declaring_definition(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid.
+        wrap(unsafe { sys::slang_symbol_declaring_definition(self.raw) })
+    }
+
+    /// The source library that contains the symbol. `None` if the symbol
+    /// has no enclosing `CompilationUnit`/`Definition`/`Instance` (e.g. the
+    /// `$root` symbol itself). `slang::ast::Symbol::getSourceLibrary` walks
+    /// already-resolved parent scope pointers and reads a `sourceLibrary`
+    /// field set once at construction — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("x").unwrap();
+    /// assert!(x.source_library().unwrap().is_default());
+    /// # Ok(()) }
+    /// ```
+    pub fn source_library(&self) -> Option<SourceLibrary<'d>> {
+        // SAFETY: the symbol is valid.
+        let raw = unsafe { sys::slang_symbol_source_library(self.raw) };
+        (!raw.is_null()).then_some(SourceLibrary {
+            raw,
+            _design: PhantomData,
+        })
+    }
+
+    /// The symbol's `rand`/`randc` mode — [`RandMode::None`] unless the
+    /// symbol is a `ClassProperty` or (class-scoped struct) `Field` with a
+    /// `rand`/`randc` qualifier. `slang::ast::Symbol::getRandMode` reads
+    /// the same field as [`Self::class_property_rand_mode`] /
+    /// [`Self::field_rand_mode`], generalized over symbol kind — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RandMode;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C;\n\
+    /// #        rand int x;\n\
+    /// #        randc int y;\n\
+    /// #        int z;\n\
+    /// #      endclass\n\
+    /// #      module m; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let c = design.compilation_units().next().unwrap().find("C").unwrap();
+    /// assert_eq!(c.find("x").unwrap().rand_mode(), RandMode::Rand);
+    /// assert_eq!(c.find("y").unwrap().rand_mode(), RandMode::RandC);
+    /// assert_eq!(c.find("z").unwrap().rand_mode(), RandMode::None);
+    /// # Ok(()) }
+    /// ```
+    pub fn rand_mode(&self) -> RandMode {
+        // SAFETY: the symbol is valid.
+        match unsafe { sys::slang_symbol_rand_mode(self.raw) } {
+            sys::SLANG_RAND_MODE_RAND => RandMode::Rand,
+            sys::SLANG_RAND_MODE_RANDC => RandMode::RandC,
+            _ => RandMode::None,
+        }
+    }
+
+    /// A [`LookupLocation`] placed just before this symbol in its parent
+    /// scope's member list (`slang::ast::LookupLocation::before`) — a lookup
+    /// starting from this location will not see declarations from this
+    /// symbol onward. A location with no scope if this symbol has no parent
+    /// scope (e.g. the root).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic a; logic b; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let (a, b) = (body.find("a").unwrap(), body.find("b").unwrap());
+    /// assert!(a.lookup_location_before().index() < b.lookup_location_before().index());
+    /// # Ok(()) }
+    /// ```
+    pub fn lookup_location_before(&self) -> LookupLocation<'d> {
+        LookupLocation {
+            // SAFETY: the symbol is valid.
+            raw: unsafe { sys::slang_lookup_location_before(self.raw) },
+            _design: PhantomData,
+        }
+    }
+
+    /// A [`LookupLocation`] placed just after this symbol in its parent
+    /// scope's member list (`slang::ast::LookupLocation::after`). See
+    /// [`lookup_location_before`](Self::lookup_location_before).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let a = body.find("a").unwrap();
+    /// assert_eq!(
+    ///     a.lookup_location_before().index() + 1,
+    ///     a.lookup_location_after().index()
+    /// );
+    /// # Ok(()) }
+    /// ```
+    pub fn lookup_location_after(&self) -> LookupLocation<'d> {
+        LookupLocation {
+            // SAFETY: the symbol is valid.
+            raw: unsafe { sys::slang_lookup_location_after(self.raw) },
+            _design: PhantomData,
+        }
     }
 
     /// The syntax node this symbol was created from, tied to `tree`.
@@ -1283,6 +6885,83 @@ impl<'d> Symbol<'d> {
         wrap(ast)
     }
 
+    /// For an `Instance` symbol: true if the definition it instantiates is a
+    /// `module`. False for any other symbol kind, and for an instance of an
+    /// `interface` or `program` definition. A pure, allocation-free read.
+    /// Mirrors `slang::ast::InstanceSymbol::isModule`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// assert!(top.instance_is_module());
+    /// assert!(!top.instance_is_interface());
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_is_module(&self) -> bool {
+        if self.kind() != SymbolKind::Instance {
+            return false;
+        }
+        // SAFETY: the symbol is an instance.
+        unsafe { sys::slang_instance_is_module(self.raw) }
+    }
+
+    /// For an `Instance` symbol: true if the definition it instantiates is
+    /// an `interface`. False for any other symbol kind, and for an instance
+    /// of a `module` or `program` definition. A pure, allocation-free read.
+    /// Mirrors `slang::ast::InstanceSymbol::isInterface`.
+    ///
+    /// See [`Symbol::instance_is_module`] for an example.
+    pub fn instance_is_interface(&self) -> bool {
+        if self.kind() != SymbolKind::Instance {
+            return false;
+        }
+        // SAFETY: the symbol is an instance.
+        unsafe { sys::slang_instance_is_interface(self.raw) }
+    }
+
+    /// For an `Instance` symbol: its resolved port connections
+    /// (`slang::ast::InstanceSymbol::getPortConnections`). Empty for any
+    /// other symbol kind. The connection list is lazily resolved by slang
+    /// but the freeze sweep forces it — and every connection's own bound
+    /// expression — for every Instance symbol it reaches, so this is a pure
+    /// read on a frozen design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("
+    /// #     module sub(input logic a); endmodule
+    /// #     module m; logic x; sub s1(.a(x)); endmodule
+    /// # ")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let s1 = body.find("s1").unwrap();
+    /// let conns: Vec<_> = s1.instance_port_connections().collect();
+    /// assert_eq!(conns.len(), 1);
+    /// assert_eq!(conns[0].port().name(), "a");
+    /// assert!(conns[0].expression().is_some());
+    /// assert!(!conns[0].is_implicit());
+    /// assert!(!conns[0].is_wildcard());
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_port_connections(&self) -> impl Iterator<Item = PortConnection<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-Instance symbol.
+        let count = unsafe { sys::slang_instance_port_connection_count(raw) };
+        (0..count).map(move |index| PortConnection {
+            instance_raw: raw,
+            index,
+            _design: PhantomData,
+        })
+    }
+
     /// For an `Instance` symbol, its elaborated parameters (value and type).
     ///
     /// # Examples
@@ -1329,6 +7008,170 @@ impl<'d> Symbol<'d> {
         ffi::check(&err).ok().map(|()| ffi::owned_str(s))
     }
 
+    /// True if `self` (a `Parameter` or `TypeParameter` symbol) is a
+    /// `localparam`. False for any other symbol kind, or a non-local
+    /// parameter. A direct field read
+    /// (`slang::ast::ParameterSymbolBase::isLocalParam`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m #(parameter int W = 8);\n  localparam int L = 2;\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(!body.find("W").unwrap().parameter_is_local_param());
+    /// assert!(body.find("L").unwrap().parameter_is_local_param());
+    /// # Ok(()) }
+    /// ```
+    pub fn parameter_is_local_param(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-parameter symbol.
+        unsafe { sys::slang_symbol_parameter_is_local_param(self.raw) }
+    }
+
+    /// True if `self` (a `Parameter` or `TypeParameter` symbol) was declared
+    /// in a module/interface/program/checker's parameter port list
+    /// (`#(...)`). False for any other symbol kind, or a parameter declared
+    /// in the body. A direct field read
+    /// (`slang::ast::ParameterSymbolBase::isPortParam`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// See [`Symbol::parameter_is_local_param`] for an example design.
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m #(parameter int W = 8);\n  localparam int L = 2;\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("W").unwrap().parameter_is_port_param());
+    /// assert!(!body.find("L").unwrap().parameter_is_port_param());
+    /// # Ok(()) }
+    /// ```
+    pub fn parameter_is_port_param(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-parameter symbol.
+        unsafe { sys::slang_symbol_parameter_is_port_param(self.raw) }
+    }
+
+    /// True if `self` (a `Parameter` or `TypeParameter` symbol) was declared
+    /// in the body of its containing construct rather than its parameter
+    /// port list — the complement of
+    /// [`parameter_is_port_param`](Self::parameter_is_port_param). False for
+    /// any other symbol kind. Mirrors
+    /// `slang::ast::ParameterSymbolBase::isBodyParam` (`!isPortParam()`) — a
+    /// pure, allocation-free read.
+    ///
+    /// # Examples
+    /// See [`Symbol::parameter_is_local_param`] for an example design.
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m #(parameter int W = 8);\n  localparam int L = 2;\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(!body.find("W").unwrap().parameter_is_body_param());
+    /// assert!(body.find("L").unwrap().parameter_is_body_param());
+    /// # Ok(()) }
+    /// ```
+    pub fn parameter_is_body_param(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-parameter symbol.
+        unsafe { sys::slang_symbol_parameter_is_body_param(self.raw) }
+    }
+
+    /// True if a `Parameter` symbol's value was overridden from its default
+    /// (by a `#(...)` instantiation override, a `defparam`, or a config
+    /// rule). False if `self` is not a Parameter symbol, or it kept its
+    /// declared default. Reads a flag on the underlying declared type
+    /// (`slang::ast::ParameterSymbol::isOverridden`) resolved by the same
+    /// `getType()` the freeze sweep already forces for every symbol, so this
+    /// is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module sub #(parameter int W = 8) (); endmodule\n\
+    /// #      module m;\n  sub #(.W(4)) s1();\n  sub s2();\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let s1 = top
+    ///     .instance_body()
+    ///     .unwrap()
+    ///     .members()
+    ///     .find(|m| m.name() == "s1")
+    ///     .unwrap();
+    /// let s2 = top
+    ///     .instance_body()
+    ///     .unwrap()
+    ///     .members()
+    ///     .find(|m| m.name() == "s2")
+    ///     .unwrap();
+    /// let w1 = s1.instance_body().unwrap().find("W").unwrap();
+    /// let w2 = s2.instance_body().unwrap().find("W").unwrap();
+    /// assert!(w1.parameter_is_overridden());
+    /// assert!(!w2.parameter_is_overridden());
+    /// # Ok(()) }
+    /// ```
+    pub fn parameter_is_overridden(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-Parameter symbol.
+        unsafe { sys::slang_symbol_parameter_is_overridden(self.raw) }
+    }
+
+    /// True if a `TypeParameter` symbol's type was overridden from its
+    /// default (by a `#(...)` instantiation override or a config rule).
+    /// False if `self` is not a TypeParameter symbol, or it kept its
+    /// declared default type. Reads a flag on the underlying declared type
+    /// (`slang::ast::TypeParameterSymbol::isOverridden`) resolved by the
+    /// same `getType()` the freeze sweep already forces for every symbol
+    /// with a declared type, so this is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module sub #(parameter type T = int) (); endmodule\n\
+    /// #      module m;\n  sub #(.T(bit)) s1();\n  sub s2();\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let s1 = top
+    ///     .instance_body()
+    ///     .unwrap()
+    ///     .members()
+    ///     .find(|m| m.name() == "s1")
+    ///     .unwrap();
+    /// let s2 = top
+    ///     .instance_body()
+    ///     .unwrap()
+    ///     .members()
+    ///     .find(|m| m.name() == "s2")
+    ///     .unwrap();
+    /// let t1 = s1.instance_body().unwrap().find("T").unwrap();
+    /// let t2 = s2.instance_body().unwrap().find("T").unwrap();
+    /// assert!(t1.type_parameter_is_overridden());
+    /// assert!(!t2.type_parameter_is_overridden());
+    /// # Ok(()) }
+    /// ```
+    pub fn type_parameter_is_overridden(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-TypeParameter symbol.
+        unsafe { sys::slang_symbol_type_parameter_is_overridden(self.raw) }
+    }
+
     /// For a `Definition` symbol, whether it is a module, interface or program.
     ///
     /// # Examples
@@ -1352,6 +7195,5598 @@ impl<'d> Symbol<'d> {
             sys::SLANG_DEFINITION_INTERFACE => DefinitionKind::Interface,
             sys::SLANG_DEFINITION_PROGRAM => DefinitionKind::Program,
             _ => DefinitionKind::Module,
+        })
+    }
+
+    /// For a `Definition` symbol: whether it was declared with a
+    /// `` `celldefine `` directive in effect. `false` for a non-Definition
+    /// symbol. A direct field read
+    /// (`slang::ast::DefinitionSymbol::cellDefine`), populated when the
+    /// definition is parsed — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "`celldefine\nmodule celled; endmodule\n`endcelldefine\nmodule plain; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let mut defs: Vec<_> = design.definitions().collect();
+    /// defs.sort_by_key(|d| d.name().to_string());
+    /// assert!(defs.iter().find(|d| d.name() == "celled").unwrap().definition_cell_define());
+    /// assert!(!defs.iter().find(|d| d.name() == "plain").unwrap().definition_cell_define());
+    /// # Ok(()) }
+    /// ```
+    pub fn definition_cell_define(&self) -> bool {
+        // SAFETY: the symbol is valid.
+        unsafe { sys::slang_definition_cell_define(self.raw) }
+    }
+
+    /// For a `Definition` symbol: the default lifetime (`automatic` or
+    /// `static`) for variables it declares. `None` for a non-Definition
+    /// symbol. A direct field read
+    /// (`slang::ast::DefinitionSymbol::defaultLifetime`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::VariableLifetime;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\nmodule automatic am; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let mut defs: Vec<_> = design.definitions().collect();
+    /// defs.sort_by_key(|d| d.name().to_string());
+    /// let am = defs.iter().find(|d| d.name() == "am").unwrap();
+    /// assert_eq!(am.definition_default_lifetime(), Some(VariableLifetime::Automatic));
+    /// # Ok(()) }
+    /// ```
+    pub fn definition_default_lifetime(&self) -> Option<VariableLifetime> {
+        if self.kind() != SymbolKind::Definition {
+            return None;
+        }
+        // SAFETY: the symbol is a definition.
+        Some(
+            match unsafe { sys::slang_definition_default_lifetime(self.raw) } {
+                sys::SLANG_VARIABLE_LIFETIME_STATIC => VariableLifetime::Static,
+                _ => VariableLifetime::Automatic,
+            },
+        )
+    }
+
+    /// For a `Package` symbol (a `package p; ... endpackage` construct):
+    /// the default lifetime (`automatic` or `static`) for variables it
+    /// declares -- `Static` unless an explicit `package automatic p;` /
+    /// `package static p;` says otherwise. `None` for a non-Package
+    /// symbol. A direct field read
+    /// (`slang::ast::PackageSymbol::defaultLifetime`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::VariableLifetime;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("package p; endpackage\npackage automatic ap; endpackage\n")?;
+    /// # let design = comp.compile()?;
+    /// let mut pkgs: Vec<_> = design.packages().collect();
+    /// pkgs.sort_by_key(|p| p.name().to_string());
+    /// assert_eq!(pkgs[1].package_default_lifetime(), Some(VariableLifetime::Static));
+    /// assert_eq!(pkgs[0].package_default_lifetime(), Some(VariableLifetime::Automatic));
+    /// # Ok(()) }
+    /// ```
+    pub fn package_default_lifetime(&self) -> Option<VariableLifetime> {
+        if self.kind() != SymbolKind::Package {
+            return None;
+        }
+        // SAFETY: the symbol is a package.
+        Some(
+            match unsafe { sys::slang_symbol_package_default_lifetime(self.raw) } {
+                sys::SLANG_VARIABLE_LIFETIME_STATIC => VariableLifetime::Static,
+                _ => VariableLifetime::Automatic,
+            },
+        )
+    }
+
+    /// Looks up `name` in a `Package` symbol, following
+    /// `slang::ast::PackageSymbol::findForImport`: checks the package's own
+    /// directly-declared members (including its own `import`s) first, then
+    /// -- for a name only reachable through one of the package's `export`
+    /// declarations -- validates those declarations (idempotent; memoized
+    /// the first time any lookup needs them) and returns the exported
+    /// symbol. `None` if nothing was found, `self` is not a Package symbol,
+    /// or `name` is empty. The export-resolution memo is force-resolved for
+    /// every Package symbol by the freeze sweep, so despite mirroring a lazy
+    /// getter this is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package base_pkg;\n\
+    /// #        localparam int K = 5;\n\
+    /// #      endpackage\n\
+    /// #      package re_pkg;\n\
+    /// #        export base_pkg::K;\n\
+    /// #        import base_pkg::K;\n\
+    /// #      endpackage\n\
+    /// #      module m; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let re = design.packages().find(|p| p.name() == "re_pkg").unwrap();
+    /// let k = re.package_find_for_import("K").unwrap();
+    /// assert_eq!(k.name(), "K");
+    /// assert!(re.package_find_for_import("nope").is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn package_find_for_import(&self, name: &str) -> Option<Symbol<'d>> {
+        let (n, nl) = ffi::as_ptr_len(name);
+        // SAFETY: the symbol is valid; the export-resolution memo is
+        // pre-forced by the freeze sweep, so this never mutates the frozen
+        // arena.
+        let ast = unsafe { sys::slang_symbol_package_find_for_import(self.raw, n, nl) };
+        wrap(ast)
+    }
+
+    /// True if a `Package` symbol has an `export *::*;` declaration
+    /// (re-exporting every package it imports from). False if `self` is not
+    /// a Package symbol. A direct field read
+    /// (`slang::ast::PackageSymbol::hasExportAll`) — a pure, allocation-free
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package base_pkg; localparam int K = 5; endpackage\n\
+    /// #      package star_pkg;\n\
+    /// #        import base_pkg::*;\n\
+    /// #        export *::*;\n\
+    /// #      endpackage\n\
+    /// #      package plain_pkg; endpackage\n\
+    /// #      module m; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let star = design.packages().find(|p| p.name() == "star_pkg").unwrap();
+    /// assert!(star.package_has_export_all());
+    /// let plain = design.packages().find(|p| p.name() == "plain_pkg").unwrap();
+    /// assert!(!plain.package_has_export_all());
+    /// # Ok(()) }
+    /// ```
+    pub fn package_has_export_all(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-Package symbol.
+        unsafe { sys::slang_symbol_package_has_export_all(self.raw) }
+    }
+
+    /// A `Package` symbol's own explicit timescale (via a `` `timescale ``
+    /// directive preceding it, or a per-element override). `None` if `self`
+    /// is not a Package symbol, or it has no explicit timescale. A direct
+    /// field read (`slang::ast::PackageSymbol::timeScale`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("`timescale 1ns/1ps\npackage p; endpackage\nmodule m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let p = design.packages().find(|p| p.name() == "p").unwrap();
+    /// let ts = p.package_time_scale().unwrap();
+    /// assert_eq!(ts.base.magnitude(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn package_time_scale(&self) -> Option<TimeScale> {
+        let mut raw = sys::slang_time_scale {
+            base_unit: 0,
+            base_magnitude: 0,
+            precision_unit: 0,
+            precision_magnitude: 0,
+        };
+        // SAFETY: the symbol is valid; `raw` is written only on success.
+        let set = unsafe { sys::slang_symbol_package_time_scale(self.raw, &mut raw) };
+        set.then(|| TimeScale::from_raw(raw))
+    }
+
+    /// For a `Definition` symbol: the drive setting used for its unconnected
+    /// nets. `None` for a non-Definition symbol. A direct field read
+    /// (`slang::ast::DefinitionSymbol::unconnectedDrive`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::UnconnectedDrive;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let def = design.definitions().next().unwrap();
+    /// assert_eq!(def.definition_unconnected_drive(), Some(UnconnectedDrive::None));
+    /// # Ok(()) }
+    /// ```
+    pub fn definition_unconnected_drive(&self) -> Option<UnconnectedDrive> {
+        if self.kind() != SymbolKind::Definition {
+            return None;
+        }
+        // SAFETY: the symbol is a definition.
+        Some(
+            match unsafe { sys::slang_definition_unconnected_drive(self.raw) } {
+                sys::SLANG_UNCONNECTED_DRIVE_PULL0 => UnconnectedDrive::Pull0,
+                sys::SLANG_UNCONNECTED_DRIVE_PULL1 => UnconnectedDrive::Pull1,
+                _ => UnconnectedDrive::None,
+            },
+        )
+    }
+
+    /// For a `Definition` symbol: its explicitly specified timescale (via a
+    /// `` `timescale `` directive or a per-definition override), or `None`
+    /// if it has none or `self` is not a Definition symbol. A direct field
+    /// read (`slang::ast::DefinitionSymbol::timeScale`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("`timescale 1ns/1ps\nmodule m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let def = design.definitions().next().unwrap();
+    /// assert!(def.definition_time_scale().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn definition_time_scale(&self) -> Option<TimeScale> {
+        let mut raw = sys::slang_time_scale {
+            base_unit: 0,
+            base_magnitude: 0,
+            precision_unit: 0,
+            precision_magnitude: 0,
+        };
+        // SAFETY: the symbol is valid; `raw` is written only on success.
+        let set = unsafe { sys::slang_definition_time_scale(self.raw, &mut raw) };
+        set.then(|| TimeScale::from_raw(raw))
+    }
+
+    /// A string description of a `Definition` symbol's kind: `"module"`,
+    /// `"interface"`, or `"program"`. Empty for a non-Definition symbol.
+    /// Mirrors `slang::ast::DefinitionSymbol::getKindString`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("interface bus; endinterface\n")?;
+    /// # let design = comp.compile()?;
+    /// let def = design.definitions().next().unwrap();
+    /// assert_eq!(def.definition_kind_string(), "interface");
+    /// # Ok(()) }
+    /// ```
+    pub fn definition_kind_string(&self) -> &'d str {
+        // SAFETY: the symbol is valid; the string is borrowed static storage.
+        unsafe { ffi::str_ref(sys::slang_definition_kind_string(self.raw)) }
+    }
+
+    /// Like [`Self::definition_kind_string`], but with an indefinite article:
+    /// `"a module"`, `"an interface"`, `"a program"`. Empty for a
+    /// non-Definition symbol. Mirrors
+    /// `slang::ast::DefinitionSymbol::getArticleKindString`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("interface bus; endinterface\n")?;
+    /// # let design = comp.compile()?;
+    /// let def = design.definitions().next().unwrap();
+    /// assert_eq!(def.definition_article_kind_string(), "an interface");
+    /// # Ok(()) }
+    /// ```
+    pub fn definition_article_kind_string(&self) -> &'d str {
+        // SAFETY: the symbol is valid; the string is borrowed static storage.
+        unsafe { ffi::str_ref(sys::slang_definition_article_kind_string(self.raw)) }
+    }
+
+    /// For a `Definition` symbol: the number of times it has been
+    /// instantiated so far in the visited design. 0 for a non-Definition
+    /// symbol. This reflects elaboration state as of the (already complete,
+    /// for a frozen design) end of elaboration, so this is a pure read of a
+    /// stable count. Mirrors
+    /// `slang::ast::DefinitionSymbol::getInstanceCount`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module leaf; endmodule\n\
+    /// #     module top; leaf l0(); leaf l1(); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let mut defs: Vec<_> = design.definitions().collect();
+    /// defs.sort_by_key(|d| d.name().to_string());
+    /// let leaf = defs.iter().find(|d| d.name() == "leaf").unwrap();
+    /// assert_eq!(leaf.definition_instance_count(), 2);
+    /// # Ok(()) }
+    /// ```
+    pub fn definition_instance_count(&self) -> u64 {
+        // SAFETY: the symbol is valid.
+        unsafe { sys::slang_definition_instance_count(self.raw) }
+    }
+
+    /// For an `AssertionPort` symbol (a formal port of a sequence, property,
+    /// `let`, or checker declaration): its direction if it is a local
+    /// variable port (`local ...`), or `None` if it is a plain formal port
+    /// (see [`Symbol::assertion_port_is_local_var`]). `None` also for any
+    /// other symbol kind. A direct field read
+    /// (`slang::ast::AssertionPortSymbol::direction`), populated at
+    /// declaration — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ArgumentDirection;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "checker chk(input logic i, output logic o = 1'b0);\n\
+    /// #      assign o = i;\nendchecker\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let chk = unit.find("chk").unwrap();
+    /// let ports: Vec<_> = chk.checker_ports().collect();
+    /// assert!(ports[0].assertion_port_is_local_var());
+    /// assert_eq!(ports[0].assertion_port_direction(), Some(ArgumentDirection::In));
+    /// assert_eq!(ports[1].assertion_port_direction(), Some(ArgumentDirection::Out));
+    /// # Ok(()) }
+    /// ```
+    pub fn assertion_port_direction(&self) -> Option<ArgumentDirection> {
+        if self.kind() != SymbolKind::AssertionPort {
+            return None;
+        }
+        // SAFETY: the symbol is an AssertionPort.
+        ArgumentDirection::from_raw(unsafe { sys::slang_symbol_assertion_port_direction(self.raw) })
+    }
+
+    /// For an `AssertionPort` symbol: true if it is a local variable port
+    /// (`local ...`) rather than a plain formal port. `false` for any other
+    /// symbol kind. Mirrors
+    /// `slang::ast::AssertionPortSymbol::isLocalVar`. A pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::assertion_port_direction`] for an example.
+    pub fn assertion_port_is_local_var(&self) -> bool {
+        if self.kind() != SymbolKind::AssertionPort {
+            return false;
+        }
+        // SAFETY: the symbol is an AssertionPort.
+        unsafe { sys::slang_symbol_assertion_port_is_local_var(self.raw) }
+    }
+
+    /// For an `Attribute` symbol (`(* name = expr *)`): its bound,
+    /// constant-folded value. `None` on error (including a non-Attribute
+    /// symbol, or a value that failed to fold). The underlying memo is
+    /// forced by the freeze sweep, so this is a pure read on a frozen
+    /// design. Mirrors `slang::ast::AttributeSymbol::getValue`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "checker chk(input logic i, output logic o = 1'b0);\n\
+    /// #      assign o = i;\nendchecker\n\
+    /// #      module m(input logic a);\n\
+    /// #        logic w;\n\
+    /// #        chk c1((* foo = 1 *) .i(a), .o(w));\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let c1 = body.find("c1").unwrap();
+    /// let conns: Vec<_> = c1.checker_instance_connections().collect();
+    /// let attrs: Vec<_> = conns[0].attributes().collect();
+    /// assert_eq!(attrs.len(), 1);
+    /// assert_eq!(attrs[0].name(), "foo");
+    /// assert_eq!(attrs[0].attribute_value().unwrap().as_i64(), Some(1));
+    /// # Ok(()) }
+    /// ```
+    pub fn attribute_value(&self) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the symbol is valid; the value memo is forced pre-seal by
+        // the freeze sweep, so this reads it without arena mutation.
+        let raw = unsafe { sys::slang_symbol_attribute_value(self.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// For a `CheckerInstanceBody` symbol: the CheckerInstance symbol this
+    /// is the body of. `None` if there is none, or this is not a
+    /// CheckerInstanceBody symbol. A direct field read
+    /// (`slang::ast::CheckerInstanceBodySymbol::parentInstance`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "checker chk(input logic i, output logic o = 1'b0);\n\
+    /// #      assign o = i;\nendchecker\n\
+    /// #      module m(input logic a);\n\
+    /// #        logic w;\n\
+    /// #        chk c1(.i(a), .o(w));\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let c1 = body.find("c1").unwrap();
+    ///
+    /// // `c1.members()` flattens straight through to the checker instance
+    /// // body's own members (the body wrapper itself is not a scope member
+    /// // of anything, so it never appears from a `members()`/`visit()`
+    /// // walk) — reach it via any of those members' `parent()` instead.
+    /// let checker_body = c1.members().next().unwrap().parent().unwrap();
+    /// assert_eq!(checker_body.checker_instance_body_parent_instance(), Some(c1));
+    /// # Ok(()) }
+    /// ```
+    pub fn checker_instance_body_parent_instance(&self) -> Option<Symbol<'d>> {
+        if self.kind() != SymbolKind::CheckerInstanceBody {
+            return None;
+        }
+        // SAFETY: the symbol is a CheckerInstanceBody.
+        wrap(unsafe { sys::slang_symbol_checker_instance_body_parent_instance(self.raw) })
+    }
+
+    /// For an `InstanceBody` symbol: the `Instance` symbol that owns it.
+    /// `None` if it has none (e.g. a body created for a virtual-interface
+    /// placeholder or a default-instantiated definition with no enclosing
+    /// instance), or if this is not an InstanceBody symbol. A direct field
+    /// read (`slang::ast::InstanceBodySymbol::parentInstance`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let body = top.instance_body().unwrap();
+    /// assert_eq!(body.instance_body_parent_instance(), Some(top));
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_body_parent_instance(&self) -> Option<Symbol<'d>> {
+        if self.kind() != SymbolKind::InstanceBody {
+            return None;
+        }
+        // SAFETY: the symbol is an InstanceBody.
+        wrap(unsafe { sys::slang_symbol_instance_body_parent_instance(self.raw) })
+    }
+
+    /// For an `InstanceBody` symbol: the `Definition` it was elaborated
+    /// from. `None` if this is not an InstanceBody symbol. A direct field
+    /// read (`slang::ast::InstanceBodySymbol::getDefinition`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.instance_body_definition().unwrap().name(), "m");
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_body_definition(&self) -> Option<Symbol<'d>> {
+        if self.kind() != SymbolKind::InstanceBody {
+            return None;
+        }
+        // SAFETY: the symbol is an InstanceBody.
+        wrap(unsafe { sys::slang_symbol_instance_body_definition(self.raw) })
+    }
+
+    /// For an `InstanceBody` symbol: its port list (`Port`, `MultiPort`, and
+    /// `InterfacePort` symbols, in declaration order). Empty for any other
+    /// symbol kind. The port list is populated by elaboration, which the
+    /// freeze sweep's generic scope-member traversal forces for every
+    /// reached scope (every InstanceBody among them), so this is a pure
+    /// read. Mirrors `slang::ast::InstanceBodySymbol::getPortList`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a, output logic b); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let names: Vec<_> = body.instance_body_ports().map(|p| p.name().to_string()).collect();
+    /// assert_eq!(names, vec!["a", "b"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_body_ports(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-InstanceBody symbol.
+        let count = unsafe { sys::slang_symbol_instance_body_port_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_instance_body_port(raw, index) })
+        })
+    }
+
+    /// For an `InstanceBody` symbol: the port with the given name (searched
+    /// among [`Symbol::instance_body_ports`]). `None` if there is no such
+    /// port, or this is not an InstanceBody symbol. Reads only the
+    /// already-elaborated port list (forced by the freeze sweep, exactly
+    /// like [`Symbol::instance_body_ports`]) — a pure read, not a fresh name
+    /// lookup. Mirrors `slang::ast::InstanceBodySymbol::findPort`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a, output logic b); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.instance_body_find_port("b").unwrap().name(), "b");
+    /// assert!(body.instance_body_find_port("nope").is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_body_find_port(&self, name: &str) -> Option<Symbol<'d>> {
+        if self.kind() != SymbolKind::InstanceBody {
+            return None;
+        }
+        let (n, nl) = ffi::as_ptr_len(name);
+        // SAFETY: the symbol is an InstanceBody; find does not allocate.
+        wrap(unsafe { sys::slang_symbol_instance_body_find_port(self.raw, n, nl) })
+    }
+
+    /// True if this `InstanceBody` symbol and `other` were elaborated from
+    /// the same `Definition` with equivalent parameter values (and so share
+    /// identical member layout) — i.e. they could share a single canonical
+    /// elaborated body. False if either symbol is not an InstanceBody
+    /// symbol. A pure, allocation-free read. Mirrors
+    /// `slang::ast::InstanceBodySymbol::hasSameType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module sub; endmodule\n\
+    /// #      module m; sub s1(); sub s2(); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let b1 = body.find("s1").unwrap().instance_body().unwrap();
+    /// let b2 = body.find("s2").unwrap().instance_body().unwrap();
+    /// assert!(b1.instance_body_has_same_type(&b2));
+    /// assert!(!b1.instance_body_has_same_type(&body));
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_body_has_same_type(&self, other: &Symbol<'d>) -> bool {
+        // SAFETY: the C accessor checks both kinds itself.
+        unsafe { sys::slang_symbol_instance_body_has_same_type(self.raw, other.raw) }
+    }
+
+    /// For an `Instance`, `PrimitiveInstance`, or `CheckerInstance` symbol:
+    /// the path of zero-based indices locating it within any enclosing
+    /// instance array(s), outermost array first. Empty if `sym` is not one
+    /// of those kinds, or the instance is not part of an array. A direct
+    /// field read (`slang::ast::InstanceSymbolBase::arrayPath`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module sub; endmodule\n\
+    /// #      module m; sub s[3:1](); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let arr = body.find("s").unwrap();
+    /// let elem = arr.instance_array_elements().next().unwrap();
+    /// assert_eq!(elem.instance_array_path().collect::<Vec<_>>(), vec![0]);
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_array_path(&self) -> impl Iterator<Item = u32> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a symbol not covered by
+        // InstanceSymbolBase.
+        let count = unsafe { sys::slang_symbol_instance_array_path_count(raw) };
+        (0..count).map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            unsafe { sys::slang_symbol_instance_array_path(raw, index) }
+        })
+    }
+
+    /// For an `Instance`, `PrimitiveInstance`, or `CheckerInstance` symbol:
+    /// if it is part of an instance array, the name of the outermost
+    /// enclosing array; otherwise the instance's own name. Empty if `sym` is
+    /// not one of those kinds. A pure read over already-resolved
+    /// parent-scope links — never allocates. Mirrors
+    /// `slang::ast::InstanceSymbolBase::getArrayName`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module sub; endmodule\n\
+    /// #      module m; sub s[3:1](); sub solo(); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let arr = body.find("s").unwrap();
+    /// let elem = arr.instance_array_elements().next().unwrap();
+    /// assert_eq!(elem.instance_base_array_name(), "s");
+    ///
+    /// let solo = body.find("solo").unwrap();
+    /// assert_eq!(solo.instance_base_array_name(), "solo");
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_base_array_name(&self) -> &'d str {
+        // SAFETY: the symbol is valid; empty for a symbol not covered by
+        // InstanceSymbolBase. Never allocates.
+        unsafe { ffi::str_ref(sys::slang_symbol_instance_base_array_name(self.raw)) }
+    }
+
+    /// For an `InstanceArray` symbol: the number of instance elements it
+    /// contains, each an `Instance`, `PrimitiveInstance`, `CheckerInstance`,
+    /// or nested `InstanceArray` symbol. Empty for any other symbol kind. A
+    /// direct field read (`slang::ast::InstanceArraySymbol::elements`) — a
+    /// pure, allocation-free read.
+    ///
+    /// See [`Symbol::instance_array_path`] for an example.
+    pub fn instance_array_elements(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-InstanceArray symbol.
+        let count = unsafe { sys::slang_symbol_instance_array_element_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_instance_array_element(raw, index) })
+        })
+    }
+
+    /// For an `InstanceArray` symbol: its declared index range (e.g. `[3:1]`
+    /// of `sub s[3:1]();`). An all-zero range if this is not an InstanceArray
+    /// symbol. A direct field read (`slang::ast::InstanceArraySymbol::range`)
+    /// — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module sub; endmodule\n\
+    /// #      module m; sub s[3:1](); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let arr = body.find("s").unwrap();
+    /// assert_eq!(arr.instance_array_range(), sv_lang::ConstantRange { left: 3, right: 1 });
+    /// assert_eq!(arr.instance_array_elements().count(), 3);
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_array_range(&self) -> ConstantRange {
+        // SAFETY: the symbol is valid; zeroed for a non-InstanceArray symbol.
+        ConstantRange::from_raw(unsafe { sys::slang_symbol_instance_array_range(self.raw) })
+    }
+
+    /// For an `InstanceArray` symbol: if this array is itself an element of
+    /// an outer (multidimensional) instance array, the outermost array's
+    /// name; otherwise this array's own name. Empty if this is not an
+    /// InstanceArray symbol. A pure read over already-resolved parent-scope
+    /// links — never allocates. Mirrors
+    /// `slang::ast::InstanceArraySymbol::getArrayName`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module sub; endmodule\n\
+    /// #      module m; sub s[1:0](); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let arr = body.find("s").unwrap();
+    /// assert_eq!(arr.instance_array_name(), "s");
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_array_name(&self) -> &'d str {
+        // SAFETY: the symbol is valid; empty for a non-InstanceArray symbol.
+        // Never allocates.
+        unsafe { ffi::str_ref(sys::slang_symbol_instance_array_name(self.raw)) }
+    }
+
+    /// For a `Checker` symbol (a `checker` declaration): its formal ports,
+    /// each an `AssertionPort` symbol. Empty for any other symbol kind. A
+    /// direct field read (`slang::ast::CheckerSymbol::ports`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::assertion_port_direction`] for an example.
+    pub fn checker_ports(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-Checker symbol.
+        let count = unsafe { sys::slang_symbol_checker_port_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_checker_port(raw, index) })
+        })
+    }
+
+    /// For a `CheckerInstance` symbol: its resolved port connections
+    /// (`slang::ast::CheckerInstanceSymbol::getPortConnections`). Empty for
+    /// any other symbol kind. The connection list is lazily resolved by
+    /// slang but the freeze sweep forces it for every CheckerInstance
+    /// symbol it reaches, so this is a pure read on a frozen design.
+    ///
+    /// See [`Symbol::attribute_value`] for an example.
+    pub fn checker_instance_connections(&self) -> impl Iterator<Item = CheckerConnection<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-CheckerInstance symbol.
+        let count = unsafe { sys::slang_symbol_checker_instance_connection_count(raw) };
+        (0..count).map(move |index| CheckerConnection {
+            instance_raw: raw,
+            index,
+            _design: PhantomData,
+        })
+    }
+
+    /// For a `ClassProperty` symbol (a class member variable): its declared
+    /// visibility (`public` by default, or `protected`/`local`).
+    /// [`Visibility::Public`] for any other symbol kind. A direct field
+    /// read (`slang::ast::ClassPropertySymbol::visibility`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{RandMode, Visibility, kinds::SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C;\n  rand int x;\n  local randc byte y;\n  protected int z;\nendclass\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let c = unit.find("C").unwrap();
+    /// let props: Vec<_> = c
+    ///     .members()
+    ///     .filter(|m| m.kind() == SymbolKind::ClassProperty)
+    ///     .collect();
+    ///
+    /// let x = props.iter().find(|p| p.name() == "x").unwrap();
+    /// assert_eq!(x.class_property_visibility(), Visibility::Public);
+    /// assert_eq!(x.class_property_rand_mode(), RandMode::Rand);
+    ///
+    /// let y = props.iter().find(|p| p.name() == "y").unwrap();
+    /// assert_eq!(y.class_property_visibility(), Visibility::Local);
+    /// assert_eq!(y.class_property_rand_mode(), RandMode::RandC);
+    ///
+    /// let z = props.iter().find(|p| p.name() == "z").unwrap();
+    /// assert_eq!(z.class_property_visibility(), Visibility::Protected);
+    /// assert_eq!(z.class_property_rand_mode(), RandMode::None);
+    /// # Ok(()) }
+    /// ```
+    pub fn class_property_visibility(&self) -> Visibility {
+        // SAFETY: the symbol is valid; returns SLANG_VISIBILITY_PUBLIC for a
+        // non-ClassProperty symbol.
+        match unsafe { sys::slang_symbol_class_property_visibility(self.raw) } {
+            sys::SLANG_VISIBILITY_PROTECTED => Visibility::Protected,
+            sys::SLANG_VISIBILITY_LOCAL => Visibility::Local,
+            _ => Visibility::Public,
+        }
+    }
+
+    /// For a `ClassProperty` symbol: its `rand`/`randc` mode
+    /// ([`RandMode::None`] if neither, also for any other symbol kind). A
+    /// direct field read (`slang::ast::ClassPropertySymbol::randMode`) — a
+    /// pure, allocation-free read.
+    ///
+    /// See [`Symbol::class_property_visibility`] for an example.
+    pub fn class_property_rand_mode(&self) -> RandMode {
+        // SAFETY: the symbol is valid; returns SLANG_RAND_MODE_NONE for a
+        // non-ClassProperty symbol.
+        match unsafe { sys::slang_symbol_class_property_rand_mode(self.raw) } {
+            sys::SLANG_RAND_MODE_RAND => RandMode::Rand,
+            sys::SLANG_RAND_MODE_RANDC => RandMode::RandC,
+            _ => RandMode::None,
+        }
+    }
+
+    /// For a `MethodPrototype` symbol (a class/interface method prototype:
+    /// a `pure virtual`/`extern` declaration, or a modport's imported/
+    /// exported task/function signature): its declared flags
+    /// (`slang::ast::MethodPrototypeSymbol::flags`). Set once at
+    /// construction, so a pure, allocation-free read. [`MethodFlags::NONE`]
+    /// for any other symbol kind.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::MethodFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface Iface;\n\
+    /// #        extern function void f();\n\
+    /// #      endinterface\n\
+    /// #      module top;\n\
+    /// #        Iface i();\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let iface = top.find("i").unwrap().instance_body().unwrap();
+    /// // `.members()`, not `.find()`: `Scope::find` transparently redirects a
+    /// // MethodPrototype member to its resolved subroutine.
+    /// let proto = iface.members().find(|s| s.name() == "f").unwrap();
+    /// assert!(proto.method_prototype_flags().contains(MethodFlags::INTERFACE_EXTERN));
+    /// # Ok(()) }
+    /// ```
+    pub fn method_prototype_flags(&self) -> MethodFlags {
+        // SAFETY: the symbol is valid; a pure, allocation-free read.
+        MethodFlags(unsafe { sys::slang_symbol_method_prototype_flags(self.raw) })
+    }
+
+    /// For a `MethodPrototype` symbol: whether it is a `function` or a
+    /// `task` (`slang::ast::MethodPrototypeSymbol::subroutineKind`). Set
+    /// once at construction, so a pure, allocation-free read.
+    /// [`SubroutineKind::Function`] (indistinguishable from an actual
+    /// function) for any other symbol kind — check [`Self::kind`] first.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::SubroutineKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface Iface;\n\
+    /// #        extern task t();\n\
+    /// #      endinterface\n\
+    /// #      module top;\n\
+    /// #        Iface i();\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let iface = top.find("i").unwrap().instance_body().unwrap();
+    /// let proto = iface.members().find(|s| s.name() == "t").unwrap();
+    /// assert_eq!(proto.method_prototype_subroutine_kind(), SubroutineKind::Task);
+    /// # Ok(()) }
+    /// ```
+    pub fn method_prototype_subroutine_kind(&self) -> crate::SubroutineKind {
+        // SAFETY: the symbol is valid; a pure, allocation-free read.
+        let raw = unsafe { sys::slang_symbol_method_prototype_subroutine_kind(self.raw) };
+        crate::SubroutineKind::from_raw(raw)
+            .unwrap_or_else(|| unreachable!("unknown SubroutineKind raw value {raw}"))
+    }
+
+    /// For a `MethodPrototype` symbol: its declared visibility
+    /// (`slang::ast::MethodPrototypeSymbol::visibility`). Set once at
+    /// construction, so a pure, allocation-free read.
+    /// [`Visibility::Public`] for any other symbol kind.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::Visibility;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C;\n\
+    /// #        pure virtual protected function void f();\n\
+    /// #      endclass\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let units = design.compilation_units().next().unwrap();
+    /// let c = units.find("C").unwrap();
+    /// let proto = c.members().find(|s| s.name() == "f").unwrap();
+    /// assert_eq!(proto.method_prototype_visibility(), Visibility::Protected);
+    /// # Ok(()) }
+    /// ```
+    pub fn method_prototype_visibility(&self) -> Visibility {
+        // SAFETY: the symbol is valid; a pure, allocation-free read.
+        match unsafe { sys::slang_symbol_method_prototype_visibility(self.raw) } {
+            sys::SLANG_VISIBILITY_PROTECTED => Visibility::Protected,
+            sys::SLANG_VISIBILITY_LOCAL => Visibility::Local,
+            _ => Visibility::Public,
+        }
+    }
+
+    /// For a `MethodPrototype` symbol: true if it is virtual — explicitly
+    /// `virtual`/`extends`, or it [overrides](Self::method_prototype_override)
+    /// a base-class method (`slang::ast::MethodPrototypeSymbol::isVirtual`).
+    /// False for any other symbol kind. A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "virtual class C;\n\
+    /// #        pure virtual function void f();\n\
+    /// #        extern function void g();\n\
+    /// #      endclass\n\
+    /// #      function void C::g();\n\
+    /// #      endfunction\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let units = design.compilation_units().next().unwrap();
+    /// let c = units.find("C").unwrap();
+    /// let f = c.members().find(|s| s.name() == "f").unwrap();
+    /// let g = c.members().find(|s| s.name() == "g").unwrap();
+    /// assert!(f.method_prototype_is_virtual());
+    /// assert!(!g.method_prototype_is_virtual());
+    /// # Ok(()) }
+    /// ```
+    pub fn method_prototype_is_virtual(&self) -> bool {
+        // SAFETY: the symbol is valid; a pure, allocation-free read.
+        unsafe { sys::slang_symbol_method_prototype_is_virtual(self.raw) }
+    }
+
+    /// For a `MethodPrototype` symbol: the number of formal arguments
+    /// declared on its prototype (`slang::ast::MethodPrototypeSymbol::
+    /// getArguments`). 0 for any other symbol kind. The argument list is
+    /// built once, during elaboration, before this symbol is ever
+    /// reachable through a frozen [`Design`], so this is a pure,
+    /// allocation-free read.
+    pub fn method_prototype_argument_count(&self) -> u32 {
+        // SAFETY: the symbol is valid; a pure, allocation-free read.
+        unsafe { sys::slang_symbol_method_prototype_argument_count(self.raw) }
+    }
+
+    /// The formal argument at `index` on this `MethodPrototype` symbol's
+    /// prototype (see [`Self::method_prototype_argument_count`]). `None` if
+    /// this is not a MethodPrototype symbol or `index` is out of range.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface Iface;\n\
+    /// #        extern function void f(int a, bit b);\n\
+    /// #      endinterface\n\
+    /// #      module top;\n\
+    /// #        Iface i();\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let iface = top.find("i").unwrap().instance_body().unwrap();
+    /// let proto = iface.members().find(|s| s.name() == "f").unwrap();
+    /// assert_eq!(proto.method_prototype_argument_count(), 2);
+    /// assert_eq!(proto.method_prototype_argument(0).unwrap().name(), "a");
+    /// assert_eq!(proto.method_prototype_argument(1).unwrap().name(), "b");
+    /// assert!(proto.method_prototype_argument(2).is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn method_prototype_argument(&self, index: u32) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; a null node for an out-of-range
+        // index or a non-MethodPrototype symbol.
+        wrap(unsafe { sys::slang_symbol_method_prototype_argument(self.raw, index) })
+    }
+
+    /// For a `MethodPrototype` symbol: its resolved return type
+    /// (`slang::ast::MethodPrototypeSymbol::getReturnType`). `None` for any
+    /// other symbol kind. This is the same memo [`Self::declared_type`]
+    /// reaches generically (MethodPrototypeSymbol is one of the
+    /// `DeclaredType` carriers the freeze sweep forces for every symbol),
+    /// so this is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface Iface;\n\
+    /// #        extern function bit [7:0] f();\n\
+    /// #      endinterface\n\
+    /// #      module top;\n\
+    /// #        Iface i();\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let iface = top.find("i").unwrap().instance_body().unwrap();
+    /// let proto = iface.members().find(|s| s.name() == "f").unwrap();
+    /// assert_eq!(proto.method_prototype_return_type().unwrap().bit_width(), 8);
+    /// # Ok(()) }
+    /// ```
+    pub fn method_prototype_return_type(&self) -> Option<Type<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_method_prototype_return_type(self.raw) })
+    }
+
+    /// For a `MethodPrototype` symbol: the concrete subroutine it resolves
+    /// to — an out-of-block `extern`/pure-virtual implementation (for a
+    /// class method prototype; see `slang::ast::MethodPrototypeSymbol::
+    /// getSubroutine`), or a synthesized stub for an unimplemented pure
+    /// method. `None` if this is not a MethodPrototype symbol, or
+    /// resolution failed (a diagnostic was issued instead of a stub). Note
+    /// this is distinct from [`Self::method_prototype_first_extern_impl`]:
+    /// for an interface's own `extern` method prototype this always
+    /// resolves to a synthesized stub (the actual module-supplied
+    /// implementation is reached only through the extern-impl list). The
+    /// underlying memo is reached (and forced) by the freeze sweep's
+    /// generic scope-member traversal whenever this prototype is itself a
+    /// reachable scope member — the only way a caller can ever observe it
+    /// in the first place — so this is a pure read on a frozen design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C;\n\
+    /// #        extern function void f();\n\
+    /// #      endclass\n\
+    /// #      function void C::f();\n\
+    /// #      endfunction\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let units = design.compilation_units().next().unwrap();
+    /// let c = units.find("C").unwrap();
+    /// // `.members()`, not `.find()`: `Scope::find` transparently redirects a
+    /// // MethodPrototype member to its resolved subroutine already.
+    /// let proto = c.members().find(|s| s.name() == "f").unwrap();
+    /// let sub = proto.method_prototype_subroutine().unwrap();
+    /// assert_eq!(sub.name(), "f");
+    /// use sv_lang::kinds::SymbolKind;
+    /// assert_eq!(sub.kind(), SymbolKind::Subroutine);
+    /// # Ok(()) }
+    /// ```
+    pub fn method_prototype_subroutine(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep whenever
+        // reachable.
+        wrap(unsafe { sys::slang_symbol_method_prototype_subroutine(self.raw) })
+    }
+
+    /// For a `MethodPrototype` symbol: the symbol it overrides, set via
+    /// `slang::ast::MethodPrototypeSymbol::setOverride` during class-
+    /// hierarchy resolution (`slang::ast::MethodPrototypeSymbol::
+    /// getOverride`). `None` if this is not a MethodPrototype symbol, or it
+    /// overrides nothing. A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "virtual class Base;\n\
+    /// #        virtual function void f(); endfunction\n\
+    /// #      endclass\n\
+    /// #      virtual class Derived extends Base;\n\
+    /// #        pure virtual function void f();\n\
+    /// #      endclass\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let units = design.compilation_units().next().unwrap();
+    /// let derived = units.find("Derived").unwrap();
+    /// // `.members()`, not `.find()`: `Scope::find` transparently redirects a
+    /// // MethodPrototype member to its resolved subroutine.
+    /// let derived_f = derived.members().find(|s| s.name() == "f").unwrap();
+    /// let over = derived_f.method_prototype_override().unwrap();
+    /// assert_eq!(over.name(), "f");
+    /// use sv_lang::kinds::SymbolKind;
+    /// assert_eq!(over.kind(), SymbolKind::Subroutine); // Base::f, a plain in-place method
+    /// # Ok(()) }
+    /// ```
+    pub fn method_prototype_override(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; a pure, allocation-free field read.
+        wrap(unsafe { sys::slang_symbol_method_prototype_override(self.raw) })
+    }
+
+    /// For a `MethodPrototype` symbol: the first `extern` implementation
+    /// registered against it (see [`ExternImpl::next`] to walk the rest) --
+    /// `slang::ast::MethodPrototypeSymbol::getFirstExternImpl`. `None` if
+    /// this is not a MethodPrototype symbol, or none has been registered
+    /// (the common case outside a `ForkJoin` extern interface method
+    /// implemented by more than one module). A pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface Iface;\n\
+    /// #        extern function void f();\n\
+    /// #      endinterface\n\
+    /// #      module m(Iface i);\n\
+    /// #        function void i.f(); endfunction\n\
+    /// #      endmodule\n\
+    /// #      module top;\n\
+    /// #        Iface i();\n\
+    /// #        m u(i);\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let iface = top.find("i").unwrap().instance_body().unwrap();
+    /// let proto = iface.members().find(|s| s.name() == "f").unwrap();
+    /// let first = proto.method_prototype_first_extern_impl().unwrap();
+    /// assert_eq!(first.implementation().name(), "f");
+    /// assert!(first.next().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn method_prototype_first_extern_impl(&self) -> Option<ExternImpl<'d>> {
+        // SAFETY: the symbol is valid; a pure, allocation-free field read.
+        let raw = unsafe { sys::slang_symbol_method_prototype_first_extern_impl(self.raw) };
+        (!raw.is_null()).then_some(ExternImpl {
+            raw,
+            compilation: self.raw.compilation,
+            _design: PhantomData,
+        })
+    }
+
+    /// For a `ModportClocking` symbol (a `clocking cb;` port exposed
+    /// through an interface modport, e.g. `modport m(clocking cb);`): the
+    /// clocking block it exposes (`slang::ast::ModportClockingSymbol::
+    /// target`). `None` for any other symbol kind. Set once at
+    /// construction (a plain field), so a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface Iface(input clk);\n\
+    /// #        clocking cb @(posedge clk);\n\
+    /// #        endclocking\n\
+    /// #        modport m(clocking cb);\n\
+    /// #      endinterface\n\
+    /// #      module top(input clk);\n\
+    /// #        Iface i(clk);\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let iface = top.find("i").unwrap().instance_body().unwrap();
+    /// let modport = iface.find("m").unwrap();
+    /// // `.members()`, not `.find()`: `Scope::find` transparently redirects a
+    /// // ModportClocking member straight to its target clocking block.
+    /// let mc = modport.members().find(|s| s.name() == "cb").unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// assert_eq!(mc.kind(), SymbolKind::ModportClocking);
+    /// assert_eq!(mc.modport_clocking_target().unwrap().name(), "cb");
+    /// # Ok(()) }
+    /// ```
+    pub fn modport_clocking_target(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; a pure, allocation-free field read.
+        wrap(unsafe { sys::slang_symbol_modport_clocking_target(self.raw) })
+    }
+
+    /// For a `ModportPort` symbol (a single port specifier in a modport
+    /// declaration, e.g. `input req` in `modport m(input req);`): the
+    /// direction of data flowing across the port. `ArgumentDirection::In`
+    /// for any other symbol kind. A direct field read
+    /// (`slang::ast::ModportPortSymbol::direction`), populated at
+    /// declaration — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ArgumentDirection;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface Iface;\n\
+    /// #        logic req, gnt;\n\
+    /// #        task foo(); endtask\n\
+    /// #        modport m(input req, output .g(gnt), export foo);\n\
+    /// #      endinterface\n\
+    /// #      module top;\n\
+    /// #        Iface i();\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let iface = top.find("i").unwrap().instance_body().unwrap();
+    /// let modport = iface.find("m").unwrap();
+    /// assert!(modport.modport_has_exports());
+    ///
+    /// let req_port = modport.members().find(|s| s.name() == "req").unwrap();
+    /// assert_eq!(req_port.modport_port_direction(), ArgumentDirection::In);
+    /// assert!(req_port.modport_port_explicit_connection().is_none());
+    /// assert_eq!(req_port.modport_port_internal_symbol().unwrap().name(), "req");
+    ///
+    /// let g_port = modport.members().find(|s| s.name() == "g").unwrap();
+    /// assert_eq!(g_port.modport_port_direction(), ArgumentDirection::Out);
+    /// assert!(g_port.modport_port_internal_symbol().is_none());
+    /// assert!(g_port.modport_port_explicit_connection().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn modport_port_direction(&self) -> ArgumentDirection {
+        // SAFETY: the symbol is valid; ArgumentDirection::In for a
+        // non-ModportPort symbol.
+        ArgumentDirection::from_raw(unsafe { sys::slang_symbol_modport_port_direction(self.raw) })
+            .unwrap_or(ArgumentDirection::In)
+    }
+
+    /// For a `ModportPort` symbol: its explicit connection expression, if
+    /// any (e.g. the `gnt` of `output .g(gnt)`). `None` for any other
+    /// symbol kind, or an implicitly-connected port (see
+    /// [`Symbol::modport_port_internal_symbol`]). A direct field read
+    /// (`slang::ast::ModportPortSymbol::explicitConnection`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::modport_port_direction`] for an example.
+    pub fn modport_port_explicit_connection(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; a null node for a non-ModportPort
+        // symbol.
+        wrap(unsafe { sys::slang_symbol_modport_port_explicit_connection(self.raw) })
+    }
+
+    /// For a `ModportPort` symbol: the instance-internal symbol it
+    /// connects to, if any (e.g. the like-named `req` net for plain `input
+    /// req`). `None` for any other symbol kind, or an
+    /// explicitly-connected port (see
+    /// [`Symbol::modport_port_explicit_connection`]). A direct field read
+    /// (`slang::ast::ModportPortSymbol::internalSymbol`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::modport_port_direction`] for an example.
+    pub fn modport_port_internal_symbol(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; a null node for a non-ModportPort
+        // symbol.
+        wrap(unsafe { sys::slang_symbol_modport_port_internal_symbol(self.raw) })
+    }
+
+    /// For a `Modport` symbol (an interface `modport m(...);` declaration):
+    /// true if it declares at least one `export` item. `false` for any
+    /// other symbol kind. A direct field read
+    /// (`slang::ast::ModportSymbol::hasExports`) — a pure, allocation-free
+    /// read.
+    ///
+    /// See [`Symbol::modport_port_direction`] for an example.
+    pub fn modport_has_exports(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-Modport symbol.
+        unsafe { sys::slang_symbol_modport_has_exports(self.raw) }
+    }
+
+    /// For an `InterfacePort` symbol (a module/program port that connects to
+    /// an interface instance, e.g. `bus.m b` in a port list): the interface
+    /// instance it is connected to, and the modport symbol restricting it if
+    /// any (`slang::ast::InterfacePortSymbol::getConnection`). `(None,
+    /// None)` for any other symbol kind, or if the connection failed to
+    /// resolve. The connection is lazily resolved by slang but forced for
+    /// every InterfacePort symbol by the freeze sweep, so this is a pure,
+    /// allocation-free read on a frozen design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface bus;\n\
+    /// #        logic req;\n\
+    /// #        modport m(input req);\n\
+    /// #      endinterface\n\
+    /// #      module sub(bus.m b);\n\
+    /// #      endmodule\n\
+    /// #      module top;\n\
+    /// #        bus b();\n\
+    /// #        sub s(.b(b));\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().find(|i| i.name() == "top").unwrap();
+    /// let s = top.instance_body().unwrap().find("s").unwrap();
+    /// let port = s.instance_body().unwrap().instance_body_ports()
+    ///     .find(|p| p.name() == "b").unwrap();
+    /// let (instance, modport) = port.interface_port_connection();
+    /// assert_eq!(instance.unwrap().name(), "b");
+    /// assert_eq!(modport.unwrap().name(), "m");
+    /// # Ok(()) }
+    /// ```
+    pub fn interface_port_connection(&self) -> (Option<Symbol<'d>>, Option<Symbol<'d>>) {
+        // SAFETY: the symbol is valid; a null-ptr'd pair for a non-
+        // InterfacePort symbol.
+        let conn = unsafe { sys::slang_symbol_interface_port_connection(self.raw) };
+        (wrap(conn.instance), wrap(conn.modport))
+    }
+
+    /// For an `InterfacePort` symbol: the dimensions of its declared
+    /// interface-array range (e.g. one dimension, `[1:0]`, for `bus b[1:0]`
+    /// in a port list). Empty for a scalar interface port, any other symbol
+    /// kind, or if the dimensions failed to evaluate. Forced (alongside the
+    /// connection) by the freeze sweep, so a pure, allocation-free read on a
+    /// frozen design. Mirrors
+    /// `slang::ast::InterfacePortSymbol::getDeclaredRange`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface bus; endinterface\n\
+    /// #      module sub(bus b[1:0]);\n\
+    /// #      endmodule\n\
+    /// #      module top;\n\
+    /// #        bus b[1:0]();\n\
+    /// #        sub s(.b(b));\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().find(|i| i.name() == "top").unwrap();
+    /// let s = top.instance_body().unwrap().find("s").unwrap();
+    /// let port = s.instance_body().unwrap().instance_body_ports()
+    ///     .find(|p| p.name() == "b").unwrap();
+    /// let ranges: Vec<_> = port.interface_port_declared_range().collect();
+    /// assert_eq!(ranges, vec![sv_lang::ConstantRange { left: 1, right: 0 }]);
+    /// # Ok(()) }
+    /// ```
+    pub fn interface_port_declared_range(&self) -> impl Iterator<Item = ConstantRange> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-InterfacePort symbol.
+        let count = unsafe { sys::slang_symbol_interface_port_declared_range_count(raw) };
+        (0..count).map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            ConstantRange::from_raw(unsafe {
+                sys::slang_symbol_interface_port_declared_range_at(raw, index)
+            })
+        })
+    }
+
+    /// For an `InterfacePort` symbol: the `Definition` symbol of the
+    /// interface it names (e.g. `bus` for `bus.m b`). `None` for a generic
+    /// interface port (see
+    /// [`interface_port_is_generic`](Self::interface_port_is_generic)) or
+    /// any other symbol kind. A direct field read
+    /// (`slang::ast::InterfacePortSymbol::interfaceDef`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::interface_port_connection`] for an example.
+    pub fn interface_port_interface_def(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; a null node for a non-InterfacePort
+        // symbol.
+        wrap(unsafe { sys::slang_symbol_interface_port_interface_def(self.raw) })
+    }
+
+    /// True if an `InterfacePort` symbol is a generic interface port
+    /// (`interface b;` with no named interface, accepting a connection to
+    /// any interface type); `false` for any other symbol kind. A direct
+    /// field read (`slang::ast::InterfacePortSymbol::isGeneric`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module sub(interface b);\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let sub = design.top_instances().find(|i| i.name() == "sub").unwrap();
+    /// let port = sub.instance_body().unwrap().instance_body_ports()
+    ///     .find(|p| p.name() == "b").unwrap();
+    /// assert!(port.interface_port_is_generic());
+    /// assert!(!port.interface_port_is_invalid());
+    /// assert!(port.interface_port_interface_def().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn interface_port_is_generic(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-InterfacePort symbol.
+        unsafe { sys::slang_symbol_interface_port_is_generic(self.raw) }
+    }
+
+    /// True if an `InterfacePort` symbol failed to resolve to either a named
+    /// interface definition or a generic interface; `false` for any other
+    /// symbol kind (including a fully-resolved InterfacePort). Mirrors
+    /// `slang::ast::InterfacePortSymbol::isInvalid`.
+    ///
+    /// See [`Symbol::interface_port_is_generic`] for an example.
+    pub fn interface_port_is_invalid(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-InterfacePort symbol.
+        unsafe { sys::slang_symbol_interface_port_is_invalid(self.raw) }
+    }
+
+    /// For an `InterfacePort` symbol: the modport name restricting its
+    /// accessible signals (e.g. `"m"` for `bus.m b`), or empty if the port
+    /// has no modport restriction or is any other symbol kind. A direct
+    /// field read (`slang::ast::InterfacePortSymbol::modport`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::interface_port_connection`] for an example (`port.
+    /// interface_port_modport()` there is `"m"`).
+    pub fn interface_port_modport(&self) -> &'d str {
+        // SAFETY: the symbol is valid; empty for a non-InterfacePort symbol.
+        // Points into the source text, which outlives the design.
+        unsafe { ffi::str_ref(sys::slang_symbol_interface_port_modport(self.raw)) }
+    }
+
+    /// For a `LetDecl` symbol (a `let` construct): its formal argument
+    /// ports, each an `AssertionPort` symbol. Empty for any other symbol
+    /// kind. A direct field read (`slang::ast::LetDeclSymbol::ports`) — a
+    /// pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        let max(a, b) = (a > b) ? a : b;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let max = body.find("max").unwrap();
+    /// let names: Vec<_> = max.let_decl_ports().map(|p| p.name().to_string()).collect();
+    /// assert_eq!(names, vec!["a", "b"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn let_decl_ports(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-LetDecl symbol.
+        let count = unsafe { sys::slang_symbol_let_decl_port_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_let_decl_port(raw, index) })
+        })
+    }
+
+    /// For a `Property` symbol (a `property`/`endproperty` assertion
+    /// declaration): its formal argument ports, each an `AssertionPort`
+    /// symbol. Empty for any other symbol kind. A direct field read
+    /// (`slang::ast::PropertySymbol::ports`) — a pure, allocation-free
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        property p(a, b);\n\
+    /// #          a |-> b;\n\
+    /// #        endproperty\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let p = body.find("p").unwrap();
+    /// let names: Vec<_> = p.property_ports().map(|p| p.name().to_string()).collect();
+    /// assert_eq!(names, vec!["a", "b"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn property_ports(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-Property symbol.
+        let count = unsafe { sys::slang_symbol_property_port_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_property_port(raw, index) })
+        })
+    }
+
+    /// For a `TimingPath` symbol (a specify-block path declaration, e.g.
+    /// `(a *> b) = 1;`): its connection kind -- full (`*>`) or parallel
+    /// (`=>`). [`TimingPathConnectionKind::Full`] if `self` is not a
+    /// TimingPath symbol. A direct field read
+    /// (`slang::ast::TimingPathSymbol::connectionKind`), set once at
+    /// construction -- a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{TimingPathConnectionKind, TimingPathPolarity};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input a, output b);\n  assign b = a;\n\
+    /// #        specify\n    (a +*> b) = 1;\n  endspecify\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// use sv_lang::kinds::SymbolKind;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let specify = body
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::SpecifyBlock)
+    ///     .unwrap();
+    /// let path = specify
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::TimingPath)
+    ///     .unwrap();
+    /// assert_eq!(path.timing_path_connection_kind(), TimingPathConnectionKind::Full);
+    /// assert_eq!(path.timing_path_polarity(), TimingPathPolarity::Positive);
+    /// assert_eq!(path.timing_path_inputs().count(), 1);
+    /// assert_eq!(path.timing_path_outputs().count(), 1);
+    /// assert_eq!(path.timing_path_delays().count(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn timing_path_connection_kind(&self) -> TimingPathConnectionKind {
+        // SAFETY: the symbol is valid; Full for a non-TimingPath symbol.
+        TimingPathConnectionKind::from_raw(unsafe {
+            sys::slang_symbol_timing_path_connection_kind(self.raw)
+        })
+    }
+
+    /// For a `TimingPath` symbol: its overall polarity (the `+`/`-` on the
+    /// path operator itself, e.g. the `+` of `(a +*> b) = 1;`).
+    /// [`TimingPathPolarity::Unknown`] if `self` is not a TimingPath symbol.
+    /// A direct field read (`slang::ast::TimingPathSymbol::polarity`), set
+    /// once at construction -- a pure, allocation-free read.
+    ///
+    /// See [`Symbol::timing_path_connection_kind`] for an example.
+    pub fn timing_path_polarity(&self) -> TimingPathPolarity {
+        // SAFETY: the symbol is valid; Unknown for a non-TimingPath symbol.
+        TimingPathPolarity::from_raw(unsafe { sys::slang_symbol_timing_path_polarity(self.raw) })
+    }
+
+    /// For a `TimingPath` symbol: its edge-sensitive-path polarity (the
+    /// `+`/`-` in an edge-sensitive path's destination suffix, e.g. the `+`
+    /// of `(posedge clk => (q +: d)) = 1;`). [`TimingPathPolarity::Unknown`]
+    /// if `self` is not a TimingPath symbol, or its path has no
+    /// edge-sensitive suffix. A direct field read
+    /// (`slang::ast::TimingPathSymbol::edgePolarity`), set once at
+    /// construction -- a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{EdgeKind, TimingPathPolarity};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input clk, d, output reg q);\n\
+    /// #        specify\n\
+    /// #          if (d) (posedge clk => (q +: d)) = (1, 2);\n\
+    /// #        endspecify\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// use sv_lang::kinds::SymbolKind;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let specify = body
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::SpecifyBlock)
+    ///     .unwrap();
+    /// let path = specify
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::TimingPath)
+    ///     .unwrap();
+    /// assert_eq!(path.timing_path_edge_polarity(), TimingPathPolarity::Positive);
+    /// assert_eq!(path.timing_path_edge_identifier(), EdgeKind::PosEdge);
+    /// assert!(path.timing_path_is_state_dependent());
+    /// assert_eq!(
+    ///     path.timing_path_condition_expr().unwrap().referenced_symbol().unwrap().name(),
+    ///     "d"
+    /// );
+    /// assert_eq!(
+    ///     path.timing_path_edge_source_expr().unwrap().referenced_symbol().unwrap().name(),
+    ///     "d"
+    /// );
+    /// # Ok(()) }
+    /// ```
+    pub fn timing_path_edge_polarity(&self) -> TimingPathPolarity {
+        // SAFETY: the symbol is valid; Unknown for a non-TimingPath symbol.
+        TimingPathPolarity::from_raw(unsafe {
+            sys::slang_symbol_timing_path_edge_polarity(self.raw)
+        })
+    }
+
+    /// For a `TimingPath` symbol: its edge identifier (the
+    /// `posedge`/`negedge`/`edge` prefix on its source terminal, e.g. the
+    /// `posedge` of `(posedge a => b) = 1;`). [`EdgeKind::None`] if `self`
+    /// is not a TimingPath symbol, or its path has no edge identifier. A
+    /// direct field read (`slang::ast::TimingPathSymbol::edgeIdentifier`),
+    /// set once at construction -- a pure, allocation-free read.
+    ///
+    /// See [`Symbol::timing_path_edge_polarity`] for an example.
+    pub fn timing_path_edge_identifier(&self) -> EdgeKind {
+        // SAFETY: the symbol is valid; None for a non-TimingPath symbol.
+        EdgeKind::from_raw(unsafe { sys::slang_symbol_timing_path_edge_identifier(self.raw) })
+    }
+
+    /// True if a `TimingPath` symbol is state-dependent -- declared with
+    /// `if (cond)` or `ifnone`, as opposed to an unconditional path. False
+    /// if `self` is not a TimingPath symbol, or its path is unconditional.
+    /// A direct field read
+    /// (`slang::ast::TimingPathSymbol::isStateDependent`) -- a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::timing_path_edge_polarity`] for an example.
+    pub fn timing_path_is_state_dependent(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-TimingPath symbol.
+        unsafe { sys::slang_symbol_timing_path_is_state_dependent(self.raw) }
+    }
+
+    /// The `if (cond)` condition expression of a state-dependent
+    /// `TimingPath` symbol. `None` if `self` is not a TimingPath symbol,
+    /// its path is unconditional, or it is an `ifnone` path (which has no
+    /// condition expression of its own).
+    /// `slang::ast::TimingPathSymbol::getConditionExpr` lazily resolves the
+    /// whole path together on first call; the freeze sweep forces that
+    /// resolution pre-seal, so this is a pure read on the frozen design.
+    ///
+    /// See [`Symbol::timing_path_edge_polarity`] for an example.
+    pub fn timing_path_condition_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid. Forced by the freeze sweep, so this
+        // never mutates the frozen arena.
+        wrap(unsafe { sys::slang_symbol_timing_path_condition_expr(self.raw) })
+    }
+
+    /// The edge-sensitive source expression of a `TimingPath` symbol (the
+    /// data-source expression of an edge-sensitive path, e.g. the `d` of
+    /// `(posedge clk => (q +: d)) = 1;`). `None` if `self` is not a
+    /// TimingPath symbol, or its path has no edge-sensitive suffix.
+    /// Resolved (and forced by the freeze sweep) the same way as
+    /// [`Symbol::timing_path_condition_expr`].
+    ///
+    /// See [`Symbol::timing_path_edge_polarity`] for an example.
+    pub fn timing_path_edge_source_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid. Forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_timing_path_edge_source_expr(self.raw) })
+    }
+
+    /// For a `TimingPath` symbol: the input terminal expressions (the
+    /// left-hand side of its path operator, e.g. `a` for `(a *> b) = 1;`).
+    /// Empty for any other symbol kind. Resolved (and forced by the freeze
+    /// sweep) the same way as [`Symbol::timing_path_condition_expr`].
+    /// Mirrors `slang::ast::TimingPathSymbol::getInputs`.
+    ///
+    /// See [`Symbol::timing_path_connection_kind`] for an example.
+    pub fn timing_path_inputs(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-TimingPath symbol.
+        // Forced by the freeze sweep.
+        let count = unsafe { sys::slang_symbol_timing_path_input_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_timing_path_input(raw, index) })
+        })
+    }
+
+    /// For a `TimingPath` symbol: the output terminal expressions (the
+    /// right-hand side of its path operator, e.g. `b` for `(a *> b) = 1;`).
+    /// Empty for any other symbol kind. Resolved (and forced by the freeze
+    /// sweep) the same way as [`Symbol::timing_path_condition_expr`].
+    /// Mirrors `slang::ast::TimingPathSymbol::getOutputs`.
+    ///
+    /// See [`Symbol::timing_path_connection_kind`] for an example.
+    pub fn timing_path_outputs(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-TimingPath symbol.
+        // Forced by the freeze sweep.
+        let count = unsafe { sys::slang_symbol_timing_path_output_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_timing_path_output(raw, index) })
+        })
+    }
+
+    /// For a `TimingPath` symbol: the delay-value expressions (the
+    /// right-hand side of its `=`, e.g. `1` for `(a *> b) = 1;`). Empty for
+    /// any other symbol kind. Resolved (and forced by the freeze sweep) the
+    /// same way as [`Symbol::timing_path_condition_expr`]. Mirrors
+    /// `slang::ast::TimingPathSymbol::getDelays`.
+    ///
+    /// See [`Symbol::timing_path_connection_kind`] for an example.
+    pub fn timing_path_delays(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-TimingPath symbol.
+        // Forced by the freeze sweep.
+        let count = unsafe { sys::slang_symbol_timing_path_delay_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_timing_path_delay(raw, index) })
+        })
+    }
+
+    /// For a `PulseStyle` symbol (a `pulsestyle_onevent`/
+    /// `pulsestyle_ondetect`/`showcancelled`/`noshowcancelled` specify-block
+    /// declaration): which of the four pulse-style declarations it is.
+    /// [`PulseStyleKind::OnEvent`] if `self` is not a PulseStyle symbol. A
+    /// direct field read (`slang::ast::PulseStyleSymbol::pulseStyleKind`) —
+    /// a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::PulseStyleKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input a, output y);\n\
+    /// #        assign y = a;\n\
+    /// #        specify\n\
+    /// #          pulsestyle_ondetect y;\n\
+    /// #          (a => y) = 1;\n\
+    /// #        endspecify\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// // PulseStyle symbols are members of the SpecifyBlock, not of the
+    /// // instance body directly.
+    /// let specify = body
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::SpecifyBlock)
+    ///     .unwrap();
+    /// let ps = specify
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::PulseStyle)
+    ///     .unwrap();
+    /// assert_eq!(ps.pulse_style_kind(), PulseStyleKind::OnDetect);
+    /// let terminals: Vec<_> = ps.pulse_style_terminals().collect();
+    /// assert_eq!(terminals.len(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn pulse_style_kind(&self) -> PulseStyleKind {
+        // SAFETY: the symbol is valid; PulseStyleKind::OnEvent for a
+        // non-PulseStyle symbol.
+        PulseStyleKind::from_raw(unsafe { sys::slang_symbol_pulse_style_kind(self.raw) })
+    }
+
+    /// For a `PulseStyle` symbol: the terminal expressions it applies to
+    /// (the output/inout ports of the module it appears in). Empty for any
+    /// other symbol kind. The underlying memo is forced by the freeze
+    /// sweep, so this is a pure read. Mirrors
+    /// `slang::ast::PulseStyleSymbol::getTerminals`.
+    ///
+    /// See [`Symbol::pulse_style_kind`] for an example.
+    pub fn pulse_style_terminals(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-PulseStyle symbol.
+        // Forced by the freeze sweep, so this never mutates the frozen
+        // arena.
+        let count = unsafe { sys::slang_symbol_pulse_style_terminal_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_pulse_style_terminal(raw, index) })
+        })
+    }
+
+    /// For a `SystemTimingCheck` symbol (a `$setup(...)`-style specify-block
+    /// system timing check): which check it is.
+    /// [`SystemTimingCheckKind::Unknown`] if `self` is not a
+    /// SystemTimingCheck symbol. A direct field read (`slang::ast::
+    /// SystemTimingCheckSymbol::timingCheckKind`) — a pure, allocation-free
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::SystemTimingCheckKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input d, input clk);\n\
+    /// #        specify\n\
+    /// #          $setup(d, posedge clk, 10);\n\
+    /// #        endspecify\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let specify = body
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::SpecifyBlock)
+    ///     .unwrap();
+    /// let stc = specify
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::SystemTimingCheck)
+    ///     .unwrap();
+    /// assert_eq!(stc.system_timing_check_kind(), SystemTimingCheckKind::Setup);
+    /// # Ok(()) }
+    /// ```
+    pub fn system_timing_check_kind(&self) -> SystemTimingCheckKind {
+        // SAFETY: the symbol is valid; SystemTimingCheckKind::Unknown for a
+        // non-SystemTimingCheck symbol.
+        SystemTimingCheckKind::from_raw(unsafe {
+            sys::slang_symbol_system_timing_check_kind(self.raw)
+        })
+    }
+
+    /// For a `SystemTimingCheck` symbol: its arguments, including any
+    /// elided (empty) trailing/optional ones. Empty for any other symbol
+    /// kind. `slang::ast::SystemTimingCheckSymbol::getArguments` lazily
+    /// binds and caches every argument expression on first call (a mutable
+    /// `args` span); the freeze sweep force-resolves it for every
+    /// SystemTimingCheck symbol, so this is a pure read on a frozen design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::EdgeKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input d, input clk);\n\
+    /// #        specify\n\
+    /// #          $setup(d, edge [01, z1] clk, 10,);\n\
+    /// #        endspecify\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let specify = body
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::SpecifyBlock)
+    ///     .unwrap();
+    /// let stc = specify
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::SystemTimingCheck)
+    ///     .unwrap();
+    /// let args: Vec<_> = stc.system_timing_check_arguments().collect();
+    /// // A trailing comma elides the 4th (notifier) argument.
+    /// assert_eq!(args.len(), 4);
+    /// assert!(args[0].expr.is_some());
+    /// // The bare `edge` keyword (as opposed to `posedge`/`negedge`) means
+    /// // "any edge", i.e. `EdgeKind::BothEdges`.
+    /// assert_eq!(args[1].edge, EdgeKind::BothEdges);
+    /// assert_eq!(args[1].edge_descriptors, vec!["01", "z1"]);
+    /// assert!(args[3].expr.is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn system_timing_check_arguments(
+        &self,
+    ) -> impl Iterator<Item = SystemTimingCheckArg<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-SystemTimingCheck
+        // symbol. Forced by the freeze sweep, so this never mutates the
+        // frozen arena.
+        let count = unsafe { sys::slang_symbol_system_timing_check_argument_count(raw) };
+        (0..count).map(move |index| SystemTimingCheckArg::from_symbol(raw, index))
+    }
+
+    /// For a `RandSeqProduction` symbol (a `randsequence` production): the
+    /// number of rules (`|`-separated alternatives) it has. 0 for any other
+    /// symbol kind. The underlying rule tree is built and cached lazily on
+    /// first read; forced by the freeze sweep, so this is a pure read.
+    /// Mirrors the span size of
+    /// `slang::ast::RandSeqProductionSymbol::getRules`.
+    ///
+    /// See [`Symbol::randseq_rule_prods`] for an example.
+    pub fn randseq_rule_count(&self) -> u32 {
+        // SAFETY: the symbol is valid; 0 for a non-RandSeqProduction
+        // symbol. Forced by the freeze sweep, so this never mutates the
+        // frozen arena.
+        unsafe { sys::slang_symbol_randseq_rule_count(self.raw) }
+    }
+
+    /// For a `RandSeqProduction` symbol: the prod elements of the
+    /// `rule_index`'th rule of its rule tree (e.g. two elements for
+    /// `main : first second;`). Empty if `self` is not a RandSeqProduction
+    /// symbol, or `rule_index` is out of range (see
+    /// [`Symbol::randseq_rule_count`]). Forced by the freeze sweep, so this
+    /// is a pure read. Mirrors an element of
+    /// `slang::ast::RandSeqProductionSymbol::Rule::prods`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RandSeqProdKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        int x;\n\
+    /// #        int sel;\n\
+    /// #        initial randsequence(main)\n\
+    /// #          main : branch chooser;\n\
+    /// #          branch : if (sel) leaf(10) else leaf2;\n\
+    /// #          chooser : case (sel)\n\
+    /// #                      1, 2 : leaf(20);\n\
+    /// #                      default : leaf2;\n\
+    /// #                    endcase;\n\
+    /// #          leaf(int v) : { x = v; };\n\
+    /// #          leaf2 : { x = 2; };\n\
+    /// #        endsequence\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap().statements()[0];
+    /// let main = stmt.randsequence_first_production().unwrap();
+    /// assert_eq!(main.randseq_rule_count(), 1);
+    /// let prods: Vec<_> = main.randseq_rule_prods(0).collect();
+    /// assert_eq!(prods.len(), 2);
+    /// assert_eq!(prods[0].kind(), RandSeqProdKind::Item);
+    /// assert_eq!(prods[0].item_target().unwrap().name(), "branch");
+    /// assert_eq!(prods[1].item_target().unwrap().name(), "chooser");
+    /// # Ok(()) }
+    /// ```
+    pub fn randseq_rule_prods(
+        &self,
+        rule_index: u32,
+    ) -> impl Iterator<Item = RandSeqProd<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-RandSeqProduction symbol
+        // or an out-of-range rule_index. Forced by the freeze sweep, so
+        // this never mutates the frozen arena.
+        let count = unsafe { sys::slang_symbol_randseq_rule_prod_count(raw, rule_index) };
+        (0..count).filter_map(move |prod_index| {
+            // SAFETY: `raw` is valid; both indices in range.
+            wrap_prod(unsafe { sys::slang_symbol_randseq_rule_prod(raw, rule_index, prod_index) })
+        })
+    }
+
+    /// For a `RandSeqProduction` symbol: the implicit statement block a
+    /// rule's local rule variables and inline code are attached to
+    /// (`slang::ast::RandSeqProductionSymbol::Rule::ruleBlock`), as a
+    /// `StatementBlock` symbol. Always `Some` for an in-range `rule_index`
+    /// (the field is a `not_null`). `None` if `self` is not a
+    /// RandSeqProduction symbol, or `rule_index` is out of range (see
+    /// [`Symbol::randseq_rule_count`]). Forced by the freeze sweep, so this
+    /// is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RandSeqProdKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        int x;\n\
+    /// #        int sel;\n\
+    /// #        initial randsequence(main)\n\
+    /// #          main : rand join (sel) second leaf(1) := 3 { x = x + 1; };\n\
+    /// #          second : repeat (2) leaf(4);\n\
+    /// #          int leaf(int v) : { x = v; };\n\
+    /// #        endsequence\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap().statements()[0];
+    /// let main = stmt.randsequence_first_production().unwrap();
+    ///
+    /// // main's single rule: `rand join (sel) second leaf(1) := 3 { x = x + 1; }`.
+    /// assert_eq!(main.randseq_rule_count(), 1);
+    /// assert!(main.randseq_rule_block(0).is_some());
+    /// assert!(main.randseq_rule_block(1).is_none()); // out of range: only 1 rule
+    /// assert!(main.randseq_rule_is_rand_join(0));
+    /// assert!(main.randseq_rule_rand_join_expr(0).is_some());
+    /// assert!(main.randseq_rule_weight_expr(0).is_some());
+    /// let code_block = main.randseq_rule_code_block(0).unwrap();
+    /// assert_eq!(code_block.kind(), RandSeqProdKind::CodeBlock);
+    /// assert!(code_block.code_block_block().is_some());
+    ///
+    /// let prods: Vec<_> = main.randseq_rule_prods(0).collect();
+    /// let second = prods[0].item_target().unwrap();
+    /// let leaf = prods[1].item_target().unwrap();
+    ///
+    /// // second's rule is a plain, unweighted, non-rand-join repeat.
+    /// assert!(!second.randseq_rule_is_rand_join(0));
+    /// assert!(second.randseq_rule_rand_join_expr(0).is_none());
+    /// assert!(second.randseq_rule_weight_expr(0).is_none());
+    /// assert!(second.randseq_rule_code_block(0).is_none());
+    /// let repeat_prod = second.randseq_rule_prods(0).next().unwrap();
+    /// assert_eq!(repeat_prod.kind(), RandSeqProdKind::Repeat);
+    /// assert!(repeat_prod.repeat_expr().is_some());
+    /// assert_eq!(repeat_prod.repeat_item().unwrap().item_target().unwrap().name(), "leaf");
+    ///
+    /// // leaf's declared return type (`int`) and formal arguments (`int v`).
+    /// assert_eq!(leaf.name(), "leaf");
+    /// let ret = leaf.randseq_return_type().unwrap();
+    /// assert_eq!(ret.bit_width(), 32);
+    /// assert!(!ret.is_four_state());
+    /// let args: Vec<_> = leaf.randseq_arguments().collect();
+    /// assert_eq!(args.len(), 1);
+    /// assert_eq!(args[0].name(), "v");
+    /// # Ok(()) }
+    /// ```
+    pub fn randseq_rule_block(&self, rule_index: u32) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-RandSeqProduction
+        // symbol or an out-of-range rule_index. Forced by the freeze sweep,
+        // so this never mutates the frozen arena.
+        wrap(unsafe { sys::slang_symbol_randseq_rule_block(self.raw, rule_index) })
+    }
+
+    /// For a `RandSeqProduction` symbol: the `rule_index`'th rule's
+    /// optional `:=` weight expression
+    /// (`slang::ast::RandSeqProductionSymbol::Rule::weightExpr`). `None` if
+    /// the rule has no weight expression, `self` is not a RandSeqProduction
+    /// symbol, or `rule_index` is out of range. Forced by the freeze sweep,
+    /// so this is a pure read.
+    ///
+    /// See [`Symbol::randseq_rule_block`] for an example.
+    pub fn randseq_rule_weight_expr(&self, rule_index: u32) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; `None` if not applicable. Forced by
+        // the freeze sweep, so this never mutates the frozen arena.
+        wrap(unsafe { sys::slang_symbol_randseq_rule_weight_expr(self.raw, rule_index) })
+    }
+
+    /// For a `RandSeqProduction` symbol: `true` if the `rule_index`'th
+    /// rule's prod list is a `rand join` group rather than a plain sequence
+    /// (`slang::ast::RandSeqProductionSymbol::Rule::isRandJoin`). `false`
+    /// if `self` is not a RandSeqProduction symbol, or `rule_index` is out
+    /// of range. Forced by the freeze sweep, so this is a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::randseq_rule_block`] for an example.
+    pub fn randseq_rule_is_rand_join(&self, rule_index: u32) -> bool {
+        // SAFETY: the symbol is valid; `false` if not applicable. Forced by
+        // the freeze sweep, so this never mutates the frozen arena.
+        unsafe { sys::slang_symbol_randseq_rule_is_rand_join(self.raw, rule_index) }
+    }
+
+    /// For a `RandSeqProduction` symbol: a `rand join`-kind rule's optional
+    /// join-weight expression (the `expr` in `rand join (expr)`)
+    /// (`slang::ast::RandSeqProductionSymbol::Rule::randJoinExpr`). `None`
+    /// if the rule has no such expression (including when
+    /// [`Symbol::randseq_rule_is_rand_join`] is `false`), `self` is not a
+    /// RandSeqProduction symbol, or `rule_index` is out of range. Forced by
+    /// the freeze sweep, so this is a pure read.
+    ///
+    /// See [`Symbol::randseq_rule_block`] for an example.
+    pub fn randseq_rule_rand_join_expr(&self, rule_index: u32) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; `None` if not applicable. Forced by
+        // the freeze sweep, so this never mutates the frozen arena.
+        wrap(unsafe { sys::slang_symbol_randseq_rule_rand_join_expr(self.raw, rule_index) })
+    }
+
+    /// For a `RandSeqProduction` symbol: the `rule_index`'th rule's
+    /// trailing inline `{ ... }` code block
+    /// (`slang::ast::RandSeqProductionSymbol::Rule::codeBlock`), as a
+    /// [`RandSeqProdKind::CodeBlock`] prod (read its statement block via
+    /// [`RandSeqProd::code_block_block`]). `None` if the rule has no code
+    /// block, `self` is not a RandSeqProduction symbol, or `rule_index` is
+    /// out of range. Forced by the freeze sweep, so this is a pure read.
+    ///
+    /// See [`Symbol::randseq_rule_block`] for an example.
+    pub fn randseq_rule_code_block(&self, rule_index: u32) -> Option<RandSeqProd<'d>> {
+        // SAFETY: the symbol is valid; `None` if not applicable. Forced by
+        // the freeze sweep, so this never mutates the frozen arena.
+        wrap_prod(unsafe { sys::slang_symbol_randseq_rule_code_block(self.raw, rule_index) })
+    }
+
+    /// For a `RandSeqProduction` symbol (a `randsequence` production): its
+    /// declared formal arguments, e.g. two for
+    /// `production p(int a, string b);`
+    /// (`slang::ast::RandSeqProductionSymbol::arguments`). Empty for any
+    /// other symbol kind. Set once during elaboration, before this symbol
+    /// is ever reachable through a frozen `&Design`, so this is a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::randseq_rule_block`] for an example.
+    pub fn randseq_arguments(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-RandSeqProduction symbol.
+        let count = unsafe { sys::slang_symbol_randseq_argument_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_randseq_argument(raw, index) })
+        })
+    }
+
+    /// For a `RandSeqProduction` symbol: its resolved declared return type
+    /// (`slang::ast::RandSeqProductionSymbol::getReturnType`, `void` for a
+    /// production with no declared return type). `None` for any other
+    /// symbol kind. The underlying memo is forced by the freeze sweep's
+    /// generic per-symbol declared-type pass, so this is a pure read.
+    ///
+    /// See [`Symbol::randseq_rule_block`] for an example.
+    pub fn randseq_return_type(&self) -> Option<Type<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-RandSeqProduction
+        // symbol. Forced by the freeze sweep, so this never mutates the
+        // frozen arena.
+        wrap(unsafe { sys::slang_symbol_randseq_return_type(self.raw) })
+    }
+
+    /// For a `Root` symbol (the design root, see [`Design::root`]): the
+    /// top-level module/interface/program instances
+    /// (`slang::ast::RootSymbol::topInstances`) — the same instances
+    /// [`Design::top_instances`] exposes directly from the compilation.
+    /// Empty for any other symbol kind. Set once, at elaboration, before
+    /// this symbol is ever reachable through a frozen `&Design`, so this is
+    /// a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module top; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let root = design.root();
+    /// let names: Vec<_> = root.root_top_instances().map(|i| i.name().to_string()).collect();
+    /// assert_eq!(names, ["top"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn root_top_instances(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-Root symbol.
+        let count = unsafe { sys::slang_symbol_root_top_instance_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_root_top_instance(raw, index) })
+        })
+    }
+
+    /// For a `Root` symbol (the design root, see [`Design::root`]): the
+    /// compilation units (one per syntax tree added to the compilation)
+    /// contained in the design (`slang::ast::RootSymbol::compilationUnits`)
+    /// — the same units [`Design::compilation_units`] exposes directly from
+    /// the compilation. Empty for any other symbol kind. Set once, at
+    /// elaboration, before this symbol is ever reachable through a frozen
+    /// `&Design`, so this is a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let root = design.root();
+    /// assert_eq!(root.root_compilation_units().count(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn root_compilation_units(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-Root symbol.
+        let count = unsafe { sys::slang_symbol_root_compilation_unit_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_root_compilation_unit(raw, index) })
+        })
+    }
+
+    /// For a `Sequence` symbol (a `sequence`/`endsequence` assertion
+    /// declaration): its formal argument ports, each an `AssertionPort`
+    /// symbol. Empty for any other symbol kind. A direct field read
+    /// (`slang::ast::SequenceSymbol::ports`) — a pure, allocation-free
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        sequence s(a, b);\n\
+    /// #          a ##1 b;\n\
+    /// #        endsequence\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let s = body.find("s").unwrap();
+    /// let names: Vec<_> = s.sequence_ports().map(|p| p.name().to_string()).collect();
+    /// assert_eq!(names, vec!["a", "b"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn sequence_ports(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-Sequence symbol.
+        let count = unsafe { sys::slang_symbol_sequence_port_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_sequence_port(raw, index) })
+        })
+    }
+
+    /// True if a `Specparam` symbol is a `PATHPULSE$...`-named specparam
+    /// (slang treats these specially, as specify-block pulse-control
+    /// declarations, rather than an ordinary specparam value). False for
+    /// any other symbol kind, or an ordinary specparam. A direct field read
+    /// (`slang::ast::SpecparamSymbol::isPathPulse`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input a, output b);\n\
+    /// #        specify\n\
+    /// #          specparam PATHPULSE$a$b = (0, 0);\n\
+    /// #          specparam ordinary = 1;\n\
+    /// #          (a => b) = (1, 1);\n\
+    /// #        endspecify\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let specify = body.members().find(|m| m.kind() == SymbolKind::SpecifyBlock).unwrap();
+    /// let pp = specify.members().find(|m| m.name().starts_with("PATHPULSE$")).unwrap();
+    /// let ordinary = specify.members().find(|m| m.name() == "ordinary").unwrap();
+    /// assert!(pp.specparam_is_path_pulse());
+    /// assert!(!ordinary.specparam_is_path_pulse());
+    /// # Ok(()) }
+    /// ```
+    pub fn specparam_is_path_pulse(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-Specparam symbol.
+        unsafe { sys::slang_symbol_specparam_is_path_pulse(self.raw) }
+    }
+
+    /// The source terminal of a `PATHPULSE$source$dest` specparam
+    /// (`slang::ast::SpecparamSymbol::getPathSource`). `None` for any other
+    /// symbol kind, a non-path-pulse specparam (see
+    /// [`specparam_is_path_pulse`](Self::specparam_is_path_pulse)), or one
+    /// whose terminal name failed to resolve. The underlying source/dest
+    /// pair is forced by the freeze sweep, so this is a pure read.
+    ///
+    /// See [`Symbol::specparam_is_path_pulse`] for how to reach a
+    /// path-pulse specparam.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input a, output b);\n\
+    /// #        specify\n\
+    /// #          specparam PATHPULSE$a$b = (0, 0);\n\
+    /// #          (a => b) = (1, 1);\n\
+    /// #        endspecify\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let specify = body.members().find(|m| m.kind() == SymbolKind::SpecifyBlock).unwrap();
+    /// let pp = specify.members().find(|m| m.name().starts_with("PATHPULSE$")).unwrap();
+    /// assert_eq!(pp.specparam_path_source().unwrap().name(), "a");
+    /// assert_eq!(pp.specparam_path_dest().unwrap().name(), "b");
+    /// # Ok(()) }
+    /// ```
+    pub fn specparam_path_source(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Specparam symbol.
+        // Forced by the freeze sweep, so this never mutates the frozen
+        // arena.
+        wrap(unsafe { sys::slang_symbol_specparam_path_source(self.raw) })
+    }
+
+    /// The destination terminal of a `PATHPULSE$source$dest` specparam
+    /// (`slang::ast::SpecparamSymbol::getPathDest`). `None` for any other
+    /// symbol kind, a non-path-pulse specparam, or one whose terminal name
+    /// failed to resolve. Forced by the freeze sweep alongside
+    /// [`specparam_path_source`](Self::specparam_path_source), so this is a
+    /// pure read.
+    ///
+    /// See [`Symbol::specparam_path_source`] for an example.
+    pub fn specparam_path_dest(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Specparam symbol.
+        // Forced by the freeze sweep, so this never mutates the frozen
+        // arena.
+        wrap(unsafe { sys::slang_symbol_specparam_path_dest(self.raw) })
+    }
+
+    /// For a `StatementBlock` symbol: the kind of block it is (`begin/end`
+    /// vs `fork`/`join`/`join_any`/`join_none`). `None` for any other
+    /// symbol kind. A direct field read
+    /// (`slang::ast::StatementBlockSymbol::blockKind`) — a pure,
+    /// allocation-free read. Compare [`Statement::block_kind`](Statement::block_kind)
+    /// (the same enum read off a `Block` *statement* rather than the symbol
+    /// it declares).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::StatementBlockKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; initial fork: blk join_any endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let blk = body.find("blk").unwrap();
+    /// assert_eq!(blk.statement_block_kind(), Some(StatementBlockKind::JoinAny));
+    /// # Ok(()) }
+    /// ```
+    pub fn statement_block_kind(&self) -> Option<StatementBlockKind> {
+        if self.kind() != SymbolKind::StatementBlock {
+            return None;
+        }
+        // SAFETY: the symbol is a statement block.
+        StatementBlockKind::from_raw(unsafe { sys::slang_symbol_statement_block_kind(self.raw) })
+    }
+
+    /// For a `StatementBlock` symbol: the default lifetime (`automatic` or
+    /// `static`) for variables declared directly within it that don't
+    /// specify their own. `None` for any other symbol kind. A direct field
+    /// read (`slang::ast::StatementBlockSymbol::defaultLifetime`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::VariableLifetime;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// // A block directly in a (non-`automatic`) module defaults to `static`,
+    /// // per IEEE 1800 -- unlike a plain variable declaration, there is no
+    /// // `automatic`/`static` keyword on `begin`/`end` itself.
+    /// # comp.add_source("module m; initial begin: blk int x; end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let blk = body.find("blk").unwrap();
+    /// assert_eq!(blk.statement_block_default_lifetime(), Some(VariableLifetime::Static));
+    /// # Ok(()) }
+    /// ```
+    pub fn statement_block_default_lifetime(&self) -> Option<VariableLifetime> {
+        if self.kind() != SymbolKind::StatementBlock {
+            return None;
+        }
+        // SAFETY: the symbol is a statement block.
+        Some(
+            match unsafe { sys::slang_symbol_statement_block_default_lifetime(self.raw) } {
+                sys::SLANG_VARIABLE_LIFETIME_STATIC => VariableLifetime::Static,
+                _ => VariableLifetime::Automatic,
+            },
+        )
+    }
+
+    /// For a `Subroutine` symbol (a `function`/`task` declaration): the
+    /// default lifetime (`automatic` or `static`) for its local variables
+    /// that don't specify their own. `None` for any other symbol kind. A
+    /// direct field read (`slang::ast::SubroutineSymbol::defaultLifetime`)
+    /// — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::VariableLifetime;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; function automatic int f(); return 1; endfunction endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let f = body.find("f").unwrap();
+    /// assert_eq!(f.subroutine_default_lifetime(), Some(VariableLifetime::Automatic));
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_default_lifetime(&self) -> Option<VariableLifetime> {
+        if self.kind() != SymbolKind::Subroutine {
+            return None;
+        }
+        // SAFETY: the symbol is a subroutine.
+        Some(
+            match unsafe { sys::slang_symbol_subroutine_default_lifetime(self.raw) } {
+                sys::SLANG_VARIABLE_LIFETIME_STATIC => VariableLifetime::Static,
+                _ => VariableLifetime::Automatic,
+            },
+        )
+    }
+
+    /// A `Subroutine` symbol's flags (see [`MethodFlags`]).
+    /// [`MethodFlags::NONE`] for any other symbol kind. A direct field read
+    /// (`slang::ast::SubroutineSymbol::flags`) — a pure, allocation-free
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::MethodFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        function int f(); return 1; endfunction\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let f = body.find("f").unwrap();
+    /// assert_eq!(f.subroutine_flags(), MethodFlags::NONE);
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_flags(&self) -> MethodFlags {
+        // SAFETY: the symbol is valid; 0 for a non-Subroutine symbol.
+        MethodFlags(unsafe { sys::slang_symbol_subroutine_flags(self.raw) })
+    }
+
+    /// For a `Subroutine` symbol: its formal arguments, each a
+    /// `FormalArgument` symbol. Empty for any other symbol kind.
+    /// `slang::ast::SubroutineSymbol::getArguments` forces the subroutine's
+    /// own scope to elaborate on first call; the freeze sweep's generic
+    /// Scope-member traversal already elaborates every visited scope,
+    /// including a Subroutine symbol's own (it is itself a `Scope`), so
+    /// this is a pure read on a frozen design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        function int f(int a, int b); return a + b; endfunction\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let f = body.find("f").unwrap();
+    /// let names: Vec<_> = f.subroutine_arguments().map(|a| a.name().to_string()).collect();
+    /// assert_eq!(names, vec!["a", "b"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_arguments(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-Subroutine symbol.
+        let count = unsafe { sys::slang_symbol_subroutine_argument_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_subroutine_argument(raw, index) })
+        })
+    }
+
+    /// The method a `Subroutine` symbol overrides (resolved via `virtual`/
+    /// class inheritance during elaboration), as another `Subroutine`
+    /// symbol. `None` for any other symbol kind, or a subroutine that
+    /// overrides nothing. `slang::ast::SubroutineSymbol::getOverride` reads
+    /// a pointer set once during class-member elaboration, before this
+    /// symbol is ever reachable through a frozen `&Design`, so this is a
+    /// pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class base;\n\
+    /// #        virtual function int f(); return 1; endfunction\n\
+    /// #      endclass\n\
+    /// #      class derived extends base;\n\
+    /// #        function int f(); return 2; endfunction\n\
+    /// #      endclass\n\
+    /// #      module m; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let derived = design.compilation_units().next().unwrap().find("derived").unwrap();
+    /// let f = derived.find("f").unwrap();
+    /// assert!(f.subroutine_override().is_some());
+    /// assert_eq!(f.subroutine_override().unwrap().parent().unwrap().name(), "base");
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_override(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Subroutine symbol.
+        wrap(unsafe { sys::slang_symbol_subroutine_override(self.raw) })
+    }
+
+    /// The class-method prototype a `Subroutine` symbol implements (an
+    /// `extern` method body's declaration, or the pure-virtual/`extern`
+    /// prototype the subroutine was constructed from), as a
+    /// `MethodPrototype` symbol. `None` for any other symbol kind, or a
+    /// subroutine with no associated prototype (an ordinary in-body
+    /// method). `slang::ast::SubroutineSymbol::getPrototype` reads a
+    /// pointer set once during elaboration, before this symbol is ever
+    /// reachable through a frozen `&Design`, so this is a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class c;\n\
+    /// #        extern function int f();\n\
+    /// #      endclass\n\
+    /// #      function int c::f(); return 1; endfunction\n\
+    /// #      module m; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let c = design.compilation_units().next().unwrap().find("c").unwrap();
+    /// let f = c.find("f").unwrap();
+    /// assert!(f.subroutine_prototype().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_prototype(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Subroutine symbol.
+        wrap(unsafe { sys::slang_symbol_subroutine_prototype(self.raw) })
+    }
+
+    /// The resolved return type of a `Subroutine` symbol
+    /// (`slang::ast::SubroutineSymbol::getReturnType`, `void` for a task or
+    /// a function with no declared return type). `None` for any other
+    /// symbol kind. The underlying `slang::ast::DeclaredType` memo is
+    /// forced by the freeze sweep's generic per-symbol declared-type pass
+    /// (`SubroutineSymbol` is one of its carriers), so this is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        function int f(); return 1; endfunction\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let f = body.find("f").unwrap();
+    /// assert_eq!(f.subroutine_return_type().unwrap().bit_width(), 32);
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_return_type(&self) -> Option<Type<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Subroutine symbol.
+        // Forced by the freeze sweep, so this never mutates the frozen
+        // arena.
+        wrap(unsafe { sys::slang_symbol_subroutine_return_type(self.raw) })
+    }
+
+    /// A `Subroutine` symbol's kind (`Function` or `Task`). `None` for any
+    /// other symbol kind. A direct field read
+    /// (`slang::ast::SubroutineSymbol::subroutineKind`), set once at
+    /// construction — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::SubroutineKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        function int f(); return 1; endfunction\n\
+    /// #        task t(); endtask\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.find("f").unwrap().subroutine_kind(), Some(SubroutineKind::Function));
+    /// assert_eq!(body.find("t").unwrap().subroutine_kind(), Some(SubroutineKind::Task));
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_kind(&self) -> Option<crate::SubroutineKind> {
+        if self.kind() != SymbolKind::Subroutine {
+            return None;
+        }
+        // SAFETY: the symbol is a subroutine.
+        let raw = unsafe { sys::slang_symbol_subroutine_kind(self.raw) };
+        Some(
+            crate::SubroutineKind::from_raw(raw)
+                .unwrap_or_else(|| unreachable!("unknown SubroutineKind raw value {raw}")),
+        )
+    }
+
+    /// True if a `Subroutine` symbol is a virtual class method: declared
+    /// `virtual`, an `extends`-overriding external implementation, or it
+    /// overrides another method
+    /// (`slang::ast::SubroutineSymbol::isVirtual`). False for any other
+    /// symbol kind. `overrides` (see [`Self::subroutine_override`]) is a
+    /// pointer set once during class-member elaboration, before this
+    /// symbol is ever reachable through a frozen `&Design`, so this is a
+    /// pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class base;\n\
+    /// #        virtual function int f(); return 1; endfunction\n\
+    /// #      endclass\n\
+    /// #      class derived extends base;\n\
+    /// #        function int f(); return 2; endfunction\n\
+    /// #      endclass\n\
+    /// #      module m;\n\
+    /// #        function int g(); return 1; endfunction\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let base_f = unit.find("base").unwrap().find("f").unwrap();
+    /// let derived_f = unit.find("derived").unwrap().find("f").unwrap();
+    /// assert!(base_f.subroutine_is_virtual());
+    /// assert!(derived_f.subroutine_is_virtual());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(!body.find("g").unwrap().subroutine_is_virtual());
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_is_virtual(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-Subroutine symbol.
+        unsafe { sys::slang_symbol_subroutine_is_virtual(self.raw) }
+    }
+
+    /// The variable that holds a `Subroutine` symbol's return value while
+    /// its body executes (`slang::ast::SubroutineSymbol::returnValVar`), as
+    /// a `Variable` symbol. `None` for any other symbol kind, or a task
+    /// (which has no return value). A pointer set once at construction,
+    /// before this symbol is ever reachable through a frozen `&Design`, so
+    /// this is a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        function int f(); return 1; endfunction\n\
+    /// #        task t(); endtask\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let rv = body.find("f").unwrap().subroutine_return_val_var().unwrap();
+    /// assert_eq!(rv.name(), "f");
+    /// assert!(body.find("t").unwrap().subroutine_return_val_var().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_return_val_var(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Subroutine symbol.
+        wrap(unsafe { sys::slang_symbol_subroutine_return_val_var(self.raw) })
+    }
+
+    /// The implicit `this` variable of a `Subroutine` symbol that is a
+    /// (non-static) class method (`slang::ast::SubroutineSymbol::thisVar`),
+    /// as a `Variable` symbol. `None` for any other symbol kind, or a
+    /// subroutine that isn't a class method (a free-standing function/task,
+    /// DPI import, or `static` class method). A pointer set once at
+    /// construction, before this symbol is ever reachable through a frozen
+    /// `&Design`, so this is a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class c;\n\
+    /// #        function int f(); return 1; endfunction\n\
+    /// #        static function int g(); return 2; endfunction\n\
+    /// #      endclass\n\
+    /// #      module m;\n\
+    /// #        function int h(); return 1; endfunction\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let c = unit.find("c").unwrap();
+    /// let this_var = c.find("f").unwrap().subroutine_this_var().unwrap();
+    /// assert_eq!(this_var.name(), "this");
+    /// assert!(c.find("g").unwrap().subroutine_this_var().is_none());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("h").unwrap().subroutine_this_var().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_this_var(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Subroutine symbol.
+        wrap(unsafe { sys::slang_symbol_subroutine_this_var(self.raw) })
+    }
+
+    /// The definition name an `UninstantiatedDef` symbol refers to -- the
+    /// module/interface/program/checker name from its instantiation syntax
+    /// that could not be resolved to an actual definition (e.g. `foo
+    /// bar(.a(x));` when no `foo` definition exists). An empty string if
+    /// `self` is not an UninstantiatedDef symbol. A direct field read
+    /// (`slang::ast::UninstantiatedDefSymbol::definitionName`), set once at
+    /// construction -- a pure, allocation-free read. Borrowed from the
+    /// design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n  nosuchmod #(.W(4)) u(.a(1), .b());\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// use sv_lang::kinds::SymbolKind;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let u = body
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::UninstantiatedDef)
+    ///     .unwrap();
+    /// assert_eq!(u.uninstantiated_def_definition_name(), "nosuchmod");
+    /// assert_eq!(u.uninstantiated_def_param_expressions().count(), 1);
+    ///
+    /// let names: Vec<_> = u.uninstantiated_def_port_names().collect();
+    /// assert_eq!(names, vec!["a", "b"]);
+    /// assert!(!u.uninstantiated_def_is_checker());
+    /// # Ok(()) }
+    /// ```
+    pub fn uninstantiated_def_definition_name(&self) -> &'d str {
+        // SAFETY: bytes are borrowed from the frozen design for 'd; empty
+        // for a non-UninstantiatedDef symbol.
+        unsafe {
+            ffi::str_ref(sys::slang_symbol_uninstantiated_def_definition_name(
+                self.raw,
+            ))
+        }
+    }
+
+    /// For an `UninstantiatedDef` symbol: the self-determined expressions
+    /// assigned to its `#(...)` parameters. These aren't necessarily
+    /// correctly typed, since (with no resolved definition) the
+    /// destination parameter's type can't be known. Empty for any other
+    /// symbol kind. A direct field read
+    /// (`slang::ast::UninstantiatedDefSymbol::paramExpressions`), bound
+    /// eagerly at construction -- a pure read.
+    ///
+    /// See [`Symbol::uninstantiated_def_definition_name`] for an example.
+    pub fn uninstantiated_def_param_expressions(
+        &self,
+    ) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-UninstantiatedDef symbol.
+        let count = unsafe { sys::slang_symbol_uninstantiated_def_param_expression_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_uninstantiated_def_param_expression(raw, index) })
+        })
+    }
+
+    /// For an `UninstantiatedDef` symbol: the number of port connections in
+    /// its instantiation. 0 for any other symbol kind.
+    /// `slang::ast::UninstantiatedDefSymbol::getPortConnections` binds the
+    /// connection list (and derives `isChecker()`) together on first call;
+    /// the freeze sweep forces that pre-seal, so this is a pure read.
+    pub fn uninstantiated_def_port_connection_count(&self) -> u32 {
+        // SAFETY: the symbol is valid; 0 for a non-UninstantiatedDef symbol.
+        // Forced by the freeze sweep.
+        unsafe { sys::slang_symbol_uninstantiated_def_port_connection_count(self.raw) }
+    }
+
+    /// For an `UninstantiatedDef` symbol: the `index`'th port connection,
+    /// as a plain expression. Each connection is actually bound as a
+    /// (checker-capable) assertion expression, since with no resolved
+    /// definition slang can't yet tell an ordinary expression port from a
+    /// checker formal; this unwraps the common case (a plain expression)
+    /// and returns `None` for the rarer checker-only shapes (a
+    /// sequence/property actual, or an empty `()` connection) -- see
+    /// [`Symbol::uninstantiated_def_is_checker`] if that distinction
+    /// matters. `None` if `self` is not an UninstantiatedDef symbol,
+    /// `index` is out of range, or the connection isn't a plain expression.
+    /// Forced the same way as
+    /// [`Symbol::uninstantiated_def_port_connection_count`].
+    pub fn uninstantiated_def_port_connection(&self, index: u32) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; `None` if out of range or not a
+        // plain expression. Forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_uninstantiated_def_port_connection(self.raw, index) })
+    }
+
+    /// For an `UninstantiatedDef` symbol: the names of its port
+    /// connections, in order -- empty for a connection that used ordered
+    /// (positional) syntax rather than a named `.name(...)` connection.
+    /// Empty for any other symbol kind. Forced the same way as
+    /// [`Symbol::uninstantiated_def_port_connection_count`]. Mirrors
+    /// `slang::ast::UninstantiatedDefSymbol::getPortNames`.
+    ///
+    /// See [`Symbol::uninstantiated_def_definition_name`] for an example.
+    pub fn uninstantiated_def_port_names(&self) -> impl Iterator<Item = &'d str> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-UninstantiatedDef symbol.
+        // Forced by the freeze sweep.
+        let count = unsafe { sys::slang_symbol_uninstantiated_def_port_connection_count(raw) };
+        (0..count).map(move |index| {
+            // SAFETY: `raw` is valid; index in range; borrowed from the
+            // frozen design for 'd.
+            unsafe { ffi::str_ref(sys::slang_symbol_uninstantiated_def_port_name(raw, index)) }
+        })
+    }
+
+    /// True if an `UninstantiatedDef` symbol must be a checker instance,
+    /// based on the syntax used to instantiate it (a connection using
+    /// sequence/property actual-argument syntax, a repetition, or an empty
+    /// `()` connection -- none of which is legal for an ordinary
+    /// module/interface/program port). False if `self` is not an
+    /// UninstantiatedDef symbol, or nothing about its connections forces
+    /// that conclusion. Forced the same way as
+    /// [`Symbol::uninstantiated_def_port_connection_count`]. Mirrors
+    /// `slang::ast::UninstantiatedDefSymbol::isChecker`.
+    ///
+    /// See [`Symbol::uninstantiated_def_definition_name`] for an example.
+    pub fn uninstantiated_def_is_checker(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-UninstantiatedDef
+        // symbol. Forced by the freeze sweep.
+        unsafe { sys::slang_symbol_uninstantiated_def_is_checker(self.raw) }
+    }
+
+    /// The compilation unit that contains this scope, if any
+    /// (`slang::ast::Scope::getCompilationUnit`). `None` if `self` is not a
+    /// scope, or the scope is not nested under a compilation unit (e.g. it
+    /// is the `$root` scope itself, or belongs to a script session). Walks
+    /// the parent-scope chain with no caching and no allocation, so this is
+    /// a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let body = top.instance_body().unwrap();
+    /// assert!(body.compilation_unit().is_some());
+    /// assert!(design.root().compilation_unit().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn compilation_unit(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` if `self` is not a scope, or
+        // has no enclosing compilation unit.
+        wrap(unsafe { sys::slang_scope_get_compilation_unit(self.raw) })
+    }
+
+    /// The instance body that contains this scope, if any
+    /// (`slang::ast::Scope::getContainingInstance`). `None` if `self` is
+    /// not a scope, or no enclosing instance exists (e.g. a package, or the
+    /// design root). Walks the parent-scope chain with no caching and no
+    /// allocation, so this is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let body = top.instance_body().unwrap();
+    /// let a = body.find("a").unwrap();
+    /// assert_eq!(body.containing_instance().unwrap().id(), body.id());
+    /// assert!(a.parent().unwrap().containing_instance().is_some());
+    /// assert!(design.root().containing_instance().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn containing_instance(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` if `self` is not a scope, or
+        // has no enclosing instance.
+        wrap(unsafe { sys::slang_scope_get_containing_instance(self.raw) })
+    }
+
+    /// The default net type for implicit nets in this scope
+    /// (`slang::ast::Scope::getDefaultNetType`), as a `NetType` symbol.
+    /// `None` if `self` is not a scope; otherwise never `None` — slang
+    /// always resolves to a concrete net type, falling back to the
+    /// compilation's default `wire` if nothing in the enclosing chain
+    /// overrides it. Walks the parent-scope chain with no caching and no
+    /// allocation, so this is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::NetKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("`default_nettype wand\nmodule m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let body = top.instance_body().unwrap();
+    /// assert_eq!(body.default_net_type().unwrap().net_kind(), NetKind::WAnd);
+    /// # Ok(()) }
+    /// ```
+    pub fn default_net_type(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` if `self` is not a scope.
+        wrap(unsafe { sys::slang_scope_get_default_net_type(self.raw) })
+    }
+
+    /// The time scale for delay values expressed within this scope
+    /// (`slang::ast::Scope::getTimeScale`). `None` if `self` is not a scope,
+    /// or no time scale could be resolved at all (no enclosing
+    /// `` `timescale `` and no compilation default). Walks the parent-scope
+    /// chain with no caching and no allocation, so this is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("`timescale 1ns/1ps\nmodule m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let body = top.instance_body().unwrap();
+    /// let ts = body.time_scale().unwrap();
+    /// assert_eq!(ts.base.magnitude(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn time_scale(&self) -> Option<TimeScale> {
+        let mut raw = sys::slang_time_scale {
+            base_unit: 0,
+            base_magnitude: 0,
+            precision_unit: 0,
+            precision_magnitude: 0,
+        };
+        // SAFETY: the symbol is valid; `raw` is written only on success.
+        let set = unsafe { sys::slang_scope_get_time_scale(self.raw, &mut raw) };
+        set.then(|| TimeScale::from_raw(raw))
+    }
+
+    /// True if this scope represents a procedural context — a procedural
+    /// block, or a task/function scope (`slang::ast::Scope::
+    /// isProceduralContext`). False if `self` is not a scope, or is a scope
+    /// with no procedural context (e.g. a module, package, or generate
+    /// block). A direct symbol-kind check — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; initial begin end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let body = top.instance_body().unwrap();
+    /// assert!(!body.is_procedural_context());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_procedural_context(&self) -> bool {
+        // SAFETY: the symbol is valid; false if `self` is not a scope.
+        unsafe { sys::slang_scope_is_procedural_context(self.raw) }
+    }
+
+    /// True if this scope is in an uninstantiated context — e.g. inside a
+    /// module that is never instantiated in the design, or when the
+    /// compilation runs in lint mode (`slang::ast::Scope::
+    /// isUninstantiated`). False if `self` is not a scope. Walks the
+    /// parent-scope chain with no caching and no allocation, so this is a
+    /// pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module unused; endmodule\n\
+    /// #      module top; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let body = top.instance_body().unwrap();
+    /// assert!(!body.is_uninstantiated());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_uninstantiated(&self) -> bool {
+        // SAFETY: the symbol is valid; false if `self` is not a scope.
+        unsafe { sys::slang_scope_is_uninstantiated(self.raw) }
+    }
+
+    /// The compilation that owns this scope
+    /// (`slang::ast::Scope::getCompilation`), as an opaque, comparable
+    /// [`CompilationId`] — the same identity [`Design::compilation_id`]
+    /// returns for the design a scope came from. `None` if `self` is not a
+    /// scope. A direct field read (the same handle every `Symbol`/`Type`/
+    /// ... already carries internally) — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap();
+    /// let body = top.instance_body().unwrap();
+    /// assert_eq!(body.compilation(), Some(design.compilation_id()));
+    /// assert!(body.find("a").unwrap().compilation().is_none()); // a value is not a scope
+    /// # Ok(()) }
+    /// ```
+    pub fn compilation(&self) -> Option<CompilationId> {
+        // SAFETY: the symbol is valid; the null handle if `self` is not a
+        // scope.
+        let raw = unsafe { sys::slang_scope_get_compilation(self.raw) };
+        (!raw.is_null()).then_some(CompilationId(raw as usize))
+    }
+
+    /// This symbol's declared accessibility if it is a class member
+    /// (`public` by default, or `protected`/`local`); [`Visibility::Public`]
+    /// for anything else. Unlike
+    /// [`class_property_visibility`](Self::class_property_visibility) (only
+    /// `ClassProperty` symbols) or
+    /// [`type_alias_visibility`](Type::type_alias_visibility) (only
+    /// `TypeAlias`), this is the general accessor, also covering method
+    /// prototypes and out-of-block subroutine definitions. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Lookup::getVisibility`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::Visibility;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C;\n\
+    /// #        local function void f(); endfunction\n\
+    /// #        function void g(); endfunction\n\
+    /// #      endclass\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let c = unit.find("C").unwrap();
+    /// let f = c.find("f").unwrap();
+    /// let g = c.find("g").unwrap();
+    /// assert_eq!(f.visibility(), Visibility::Local);
+    /// assert_eq!(g.visibility(), Visibility::Public);
+    /// # Ok(()) }
+    /// ```
+    pub fn visibility(&self) -> Visibility {
+        // SAFETY: the symbol is valid; returns SLANG_VISIBILITY_PUBLIC for
+        // any symbol kind that isn't a class member.
+        match unsafe { sys::slang_lookup_get_visibility(self.raw) } {
+            sys::SLANG_VISIBILITY_PROTECTED => Visibility::Protected,
+            sys::SLANG_VISIBILITY_LOCAL => Visibility::Local,
+            _ => Visibility::Public,
+        }
+    }
+
+    /// True if this symbol is visible from `scope` — a class member's
+    /// public/protected/local accessibility, per SystemVerilog visibility
+    /// rules; always `true` for a non-class-member symbol. A pure,
+    /// allocation-free read that issues no diagnostic (unlike
+    /// [`EvalSession::ensure_visible`], which calls through slang's
+    /// diagnostic-issuing entry point but returns the same boolean for the
+    /// same pair). Mirrors `slang::ast::Lookup::isVisibleFrom`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C;\n\
+    /// #        local int x;\n\
+    /// #      endclass\n\
+    /// #      module m;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let c = unit.find("C").unwrap();
+    /// let x = c.find("x").unwrap();
+    /// let m_body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(!x.is_visible_from(&m_body));
+    /// assert!(x.is_visible_from(&c));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_visible_from(&self, scope: &Symbol<'d>) -> bool {
+        // SAFETY: both symbols are valid; false if either is invalid input.
+        unsafe { sys::slang_lookup_is_visible_from(self.raw, scope.raw) }
+    }
+
+    /// True if this (instance member) symbol is accessible from
+    /// `source_scope` — i.e. they share the same parent scope, or
+    /// `source_scope` is (or derives from) the class that owns this symbol.
+    /// Does not consider visibility modifiers (see
+    /// [`is_visible_from`](Self::is_visible_from) for those). A pure,
+    /// allocation-free read. Mirrors `slang::ast::Lookup::isAccessibleFrom`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class Base;\n\
+    /// #        int x;\n\
+    /// #      endclass\n\
+    /// #      class Derived extends Base;\n\
+    /// #      endclass\n\
+    /// #      class Other;\n\
+    /// #      endclass\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let base = unit.find("Base").unwrap();
+    /// let derived = unit.find("Derived").unwrap();
+    /// let other = unit.find("Other").unwrap();
+    /// let x = base.find("x").unwrap();
+    /// assert!(x.is_accessible_from(&base));
+    /// assert!(x.is_accessible_from(&derived));
+    /// assert!(!x.is_accessible_from(&other));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_accessible_from(&self, source_scope: &Symbol<'d>) -> bool {
+        // SAFETY: both symbols are valid; false if either is invalid input.
+        unsafe { sys::slang_lookup_is_accessible_from(self.raw, source_scope.raw) }
+    }
+
+    /// For a `ClockVar` symbol (a clocking-block signal, e.g. the `x` of
+    /// `input #1step output #1step x;`): its direction. Always has a value,
+    /// unlike [`Symbol::assertion_port_direction`]; returns
+    /// [`ArgumentDirection::In`] for any other symbol kind. A direct field
+    /// read (`slang::ast::ClockVarSymbol::direction`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{ArgumentDirection, EdgeKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module test;\n\
+    /// #     wire clk;\n\
+    /// #     int foo, a;\n\
+    /// #     clocking cb @clk;\n\
+    /// #         input a, b = foo;\n\
+    /// #         default input posedge #3;\n\
+    /// #         default output edge;\n\
+    /// #         inout foo;\n\
+    /// #         input #1step output #1step asdf = foo;\n\
+    /// #     endclocking\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cb = body.find("cb").unwrap();
+    /// let asdf = cb.find("asdf").unwrap();
+    ///
+    /// assert_eq!(asdf.clock_var_direction(), ArgumentDirection::InOut);
+    ///
+    /// let in_skew = asdf.clock_var_input_skew();
+    /// assert_eq!(in_skew.edge, EdgeKind::None);
+    /// assert!(in_skew.delay.is_some());
+    ///
+    /// let out_skew = asdf.clock_var_output_skew();
+    /// assert_eq!(out_skew.edge, EdgeKind::None);
+    /// assert!(out_skew.delay.is_some());
+    ///
+    /// let default_in = cb.clocking_block_default_input_skew();
+    /// assert_eq!(default_in.edge, EdgeKind::PosEdge);
+    /// assert!(default_in.delay.is_some());
+    ///
+    /// let default_out = cb.clocking_block_default_output_skew();
+    /// assert_eq!(default_out.edge, EdgeKind::BothEdges);
+    /// assert!(default_out.delay.is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn clock_var_direction(&self) -> ArgumentDirection {
+        // SAFETY: the symbol is valid; returns SLANG_ARGUMENT_DIRECTION_IN
+        // for a non-ClockVar symbol.
+        ArgumentDirection::from_raw(unsafe { sys::slang_symbol_clock_var_direction(self.raw) })
+            .unwrap_or(ArgumentDirection::In)
+    }
+
+    /// For a `FormalArgument` symbol (a subroutine or covergroup formal
+    /// argument, e.g. from [`Symbol::members`] on a subroutine or from
+    /// [`Type::covergroup_arguments`]): its declared direction (`input` by
+    /// default, or `output`/`inout`/`ref`). Returns
+    /// [`ArgumentDirection::In`] for any other symbol kind. A direct field
+    /// read (`slang::ast::FormalArgumentSymbol::direction`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{ArgumentDirection, kinds::SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     function automatic void f(input int a, output int b, ref int c, input int d = 4);\n\
+    /// #         b = a; c = a;\n\
+    /// #     endfunction\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let f = body.find("f").unwrap();
+    /// let args: Vec<_> = f
+    ///     .members()
+    ///     .filter(|m| m.kind() == SymbolKind::FormalArgument)
+    ///     .collect();
+    /// assert_eq!(args[0].name(), "a");
+    /// assert_eq!(args[0].formal_argument_direction(), ArgumentDirection::In);
+    /// assert_eq!(args[1].name(), "b");
+    /// assert_eq!(args[1].formal_argument_direction(), ArgumentDirection::Out);
+    /// assert_eq!(args[2].name(), "c");
+    /// assert_eq!(args[2].formal_argument_direction(), ArgumentDirection::Ref);
+    /// assert_eq!(args[3].name(), "d");
+    /// assert_eq!(args[3].formal_argument_direction(), ArgumentDirection::In);
+    /// assert!(args[3].formal_argument_default_value().is_some());
+    /// assert!(args[0].formal_argument_default_value().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn formal_argument_direction(&self) -> ArgumentDirection {
+        // SAFETY: the symbol is valid; returns SLANG_ARGUMENT_DIRECTION_IN
+        // for a non-FormalArgument symbol.
+        ArgumentDirection::from_raw(unsafe {
+            sys::slang_symbol_formal_argument_direction(self.raw)
+        })
+        .unwrap_or(ArgumentDirection::In)
+    }
+
+    /// For a `FormalArgument` symbol: its default value expression (used
+    /// when the caller omits this argument). `None` if it has none, or this
+    /// is not a FormalArgument symbol. The underlying memo
+    /// (`FormalArgumentSymbol::defaultVal`) is forced by the freeze sweep,
+    /// so this is a pure read. Mirrors
+    /// `slang::ast::FormalArgumentSymbol::getDefaultValue`.
+    ///
+    /// See [`Symbol::formal_argument_direction`] for an example.
+    pub fn formal_argument_default_value(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_formal_argument_default_value(self.raw) })
+    }
+
+    /// For a `GenerateBlock` symbol (one instantiated block of an
+    /// `if`/`case`/loop generate construct): which branch of the
+    /// originating construct produced it. Returns
+    /// [`GenerateBranchKind::IllegalUnconditional`] for any other symbol
+    /// kind. A direct field read
+    /// (`slang::ast::GenerateBlockSymbol::branchKind`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::GenerateBranchKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     if (1) begin : cond\n\
+    /// #     end else begin : cond_else\n\
+    /// #     end\n\
+    /// #     case (1)\n\
+    /// #         1: begin : c1 end\n\
+    /// #         default: begin : c2 end\n\
+    /// #     endcase\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(
+    ///     body.find("cond").unwrap().generate_block_branch_kind(),
+    ///     GenerateBranchKind::IfTrue
+    /// );
+    /// assert_eq!(
+    ///     body.find("cond_else").unwrap().generate_block_branch_kind(),
+    ///     GenerateBranchKind::IfFalse
+    /// );
+    /// let c1 = body.find("c1").unwrap();
+    /// assert_eq!(c1.generate_block_branch_kind(), GenerateBranchKind::CaseItem);
+    /// let exprs: Vec<_> = c1.generate_block_case_item_expressions().collect();
+    /// assert_eq!(exprs.len(), 1);
+    /// assert_eq!(exprs[0].constant_value().unwrap().as_i64(), Some(1));
+    ///
+    /// let c2 = body.find("c2").unwrap();
+    /// assert_eq!(c2.generate_block_branch_kind(), GenerateBranchKind::CaseDefault);
+    /// assert_eq!(c2.generate_block_case_item_expressions().count(), 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn generate_block_branch_kind(&self) -> GenerateBranchKind {
+        // SAFETY: the symbol is valid; returns
+        // SLANG_GENERATE_BRANCH_ILLEGAL_UNCONDITIONAL for a non-GenerateBlock
+        // symbol.
+        GenerateBranchKind::from_raw(unsafe {
+            sys::slang_symbol_generate_block_branch_kind(self.raw)
+        })
+    }
+
+    /// For a `GenerateBlock` symbol: its bound if/case condition expression
+    /// (the `cond` of `if (cond)`, or the selector of a `case` generate
+    /// item). `None` if this block was not produced by a conditional branch
+    /// (its [`Symbol::generate_block_branch_kind`] is
+    /// [`GenerateBranchKind::LoopIteration`] or
+    /// [`GenerateBranchKind::IllegalUnconditional`]), or this is not a
+    /// GenerateBlock symbol. Bound against the construct's enclosing scope
+    /// and explicitly forced by the freeze sweep alongside
+    /// [`Symbol::generate_block_case_item_expressions`], so this is a pure
+    /// read. Mirrors `slang::ast::GenerateBlockSymbol::getConditionExpression`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     if (1 == 1) begin : cond\n\
+    /// #     end else begin : cond_else\n\
+    /// #     end\n\
+    /// #     for (genvar i = 0; i < 2; i++) begin : lp\n\
+    /// #     end\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    ///
+    /// let cond = body.find("cond").unwrap();
+    /// let expr = cond.generate_block_condition_expr().unwrap();
+    /// assert!(expr.constant_value().unwrap().is_true());
+    ///
+    /// // The untaken `else` branch shares the very same bound condition.
+    /// let cond_else = cond.next_sibling().unwrap();
+    /// assert!(cond_else.generate_block_condition_expr().is_some());
+    ///
+    /// // A loop-generate array's entries are not conditional branches.
+    /// let lp = body.find("lp").unwrap();
+    /// let first = lp.generate_block_array_entries().next().unwrap();
+    /// assert!(first.generate_block_condition_expr().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn generate_block_condition_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_generate_block_condition_expr(self.raw) })
+    }
+
+    /// For a `GenerateBlock` symbol: true if the generate construct that
+    /// produced it was never actually instantiated in the design (e.g. the
+    /// untaken branch of an `if`/`case` generate, kept around only so
+    /// name-lookup rules inside it can still be checked). False for any
+    /// other symbol kind. A direct field read
+    /// (`slang::ast::GenerateBlockSymbol::isUninstantiated`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     if (1 == 1) begin : cond\n\
+    /// #     end else begin : cond_else\n\
+    /// #     end\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(!body.find("cond").unwrap().generate_block_is_uninstantiated());
+    /// assert!(body.find("cond_else").unwrap().generate_block_is_uninstantiated());
+    /// # Ok(()) }
+    /// ```
+    pub fn generate_block_is_uninstantiated(&self) -> bool {
+        if self.kind() != SymbolKind::GenerateBlock {
+            return false;
+        }
+        // SAFETY: the symbol is a GenerateBlock.
+        unsafe { sys::slang_symbol_generate_block_is_uninstantiated(self.raw) }
+    }
+
+    /// For a `GenerateBlock` symbol: its bound case-item label expressions
+    /// (only nonempty for a `case` generate block whose
+    /// [`Symbol::generate_block_branch_kind`] is
+    /// [`GenerateBranchKind::CaseItem`]). Empty for any other symbol kind.
+    /// A direct field read
+    /// (`slang::ast::GenerateBlockSymbol::caseItemExpressions`) —
+    /// canonical-type-forced and prefolded explicitly by the freeze sweep
+    /// (these are bound against the construct's enclosing scope, not this
+    /// block's own, so unlike most expression fields they are never reached
+    /// by the generic traversal), so this is a pure read.
+    ///
+    /// See [`Symbol::generate_block_branch_kind`] for an example.
+    pub fn generate_block_case_item_expressions(&self) -> impl Iterator<Item = Expression<'d>> {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-GenerateBlock symbol.
+        let count = unsafe { sys::slang_symbol_generate_block_case_item_expr_count(raw) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: the symbol is valid; index in range.
+            let ast = unsafe { sys::slang_symbol_generate_block_case_item_expr(raw, i) };
+            wrap(ast)
+        })
+    }
+
+    /// For a `Port` symbol (the public-facing side of a module / program /
+    /// interface port; the port symbol itself is not directly referenceable
+    /// from within the instance -- see [`Symbol::port_internal_symbol`]):
+    /// the direction of data flowing across it. `ArgumentDirection::InOut`
+    /// for any other symbol kind, matching
+    /// `slang::ast::PortSymbol::direction`'s own default. A direct field
+    /// read — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ArgumentDirection;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input logic [3:0] a = 4'hA, output logic y);\n\
+    /// #        assign y = |a;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let a = body.instance_body_ports().find(|p| p.name() == "a").unwrap();
+    /// assert_eq!(a.port_direction(), ArgumentDirection::In);
+    /// assert!(a.port_is_ansi_port());
+    /// assert_eq!(a.port_type().unwrap().bit_width(), 4);
+    ///
+    /// let internal = a.port_internal_symbol().unwrap();
+    /// assert_eq!(internal.name(), "a");
+    /// // A plain implicit-ANSI port (no bit-select, no explicit `.a(...)`
+    /// // connection expression) has no separate internal *expression* --
+    /// // only the plain internal symbol above.
+    /// assert!(a.port_internal_expr().is_none());
+    ///
+    /// let init = a.port_initializer().unwrap();
+    /// assert_eq!(init.constant_value().unwrap().as_i64(), Some(10));
+    ///
+    /// let y = body.instance_body_ports().find(|p| p.name() == "y").unwrap();
+    /// assert_eq!(y.port_direction(), ArgumentDirection::Out);
+    /// assert!(y.port_initializer().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn port_direction(&self) -> ArgumentDirection {
+        // SAFETY: the symbol is valid; ArgumentDirection::InOut for a
+        // non-Port symbol.
+        ArgumentDirection::from_raw(unsafe { sys::slang_symbol_port_direction(self.raw) })
+            .unwrap_or(ArgumentDirection::InOut)
+    }
+
+    /// For a `Port` symbol: the source location where its external name is
+    /// declared (the ANSI port's own name, or the non-ANSI `.name` in the
+    /// module header's port list). A zero-buffer (no-location) value if
+    /// `self` is not a Port symbol. A direct field read
+    /// (`slang::ast::PortSymbol::externalLoc`) — a pure, allocation-free
+    /// read.
+    ///
+    /// # Examples
+    /// See [`Symbol::port_direction`] for an example design.
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let a = body.instance_body_ports().find(|p| p.name() == "a").unwrap();
+    /// assert!(a.port_external_loc().buffer != 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn port_external_loc(&self) -> SourceLoc {
+        // SAFETY: the symbol is valid; a pure, allocation-free read.
+        unsafe { sys::slang_symbol_port_external_loc(self.raw) }.into()
+    }
+
+    /// A `Port` symbol's default-value initializer expression (e.g. the
+    /// `= 4'hA` of an ANSI port `input logic [3:0] a = 4'hA`). `None` if
+    /// `self` is not a Port symbol, or it has no initializer. The underlying
+    /// memo is forced by the freeze sweep, so this is a pure read. Mirrors
+    /// `slang::ast::PortSymbol::getInitializer`.
+    ///
+    /// See [`Symbol::port_direction`] for an example.
+    pub fn port_initializer(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Port symbol.
+        let ast = unsafe { sys::slang_symbol_port_initializer(self.raw) };
+        wrap(ast)
+    }
+
+    /// The expression, bound in the instance body's own scope, that a `Port`
+    /// symbol connects internally to (e.g. the reference to its internal
+    /// net or variable, or a concatenation for a multi-bit port built from
+    /// several internal signals). `None` if `self` is not a Port symbol, or
+    /// it has no internal connection (a null port). The underlying memo is
+    /// forced by the freeze sweep, so this is a pure read. Mirrors
+    /// `slang::ast::PortSymbol::getInternalExpr`.
+    ///
+    /// See [`Symbol::port_direction`] for an example.
+    pub fn port_internal_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Port symbol.
+        let ast = unsafe { sys::slang_symbol_port_internal_expr(self.raw) };
+        wrap(ast)
+    }
+
+    /// A `Port` symbol's resolved type. `None` if `self` is not a Port
+    /// symbol. The underlying memo is forced by the freeze sweep, so this is
+    /// a pure read. Mirrors `slang::ast::PortSymbol::getType`.
+    ///
+    /// See [`Symbol::port_direction`] for an example.
+    pub fn port_type(&self) -> Option<Type<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Port symbol.
+        let ast = unsafe { sys::slang_symbol_port_type(self.raw) };
+        wrap(ast)
+    }
+
+    /// The instance-internal symbol a `Port` symbol connects to (its
+    /// internal net or variable). `None` if `self` is not a Port symbol, or
+    /// it is a null port with nothing internal to connect to. A direct field
+    /// read (`slang::ast::PortSymbol::internalSymbol`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::port_direction`] for an example.
+    pub fn port_internal_symbol(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; `None` for a non-Port symbol.
+        let ast = unsafe { sys::slang_symbol_port_internal_symbol(self.raw) };
+        wrap(ast)
+    }
+
+    /// True if a `Port` symbol was declared using ANSI port-list syntax
+    /// (e.g. `module m(input logic a);`), and false if it was declared using
+    /// non-ANSI syntax (a bare name in the port list plus a separate
+    /// `input logic a;` declaration in the body) — or if `self` is not a
+    /// Port symbol. A direct field read
+    /// (`slang::ast::PortSymbol::isAnsiPort`) — a pure, allocation-free
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(a);\n  input logic a;\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let a = body.instance_body_ports().find(|p| p.name() == "a").unwrap();
+    /// assert!(!a.port_is_ansi_port());
+    /// # Ok(()) }
+    /// ```
+    pub fn port_is_ansi_port(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-Port symbol.
+        unsafe { sys::slang_symbol_port_is_ansi_port(self.raw) }
+    }
+
+    /// True if a `Port` symbol's connection is (or resolves to) a net --
+    /// its internal expression is a net-typed lvalue (a net reference, or a
+    /// concatenation of only net references), or, if it has no internal
+    /// expression, its internal symbol is itself a `Net`. `false` if `self`
+    /// is not a Port symbol. Reads the same internal-expression memo
+    /// already forced by the freeze sweep (see
+    /// [`Symbol::port_internal_expr`]), so this is a pure read. Mirrors
+    /// `slang::ast::PortSymbol::isNetPort`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input logic a, output var logic b);\n  assign b = a;\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let a = body.instance_body_ports().find(|p| p.name() == "a").unwrap();
+    /// assert!(a.port_is_net_port());
+    /// let b = body.instance_body_ports().find(|p| p.name() == "b").unwrap();
+    /// assert!(!b.port_is_net_port());
+    /// # Ok(()) }
+    /// ```
+    pub fn port_is_net_port(&self) -> bool {
+        // SAFETY: the symbol is valid; the internalExpr memo is forced
+        // pre-seal by the freeze sweep, so this never mutates the frozen
+        // arena.
+        unsafe { sys::slang_symbol_port_is_net_port(self.raw) }
+    }
+
+    /// True if a `Port` symbol is a null port -- an empty, dot-less
+    /// position in a port list (e.g. the missing slot of
+    /// `module m(a, , c);`) that does not connect to anything internal to
+    /// the instance -- and `false` if `self` is not a Port symbol. A direct
+    /// field read (`slang::ast::PortSymbol::isNullPort`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(a, , c);\n  input a, c;\nendmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let ports: Vec<_> = body.instance_body_ports().collect();
+    /// assert_eq!(ports.len(), 3);
+    /// assert!(!ports[0].port_is_null_port());
+    /// assert!(ports[1].port_is_null_port());
+    /// assert!(!ports[2].port_is_null_port());
+    /// # Ok(()) }
+    /// ```
+    pub fn port_is_null_port(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-Port symbol.
+        unsafe { sys::slang_symbol_port_is_null_port(self.raw) }
+    }
+
+    /// For a `PrimitivePort` symbol (a port declaration inside a
+    /// `primitive`/`endprimitive` block): its declared direction.
+    /// `PrimitivePortDirection::In` if `self` is not a PrimitivePort
+    /// symbol. A direct field read
+    /// (`slang::ast::PrimitivePortSymbol::direction`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{PrimitiveKind, PrimitivePortDirection};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "primitive udp_and(o, a, b);\n\
+    /// #        output o;\n\
+    /// #        input a, b;\n\
+    /// #        table\n\
+    /// #          0 0 : 0;\n\
+    /// #          0 1 : 0;\n\
+    /// #          1 0 : 0;\n\
+    /// #          1 1 : 1;\n\
+    /// #        endtable\n\
+    /// #      endprimitive\n\
+    /// #      module m(input a, b, output y);\n\
+    /// #        udp_and g1(y, a, b);\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// // A user-defined primitive is not name-lookup-able through the
+    /// // enclosing scope (like a module definition, it lives in its own
+    /// // namespace) -- find it by walking members and matching its kind.
+    /// use sv_lang::kinds::SymbolKind;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let udp = unit
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::Primitive && s.name() == "udp_and")
+    ///     .unwrap();
+    /// assert_eq!(udp.primitive_kind(), PrimitiveKind::UserDefined);
+    /// assert!(!udp.primitive_is_sequential());
+    /// assert!(udp.primitive_init_val().is_none());
+    ///
+    /// let ports: Vec<_> = udp.primitive_ports().collect();
+    /// assert_eq!(ports.len(), 3);
+    /// assert_eq!(ports[0].primitive_port_direction(), PrimitivePortDirection::Out);
+    /// assert_eq!(ports[1].primitive_port_direction(), PrimitivePortDirection::In);
+    /// assert_eq!(ports[2].primitive_port_direction(), PrimitivePortDirection::In);
+    ///
+    /// let table: Vec<_> = udp.primitive_table().collect();
+    /// assert_eq!(table.len(), 4);
+    /// assert_eq!(table[3].0, "11");
+    /// assert_eq!(table[3].1, "1");
+    /// assert_eq!(table[3].2, "");
+    ///
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let g1 = body.find("g1").unwrap();
+    /// assert_eq!(g1.kind(), SymbolKind::PrimitiveInstance);
+    /// let conns: Vec<_> = g1.primitive_instance_port_connections().collect();
+    /// assert_eq!(conns.len(), 3);
+    /// assert!(g1.primitive_instance_delay().is_none());
+    /// let ds = g1.primitive_instance_drive_strength();
+    /// assert_eq!(ds.strength0, None);
+    /// assert_eq!(ds.strength1, None);
+    /// # Ok(()) }
+    /// ```
+    pub fn primitive_port_direction(&self) -> PrimitivePortDirection {
+        // SAFETY: the symbol is valid; PrimitivePortDirection::In for a
+        // non-PrimitivePort symbol.
+        PrimitivePortDirection::from_raw(unsafe {
+            sys::slang_symbol_primitive_port_direction(self.raw)
+        })
+    }
+
+    /// For a `Primitive` symbol (a `primitive`/`endprimitive` declaration,
+    /// or one of the built-in gate primitives such as `and`/`not`/
+    /// `bufif0`): which kind of primitive it is.
+    /// `PrimitiveKind::UserDefined` if `self` is not a Primitive symbol. A
+    /// direct field read (`slang::ast::PrimitiveSymbol::primitiveKind`) —
+    /// a pure, allocation-free read.
+    ///
+    /// See [`Symbol::primitive_port_direction`] for an example.
+    pub fn primitive_kind(&self) -> PrimitiveKind {
+        // SAFETY: the symbol is valid; PrimitiveKind::UserDefined for a
+        // non-Primitive symbol.
+        PrimitiveKind::from_raw(unsafe { sys::slang_symbol_primitive_kind(self.raw) })
+    }
+
+    /// True if a `Primitive` symbol is sequential -- it carries internal
+    /// state between evaluations, e.g. a UDP with a `reg` output, or a
+    /// built-in latch like `sr` -- and `false` if it is purely
+    /// combinational, or if `self` is not a Primitive symbol. A direct
+    /// field read (`slang::ast::PrimitiveSymbol::isSequential`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::primitive_port_direction`] for an example.
+    pub fn primitive_is_sequential(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-Primitive symbol.
+        unsafe { sys::slang_symbol_primitive_is_sequential(self.raw) }
+    }
+
+    /// A `Primitive` symbol's initial-value expression for its
+    /// (sequential-only) state, already evaluated to a constant (e.g. the
+    /// `initial out = 1'b0;` of a sequential UDP body). `None` if `self` is
+    /// not a Primitive symbol, or it has no initial-value expression. A
+    /// direct field read (`slang::ast::PrimitiveSymbol::initVal`), already
+    /// a resolved `ConstantValue*` set once at construction time — a pure,
+    /// allocation-free read of the frozen arena.
+    ///
+    /// See [`Symbol::primitive_port_direction`] for an example.
+    pub fn primitive_init_val(&self) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the symbol is valid; a direct field read of the frozen
+        // arena, so this never mutates it.
+        let raw = unsafe { sys::slang_symbol_primitive_init_val(self.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// The ports a `Primitive` symbol declares, in declaration order
+    /// (output port(s) first, per UDP syntax rules). Empty if `self` is
+    /// not a Primitive symbol. A direct field read
+    /// (`slang::ast::PrimitiveSymbol::ports`) — a pure, allocation-free
+    /// read.
+    ///
+    /// See [`Symbol::primitive_port_direction`] for an example.
+    pub fn primitive_ports(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-Primitive symbol.
+        let count = unsafe { sys::slang_symbol_primitive_port_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_primitive_port(raw, index) })
+        })
+    }
+
+    /// The rows of a `Primitive` symbol's truth table (its `table` ...
+    /// `endtable` body), each as `(inputs, output, state)`: `inputs` is one
+    /// character per input port (plus a parenthesized two-character edge
+    /// in place of an edge-sensitive input's single character), `output`
+    /// is the row's single-character result symbol (e.g. `"1"`, `"0"`,
+    /// `"x"`, or `"-"` for "no change" in a sequential UDP), and `state` is
+    /// the row's single-character current-state column, empty for a
+    /// combinational UDP's rows (which have none). Empty if `self` is not
+    /// a Primitive symbol. A direct field read
+    /// (`slang::ast::PrimitiveSymbol::table`) — a pure, allocation-free
+    /// read.
+    ///
+    /// See [`Symbol::primitive_port_direction`] for an example.
+    pub fn primitive_table(&self) -> impl Iterator<Item = (&'d str, &'d str, &'d str)> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-Primitive symbol.
+        let count = unsafe { sys::slang_symbol_primitive_table_count(raw) };
+        (0..count).map(move |index| {
+            // SAFETY: `raw` is valid; index in range; the returned strings
+            // are borrowed from the frozen arena, valid for `'d`.
+            unsafe {
+                (
+                    ffi::str_ref(sys::slang_symbol_primitive_table_entry_inputs(raw, index)),
+                    ffi::str_ref(sys::slang_symbol_primitive_table_entry_output(raw, index)),
+                    ffi::str_ref(sys::slang_symbol_primitive_table_entry_state(raw, index)),
+                )
+            }
+        })
+    }
+
+    /// For a `PrimitiveInstance` symbol (an instantiation of a gate/UDP
+    /// primitive): the expressions bound to its port connections, in
+    /// port-list order. Empty if `self` is not a PrimitiveInstance symbol.
+    /// The underlying memo is forced by the freeze sweep (FreezeVisitor's
+    /// PrimitiveInstanceSymbol branch), so this is a pure read. Mirrors
+    /// `slang::ast::PrimitiveInstanceSymbol::getPortConnections`.
+    ///
+    /// See [`Symbol::primitive_port_direction`] for an example.
+    pub fn primitive_instance_port_connections(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-PrimitiveInstance symbol.
+        let count = unsafe { sys::slang_symbol_primitive_instance_port_connection_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_primitive_instance_port_connection(raw, index) })
+        })
+    }
+
+    /// For a `PrimitiveInstance` symbol: its explicit delay control (e.g.
+    /// the `#2` of `and #2 g1(y, a, b);`). `None` if `self` is not a
+    /// PrimitiveInstance symbol, or it has no delay. The underlying memo is
+    /// forced by the freeze sweep (FreezeVisitor's PrimitiveInstanceSymbol
+    /// branch), so this is a pure read. Mirrors
+    /// `slang::ast::PrimitiveInstanceSymbol::getDelay`.
+    ///
+    /// See [`Symbol::primitive_port_direction`] for an example.
+    pub fn primitive_instance_delay(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep, so this
+        // never mutates the frozen arena.
+        wrap(unsafe { sys::slang_symbol_primitive_instance_delay(self.raw) })
+    }
+
+    /// For a `PrimitiveInstance` symbol: its explicit drive strength, if
+    /// any (e.g. the `(strong0, pull1)` of
+    /// `and (strong0, pull1) g1(y, a, b);`). A default (all-`None`) pair if
+    /// this is not a PrimitiveInstance symbol, or it has no strength
+    /// specification. Recomputed from syntax on every call — a pure,
+    /// allocation-free read. Mirrors
+    /// `slang::ast::PrimitiveInstanceSymbol::getDriveStrength`.
+    ///
+    /// See [`Symbol::primitive_port_direction`] for an example.
+    pub fn primitive_instance_drive_strength(&self) -> DriveStrengthPair {
+        // SAFETY: the symbol is valid; recomputed from syntax on every call.
+        DriveStrengthPair::from_raw(unsafe {
+            sys::slang_symbol_primitive_instance_drive_strength(self.raw)
+        })
+    }
+
+    /// For a `ProceduralBlock` symbol (an `always`/`always_comb`/
+    /// `always_latch`/`always_ff`/`initial`/`final` block): the nested
+    /// statement-block scopes its body directly introduces (e.g. one per
+    /// `begin : name ... end` or `fork ... join` with its own
+    /// declarations). Empty if `self` is not a ProceduralBlock symbol. A
+    /// direct field read (`slang::ast::ProceduralBlockSymbol::getBlocks`)
+    /// — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input logic clk, a, output logic q);\n\
+    /// #        always_ff @(posedge clk) begin : blk\n\
+    /// #          logic tmp;\n\
+    /// #          tmp = a;\n\
+    /// #          q <= tmp;\n\
+    /// #        end\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let proc = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// assert!(proc.is_single_driver_block());
+    ///
+    /// let blocks: Vec<_> = proc.procedural_blocks().collect();
+    /// assert_eq!(blocks.len(), 1);
+    /// assert_eq!(blocks[0].name(), "blk");
+    /// # Ok(()) }
+    /// ```
+    pub fn procedural_blocks(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-ProceduralBlock symbol.
+        let count = unsafe { sys::slang_symbol_procedural_block_block_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_procedural_block_block(raw, index) })
+        })
+    }
+
+    /// True if a `ProceduralBlock` symbol is a "single driver" block -- an
+    /// `always_comb`, `always_latch`, or `always_ff` block, each restricted
+    /// (and analyzed) as the sole driver of every variable it assigns --
+    /// and `false` for a plain `always`/`initial`/`final` block, or if
+    /// `self` is not a ProceduralBlock symbol. A direct field read
+    /// (`slang::ast::ProceduralBlockSymbol::procedureKind`) — a pure,
+    /// allocation-free read. Mirrors
+    /// `slang::ast::ProceduralBlockSymbol::isSingleDriverBlock`.
+    ///
+    /// See [`Symbol::procedural_blocks`] for an example.
+    pub fn is_single_driver_block(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-ProceduralBlock
+        // symbol.
+        unsafe { sys::slang_symbol_procedural_block_is_single_driver_block(self.raw) }
+    }
+
+    /// For a `ProceduralBlock` symbol: which kind of procedural block it is
+    /// (e.g. `initial`, `always_ff`). [`ProceduralBlockKind::Initial`] if
+    /// `self` is not a ProceduralBlock symbol. A direct field read
+    /// (`slang::ast::ProceduralBlockSymbol::procedureKind`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ProceduralBlockKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input logic clk, a, output logic q);\n\
+    /// #        always_ff @(posedge clk) q <= a;\n\
+    /// #        initial q = 0;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let blocks: Vec<_> = body
+    ///     .members()
+    ///     .filter(|s| s.kind() == SymbolKind::ProceduralBlock)
+    ///     .map(|s| s.procedural_block_procedure_kind())
+    ///     .collect();
+    /// assert_eq!(blocks, vec![ProceduralBlockKind::AlwaysFF, ProceduralBlockKind::Initial]);
+    /// # Ok(()) }
+    /// ```
+    pub fn procedural_block_procedure_kind(&self) -> ProceduralBlockKind {
+        // SAFETY: the symbol is valid; ProceduralBlockKind::Initial for a
+        // non-ProceduralBlock symbol.
+        ProceduralBlockKind::from_raw(unsafe {
+            sys::slang_symbol_procedural_block_procedure_kind(self.raw)
+        })
+    }
+
+    /// For a `MultiPort` symbol (a port that externally appears as a single
+    /// connection but internally fans out to multiple names, e.g. the `a`
+    /// of `.a({b, d})` in an ANSI port list): the most restrictive
+    /// aggregated direction of data flow across its constituent ports (see
+    /// [`Symbol::multi_port_ports`] to inspect each one's own direction).
+    /// `ArgumentDirection::In` for any other symbol kind. A direct field
+    /// read (`slang::ast::MultiPortSymbol::direction`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ArgumentDirection;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(.a({b, d}));\n\
+    /// #        input b;\n\
+    /// #        input d;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let port = body.instance_body_ports().find(|p| p.name() == "a").unwrap();
+    /// assert_eq!(port.kind(), SymbolKind::MultiPort);
+    /// assert_eq!(port.multi_port_direction(), ArgumentDirection::In);
+    /// assert!(port.multi_port_initializer().is_none());
+    /// assert!(!port.multi_port_is_null_port());
+    /// assert_eq!(port.multi_port_type().unwrap().bit_width(), 2);
+    ///
+    /// let names: Vec<_> = port.multi_port_ports().map(|p| p.name().to_string()).collect();
+    /// assert_eq!(names, vec!["b", "d"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn multi_port_direction(&self) -> ArgumentDirection {
+        // SAFETY: the symbol is valid; ArgumentDirection::In for a
+        // non-MultiPort symbol.
+        ArgumentDirection::from_raw(unsafe { sys::slang_symbol_multi_port_direction(self.raw) })
+            .unwrap_or(ArgumentDirection::In)
+    }
+
+    /// For a `MultiPort` symbol: always `None` — multi-ports never have
+    /// initializers (`slang::ast::MultiPortSymbol::getInitializer` is a
+    /// fixed placeholder, kept only for parity with the single-port
+    /// `Port` symbol interface so generic code can treat both uniformly).
+    /// `None` for any other symbol kind too. A pure, allocation-free read.
+    ///
+    /// See [`Symbol::multi_port_direction`] for an example.
+    pub fn multi_port_initializer(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; always a null node.
+        wrap(unsafe { sys::slang_symbol_multi_port_initializer(self.raw) })
+    }
+
+    /// For a `MultiPort` symbol: its externally-visible type (the
+    /// concatenation of its constituent ports' types). `None` for any
+    /// other symbol kind. The underlying memo is forced by the freeze
+    /// sweep, so this is a pure read. Mirrors
+    /// `slang::ast::MultiPortSymbol::getType`.
+    ///
+    /// See [`Symbol::multi_port_direction`] for an example.
+    pub fn multi_port_type(&self) -> Option<Type<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep, so this
+        // never mutates the frozen arena.
+        wrap(unsafe { sys::slang_symbol_multi_port_type(self.raw) })
+    }
+
+    /// For a `MultiPort` symbol: always `false` — multi-ports are never
+    /// null ports (`slang::ast::MultiPortSymbol::isNullPort` is a fixed
+    /// field kept only for parity with the single-port `Port` symbol
+    /// interface). `false` for any other symbol kind too. A pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::multi_port_direction`] for an example.
+    pub fn multi_port_is_null_port(&self) -> bool {
+        // SAFETY: the symbol is valid; always false.
+        unsafe { sys::slang_symbol_multi_port_is_null_port(self.raw) }
+    }
+
+    /// For a `MultiPort` symbol: its constituent single-`Port` symbols, in
+    /// declaration order (e.g. `b` then `d` for `.a({b, d})`). Empty for
+    /// any other symbol kind. A direct field read (the elements of
+    /// `slang::ast::MultiPortSymbol::ports`) — a pure, allocation-free
+    /// read.
+    ///
+    /// See [`Symbol::multi_port_direction`] for an example.
+    pub fn multi_port_ports(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-MultiPort symbol.
+        let count = unsafe { sys::slang_symbol_multi_port_port_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_multi_port_port(raw, index) })
+        })
+    }
+
+    /// For a `NetAlias` symbol (an `alias lhs = rhs;` declaration): the
+    /// net-reference expressions it resolves to, in source order
+    /// (typically two, one per side of the alias, but a chained `alias a =
+    /// b = c;` yields more). Empty for any other symbol kind. The
+    /// underlying memo is forced by the freeze sweep, so this is a pure
+    /// read. Mirrors `slang::ast::NetAliasSymbol::getNetReferences`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        wire a, b;\n\
+    /// #        alias a = b;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let alias = body.members().find(|s| s.kind() == SymbolKind::NetAlias).unwrap();
+    /// let refs: Vec<_> = alias.net_alias_net_references().collect();
+    /// assert_eq!(refs.len(), 2);
+    /// # Ok(()) }
+    /// ```
+    pub fn net_alias_net_references(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-NetAlias symbol. Forced
+        // by the freeze sweep, so this never mutates the frozen arena.
+        let count = unsafe { sys::slang_symbol_net_alias_reference_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; index in range.
+            wrap(unsafe { sys::slang_symbol_net_alias_reference(raw, index) })
+        })
+    }
+
+    /// For a `GenerateBlock` symbol: the constructIndex assigned to it by
+    /// its originating generate construct (its position among that
+    /// construct's blocks, used e.g. to name unlabeled blocks). 0 for any
+    /// other symbol kind. A direct field read
+    /// (`slang::ast::GenerateBlockSymbol::constructIndex`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     genvar i;\n\
+    /// #     for (i = 0; i < 3; i = i + 1) begin : loop\n\
+    /// #     end\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let arr = body.find("loop").unwrap();
+    /// assert!(arr.generate_block_array_valid());
+    /// let entries: Vec<_> = arr.generate_block_array_entries().collect();
+    /// assert_eq!(entries.len(), 3);
+    /// for (i, entry) in entries.iter().enumerate() {
+    ///     assert_eq!(entry.generate_block_construct_index(), i as u32);
+    ///     assert_eq!(
+    ///         entry.generate_block_branch_kind(),
+    ///         sv_lang::GenerateBranchKind::LoopIteration
+    ///     );
+    ///     assert_eq!(
+    ///         entry.generate_block_array_index().unwrap().as_i64(),
+    ///         Some(i as i64)
+    ///     );
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn generate_block_construct_index(&self) -> u32 {
+        // SAFETY: the symbol is valid; 0 for a non-GenerateBlock symbol.
+        unsafe { sys::slang_symbol_generate_block_construct_index(self.raw) }
+    }
+
+    /// For a `GenerateBlock` symbol: the loop-iteration index that produced
+    /// it, if it was produced by a loop-generate construct (branch kind
+    /// [`GenerateBranchKind::LoopIteration`]). `None` if it was not, or
+    /// this is not a GenerateBlock symbol. Mirrors
+    /// `slang::ast::GenerateBlockSymbol::getArrayIndex`. The underlying
+    /// value is the already-folded value of the implicit localparam of the
+    /// same name as the loop's genvar, forced pre-seal by the freeze sweep,
+    /// so this is a pure read.
+    ///
+    /// See [`Symbol::generate_block_construct_index`] for an example.
+    pub fn generate_block_array_index(&self) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the symbol is valid; the underlying value is forced
+        // pre-seal by the freeze sweep, so this reads it without arena
+        // mutation.
+        let raw = unsafe { sys::slang_symbol_generate_block_array_index(self.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// For a `GenerateBlockArray` symbol (an array of blocks produced by a
+    /// loop-generate construct, e.g. from [`Symbol::find`] or
+    /// [`Symbol::members`] on the enclosing scope): its instantiated block
+    /// entries, in iteration order. Empty for any other symbol kind. A
+    /// direct field read (`slang::ast::GenerateBlockArraySymbol::entries`)
+    /// — a pure, allocation-free read.
+    ///
+    /// See [`Symbol::generate_block_construct_index`] for an example.
+    pub fn generate_block_array_entries(&self) -> impl Iterator<Item = Symbol<'d>> {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-GenerateBlockArray symbol.
+        let count = unsafe { sys::slang_symbol_generate_block_array_entry_count(raw) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: the symbol is valid; index in range.
+            let ast = unsafe { sys::slang_symbol_generate_block_array_entry(raw, i) };
+            wrap(ast)
+        })
+    }
+
+    /// For a `GenerateBlockArray` symbol: the constructIndex assigned to it
+    /// by its enclosing scope (analogous to
+    /// [`Symbol::generate_block_construct_index`]). 0 for any other symbol
+    /// kind. A direct field read
+    /// (`slang::ast::GenerateBlockArraySymbol::constructIndex`) — a pure,
+    /// allocation-free read.
+    pub fn generate_block_array_construct_index(&self) -> u32 {
+        // SAFETY: the symbol is valid; 0 for a non-GenerateBlockArray symbol.
+        unsafe { sys::slang_symbol_generate_block_array_construct_index(self.raw) }
+    }
+
+    /// For a `GenerateBlockArray` symbol: true if the loop-generate
+    /// construct that produced it completed successfully (its stop
+    /// expression evaluated to a well-defined boolean on every iteration,
+    /// without exceeding the compilation's max-generate-steps limit or
+    /// looping forever). False for any other symbol kind. A direct field
+    /// read (`slang::ast::GenerateBlockArraySymbol::valid`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::generate_block_construct_index`] for an example.
+    pub fn generate_block_array_valid(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-GenerateBlockArray
+        // symbol.
+        unsafe { sys::slang_symbol_generate_block_array_valid(self.raw) }
+    }
+
+    /// For a `GenerateBlockArray` symbol: the bound initial-value
+    /// expression of its loop variable (the `i = 0` of
+    /// `for (genvar i = 0; ...; ...)`). `None` if this is not a
+    /// GenerateBlockArray symbol. A direct field read
+    /// (`slang::ast::GenerateBlockArraySymbol::initialExpression`) —
+    /// canonical-type-forced and prefolded explicitly by the freeze sweep
+    /// (it is bound against the construct's enclosing scope, so unlike most
+    /// expression fields it is never reached by the generic traversal), so
+    /// this is a pure read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     genvar i;\n\
+    /// #     for (i = 0; i < 3; i = i + 1) begin : loop\n\
+    /// #     end\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let arr = body.find("loop").unwrap();
+    ///
+    /// let initial = arr.generate_block_array_initial_expr().unwrap();
+    /// assert_eq!(initial.constant_value().unwrap().as_i64(), Some(0));
+    ///
+    /// let stop = arr.generate_block_array_stop_expr().unwrap();
+    /// assert_eq!(stop.kind(), sv_lang::kinds::ExpressionKind::BinaryOp);
+    ///
+    /// let iter = arr.generate_block_array_iter_expr().unwrap();
+    /// assert!(iter.kind() != sv_lang::kinds::ExpressionKind::Invalid);
+    ///
+    /// let loop_var = arr.generate_block_array_loop_variable().unwrap();
+    /// assert_eq!(loop_var.name(), "i");
+    /// # Ok(()) }
+    /// ```
+    pub fn generate_block_array_initial_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_generate_block_array_initial_expr(self.raw) })
+    }
+
+    /// For a `GenerateBlockArray` symbol: the bound stop-condition
+    /// expression of its loop-generate construct (the `i < N` of
+    /// `for (...; i < N; ...)`). `None` if this is not a GenerateBlockArray
+    /// symbol. A direct field read
+    /// (`slang::ast::GenerateBlockArraySymbol::stopExpression`), forced
+    /// exactly like the initial expression above, so this is a pure read.
+    ///
+    /// See [`Symbol::generate_block_array_initial_expr`] for an example.
+    pub fn generate_block_array_stop_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_generate_block_array_stop_expr(self.raw) })
+    }
+
+    /// For a `GenerateBlockArray` symbol: the bound iteration expression of
+    /// its loop-generate construct (the `i++`/`i = i + 1` of
+    /// `for (...; ...; i = i + 1)`). `None` if this is not a
+    /// GenerateBlockArray symbol. A direct field read
+    /// (`slang::ast::GenerateBlockArraySymbol::iterExpression`), forced
+    /// exactly like the initial expression above, so this is a pure read.
+    ///
+    /// See [`Symbol::generate_block_array_initial_expr`] for an example.
+    pub fn generate_block_array_iter_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_generate_block_array_iter_expr(self.raw) })
+    }
+
+    /// For a `GenerateBlockArray` symbol: the loop variable used by its
+    /// bound stop and iteration expressions (a compiler-generated local
+    /// shadowing the loop's genvar). `None` if this is not a
+    /// GenerateBlockArray symbol. A direct field read
+    /// (`slang::ast::GenerateBlockArraySymbol::loopVariable`) — explicitly
+    /// visited by the freeze sweep (it lives in a private scope never
+    /// reached by the generic traversal), so this is a pure read.
+    ///
+    /// See [`Symbol::generate_block_array_initial_expr`] for an example.
+    pub fn generate_block_array_loop_variable(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_generate_block_array_loop_variable(self.raw) })
+    }
+
+    /// For a `GenerateBlock` or `GenerateBlockArray` symbol: its external
+    /// name — the declared name if it has one, or else a synthesized
+    /// `genblk<N>` name (where N is derived from its constructIndex among
+    /// unnamed siblings). `None` for any other symbol kind. Recomputed on
+    /// every call (mirrors
+    /// `slang::ast::GenerateBlockSymbol::getExternalName` /
+    /// `slang::ast::GenerateBlockArraySymbol::getExternalName`) — a pure
+    /// read that allocates only the returned `String`, never the frozen
+    /// arena.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     if (1) begin : cond\n\
+    /// #     end else begin\n\
+    /// #     end\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let named = body.find("cond").unwrap();
+    /// assert_eq!(named.generate_block_external_name().as_deref(), Some("cond"));
+    ///
+    /// // The unnamed `else` branch gets a synthesized `genblk<N>` name.
+    /// use sv_lang::kinds::SymbolKind;
+    /// let unnamed = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::GenerateBlock && m.name().is_empty())
+    ///     .unwrap();
+    /// let ext = unnamed.generate_block_external_name().unwrap();
+    /// assert!(ext.starts_with("genblk"));
+    /// # Ok(()) }
+    /// ```
+    pub fn generate_block_external_name(&self) -> Option<String> {
+        let mut err = ffi::error();
+        // SAFETY: the symbol is valid; a pure read (only the returned
+        // string, never the frozen arena, is allocated).
+        let s = unsafe { sys::slang_symbol_generate_block_external_name(self.raw, &mut err) };
+        ffi::check(&err).ok().map(|()| ffi::owned_str(s))
+    }
+
+    /// For a `ClockVar` symbol: its input skew. A zeroed skew
+    /// ([`EdgeKind::None`], no delay) for any other symbol kind. A direct
+    /// field read (`slang::ast::ClockVarSymbol::inputSkew`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::clock_var_direction`] for an example.
+    pub fn clock_var_input_skew(&self) -> ClockingSkew<'d> {
+        // SAFETY: the symbol is valid.
+        ClockingSkew::from_raw(unsafe { sys::slang_symbol_clock_var_input_skew(self.raw) })
+    }
+
+    /// For a `ClockVar` symbol: its output skew, analogous to
+    /// [`Symbol::clock_var_input_skew`]. Mirrors
+    /// `slang::ast::ClockVarSymbol::outputSkew`.
+    ///
+    /// See [`Symbol::clock_var_direction`] for an example.
+    pub fn clock_var_output_skew(&self) -> ClockingSkew<'d> {
+        // SAFETY: the symbol is valid.
+        ClockingSkew::from_raw(unsafe { sys::slang_symbol_clock_var_output_skew(self.raw) })
+    }
+
+    /// For a `ClockingBlock` symbol: the `default input` skew declared in
+    /// its body (e.g. `default input posedge #3;`). A zeroed skew
+    /// ([`EdgeKind::None`], no delay) if none was declared, or this is not a
+    /// ClockingBlock symbol. The underlying memo is forced by the freeze
+    /// sweep, so this is a pure read. Mirrors
+    /// `slang::ast::ClockingBlockSymbol::getDefaultInputSkew`.
+    ///
+    /// See [`Symbol::clock_var_direction`] for an example.
+    pub fn clocking_block_default_input_skew(&self) -> ClockingSkew<'d> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        ClockingSkew::from_raw(unsafe {
+            sys::slang_symbol_clocking_block_default_input_skew(self.raw)
+        })
+    }
+
+    /// For a `ClockingBlock` symbol: the `default output` skew, analogous to
+    /// [`Symbol::clocking_block_default_input_skew`]. Mirrors
+    /// `slang::ast::ClockingBlockSymbol::getDefaultOutputSkew`.
+    ///
+    /// See [`Symbol::clock_var_direction`] for an example.
+    pub fn clocking_block_default_output_skew(&self) -> ClockingSkew<'d> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        ClockingSkew::from_raw(unsafe {
+            sys::slang_symbol_clocking_block_default_output_skew(self.raw)
+        })
+    }
+
+    /// For a `ClockingBlock` symbol: its clocking event (e.g. the `@clk` of
+    /// `clocking cb @clk;`), as a [`SemNode`] of domain
+    /// [`sys::SLANG_AST_TIMING_CONTROL`]. `None` if this is not a
+    /// ClockingBlock symbol. The underlying memo is forced by the freeze
+    /// sweep, so this is a pure read. Mirrors
+    /// `slang::ast::ClockingBlockSymbol::getEvent`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n  wire clk;\n  clocking cb @clk;\n  endclocking\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cb = body.find("cb").unwrap();
+    /// assert!(cb.clocking_block_event().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn clocking_block_event(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_clocking_block_event(self.raw) })
+    }
+
+    /// For a `ContinuousAssign` symbol (an `assign lhs = rhs;` statement):
+    /// its bound assignment expression. `None` if this is not a
+    /// ContinuousAssign symbol. The underlying memo is forced by the freeze
+    /// sweep, so this is a pure read. Mirrors
+    /// `slang::ast::ContinuousAssignSymbol::getAssignment`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input a, b, output y);\n  assign #2 y = a & b;\nendmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let ca = body.members().find(|s| s.kind() == sv_lang::kinds::SymbolKind::ContinuousAssign).unwrap();
+    /// assert!(ca.continuous_assign_assignment().is_some());
+    /// assert!(ca.continuous_assign_delay().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn continuous_assign_assignment(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_continuous_assign_assignment(self.raw) })
+    }
+
+    /// For a `ContinuousAssign` symbol: its delay control (the `#2` of
+    /// `assign #2 y = a;`). `None` if this is not a ContinuousAssign symbol,
+    /// or it has no delay. The underlying memo is forced by the freeze
+    /// sweep, so this is a pure read. Mirrors
+    /// `slang::ast::ContinuousAssignSymbol::getDelay`.
+    ///
+    /// See [`Symbol::continuous_assign_assignment`] for an example.
+    pub fn continuous_assign_delay(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_continuous_assign_delay(self.raw) })
+    }
+
+    /// For a `ContinuousAssign` symbol: its explicit drive strength, if any
+    /// (e.g. the `(strong0, pull1)` of `assign (strong0, pull1) y = a;`). A
+    /// default (all-`None`) pair if this is not a ContinuousAssign symbol,
+    /// or it has no strength specification. Recomputed from syntax on every
+    /// call — a pure, allocation-free read. Mirrors
+    /// `slang::ast::ContinuousAssignSymbol::getDriveStrength`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::DriveStrength;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input a, output y, y2);\n\
+    /// #      assign (strong0, pull1) y = a;\n\
+    /// #      assign y2 = a;\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let mut assigns = body
+    ///     .members()
+    ///     .filter(|s| s.kind() == SymbolKind::ContinuousAssign);
+    /// let strong_pull = assigns.next().unwrap();
+    /// let ds = strong_pull.continuous_assign_drive_strength();
+    /// assert_eq!(ds.strength0, Some(DriveStrength::Strong));
+    /// assert_eq!(ds.strength1, Some(DriveStrength::Pull));
+    ///
+    /// let plain = assigns.next().unwrap();
+    /// let plain_ds = plain.continuous_assign_drive_strength();
+    /// assert_eq!(plain_ds.strength0, None);
+    /// assert_eq!(plain_ds.strength1, None);
+    /// # Ok(()) }
+    /// ```
+    pub fn continuous_assign_drive_strength(&self) -> DriveStrengthPair {
+        // SAFETY: the symbol is valid; recomputed from syntax on every call.
+        DriveStrengthPair::from_raw(unsafe {
+            sys::slang_symbol_continuous_assign_drive_strength(self.raw)
+        })
+    }
+
+    /// For a `Net` symbol (a `wire`, `tri`, or user-defined nettype
+    /// declaration): its vectored/scalared expansion hint (`vectored`/
+    /// `scalared` before the net's range, e.g. `wire vectored [7:0] w;`),
+    /// which only affects how bit-selects of the net are treated for
+    /// simulation purposes. `ExpansionHint::None` for any other symbol
+    /// kind. A direct field read (`slang::ast::NetSymbol::expansionHint`)
+    /// — a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{ChargeStrength, ExpansionHint};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        wire vectored [7:0] v;\n\
+    /// #        wire plain;\n\
+    /// #        trireg (small) s;\n\
+    /// #        trireg t;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let v = body.find("v").unwrap();
+    /// assert_eq!(v.net_expansion_hint(), ExpansionHint::Vectored);
+    /// let plain = body.find("plain").unwrap();
+    /// assert_eq!(plain.net_expansion_hint(), ExpansionHint::None);
+    ///
+    /// let s = body.find("s").unwrap();
+    /// assert_eq!(s.net_charge_strength(), Some(ChargeStrength::Small));
+    /// let t = body.find("t").unwrap();
+    /// assert_eq!(t.net_charge_strength(), None);
+    /// # Ok(()) }
+    /// ```
+    pub fn net_expansion_hint(&self) -> ExpansionHint {
+        // SAFETY: the symbol is valid; ExpansionHint::None for a non-Net
+        // symbol.
+        ExpansionHint::from_raw(unsafe { sys::slang_symbol_net_expansion_hint(self.raw) })
+    }
+
+    /// For a `Net` symbol: its explicit charge strength, if any (e.g.
+    /// `small` for `trireg small w;`; only meaningful for a `trireg`
+    /// net). `None` for any other symbol kind, or if it has no charge
+    /// strength specification. Recomputed from syntax on every call — a
+    /// pure, allocation-free read. Mirrors
+    /// `slang::ast::NetSymbol::getChargeStrength`.
+    ///
+    /// See [`Symbol::net_expansion_hint`] for an example.
+    pub fn net_charge_strength(&self) -> Option<ChargeStrength> {
+        // SAFETY: the symbol is valid; recomputed from syntax on every call.
+        ChargeStrength::from_raw(unsafe { sys::slang_symbol_net_charge_strength(self.raw) })
+    }
+
+    /// For a `Net` symbol: its delay control (the `#2` of `wire #2 w =
+    /// a;`). `None` for any other symbol kind, or if it has no delay. The
+    /// underlying memo is forced by the freeze sweep, so this is a pure
+    /// read. Mirrors `slang::ast::NetSymbol::getDelay`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::DriveStrength;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input a);\n\
+    /// #        wire #2 d = a;\n\
+    /// #        wire (strong0, pull1) s = a;\n\
+    /// #        assign implicit_w = a;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let d = body.find("d").unwrap();
+    /// assert!(d.net_delay().is_some());
+    /// assert!(!d.net_is_implicit());
+    ///
+    /// let s = body.find("s").unwrap();
+    /// let ds = s.net_drive_strength();
+    /// assert_eq!(ds.strength0, Some(DriveStrength::Strong));
+    /// assert_eq!(ds.strength1, Some(DriveStrength::Pull));
+    ///
+    /// let implicit = body.find("implicit_w").unwrap();
+    /// assert!(implicit.net_is_implicit());
+    /// # Ok(()) }
+    /// ```
+    pub fn net_delay(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep, so this
+        // never mutates the frozen arena.
+        wrap(unsafe { sys::slang_symbol_net_delay(self.raw) })
+    }
+
+    /// For a `Net` symbol: its explicit drive strength, if any (e.g. the
+    /// `(strong0, pull1)` of `wire (strong0, pull1) w = a;`). A default
+    /// (all-`None`) pair if this is not a Net symbol, or it has no
+    /// strength specification. Recomputed from syntax on every call — a
+    /// pure, allocation-free read. Mirrors
+    /// `slang::ast::NetSymbol::getDriveStrength`.
+    ///
+    /// See [`Symbol::net_delay`] for an example.
+    pub fn net_drive_strength(&self) -> DriveStrengthPair {
+        // SAFETY: the symbol is valid; recomputed from syntax on every call.
+        DriveStrengthPair::from_raw(unsafe { sys::slang_symbol_net_drive_strength(self.raw) })
+    }
+
+    /// For a `Net` symbol: true if it was implicitly declared (e.g. the
+    /// bare `implicit_w` on the left of `assign implicit_w = a;` with no
+    /// preceding `wire implicit_w;`, under default-nettype rules). `false`
+    /// for any other symbol kind. A direct field read
+    /// (`slang::ast::NetSymbol::isImplicit`) — a pure, allocation-free
+    /// read.
+    ///
+    /// See [`Symbol::net_delay`] for an example.
+    pub fn net_is_implicit(&self) -> bool {
+        // SAFETY: the symbol is valid; false for a non-Net symbol.
+        unsafe { sys::slang_symbol_net_is_implicit(self.raw) }
+    }
+
+    /// For a `CompilationUnit` symbol (the root scope of one compilation
+    /// unit): the time scale in effect for declarations placed directly at
+    /// its own ($unit) scope — set by an explicit `timeunit`/
+    /// `timeprecision` declaration there, or else defaulted at construction
+    /// to the compilation's configured default time scale (see
+    /// [`Design::default_time_scale`]). Note this is distinct from a
+    /// module's own effective time scale, which instead comes from its
+    /// nearest enclosing `` `timescale`` directive (a `Definition`-level
+    /// concept, not this field). `None` if this is not a CompilationUnit
+    /// symbol, or neither source applies. A direct field read
+    /// (`slang::ast::CompilationUnitSymbol::timeScale`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("timeunit 1ns;\ntimeprecision 1ps;\nmodule m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let ts = unit.compilation_unit_time_scale().unwrap();
+    /// assert_eq!(ts.base.magnitude(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn compilation_unit_time_scale(&self) -> Option<TimeScale> {
+        let mut raw = sys::slang_time_scale {
+            base_unit: 0,
+            base_magnitude: 0,
+            precision_unit: 0,
+            precision_magnitude: 0,
+        };
+        // SAFETY: the symbol is valid; a direct field read.
+        let set = unsafe { sys::slang_symbol_compilation_unit_time_scale(self.raw, &mut raw) };
+        set.then(|| TimeScale::from_raw(raw))
+    }
+
+    /// For a `CoverCrossBody` symbol (the hidden scope holding a cover
+    /// cross's own members, reachable through a cross-coverpoint's
+    /// [`Symbol::parent`]): the synthesized queue type of its
+    /// cross-coverage values (the type of an implicit `cross.name`
+    /// iteration). `None` if this is not a CoverCrossBody symbol. A direct
+    /// field read (`slang::ast::CoverCrossBodySymbol::crossQueueType`), set
+    /// once when the body is constructed — a pure, allocation-free read.
+    ///
+    /// See [`Symbol::cover_cross_targets`] for an example that reaches a
+    /// CoverCrossBody symbol.
+    pub fn cover_cross_body_queue_type(&self) -> Option<Type<'d>> {
+        // SAFETY: the symbol is valid; a direct field read.
+        wrap(unsafe { sys::slang_symbol_cover_cross_body_queue_type(self.raw) })
+    }
+
+    /// For a `CoverCross` symbol (a `cross` declaration inside a
+    /// covergroup): its `iff` guard expression, if any. `None` if this is
+    /// not a CoverCross symbol, or it has no `iff` clause. The underlying
+    /// memo is forced by the freeze sweep, so this is a pure read. Mirrors
+    /// `slang::ast::CoverCrossSymbol::getIffExpr`.
+    ///
+    /// See [`Symbol::cover_cross_targets`] for an example.
+    pub fn cover_cross_iff_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_cover_cross_iff_expr(self.raw) })
+    }
+
+    /// For a `CoverCross` symbol: the coverpoints it crosses. Empty if this
+    /// is not a CoverCross symbol. A direct field read
+    /// (`slang::ast::CoverCrossSymbol::targets`) — a pure, allocation-free
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit clk; bit [1:0] a, b;\n\
+    /// #     covergroup cg @(posedge clk);\n\
+    /// #         cp_a: coverpoint a;\n\
+    /// #         cp_b: coverpoint b;\n\
+    /// #         x: cross cp_a, cp_b {\n\
+    /// #             option.weight = 2;\n\
+    /// #             ignore_bins ig = binsof(cp_a) intersect {0};\n\
+    /// #         }\n\
+    /// #     endgroup\n\
+    /// #     cg cov = new();\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors(), "{}", design.diagnostics());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cov_ty = body.find("cov").unwrap().value_type().unwrap();
+    /// // A covergroup's own coverpoints/crosses live one level down, in its
+    /// // hidden CovergroupBody scope.
+    /// let cg_body = cov_ty
+    ///     .as_symbol()
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::CovergroupBody)
+    ///     .unwrap();
+    /// let x = cg_body.find("x").unwrap();
+    ///
+    /// let target_names: Vec<_> = x.cover_cross_targets().map(|t| t.name().to_string()).collect();
+    /// assert_eq!(target_names, ["cp_a", "cp_b"]);
+    ///
+    /// assert!(x.cover_cross_iff_expr().is_none());
+    ///
+    /// let options: Vec<_> = x.cover_cross_options().collect();
+    /// assert_eq!(options.len(), 1);
+    /// assert!(!options[0].is_type_option());
+    /// assert_eq!(options[0].name(), "weight");
+    /// assert!(options[0].expression().is_some());
+    ///
+    /// // The cross's own scope holds a hidden CoverCrossBody member that
+    /// // carries the synthesized cross-value queue type.
+    /// let cross_body = x
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::CoverCrossBody)
+    ///     .unwrap();
+    /// assert!(cross_body.cover_cross_body_queue_type().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn cover_cross_targets(&self) -> impl Iterator<Item = Symbol<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-CoverCross symbol.
+        let count = unsafe { sys::slang_symbol_cover_cross_target_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; `index` in range.
+            wrap(unsafe { sys::slang_symbol_cover_cross_target(raw, index) })
+        })
+    }
+
+    /// For a `CoverCross` symbol: the `option`/`type_option` setters
+    /// declared directly in its body (e.g. the `option.weight = 2;` of a
+    /// cross). Empty if this is not a CoverCross symbol. A direct field
+    /// read (`slang::ast::CoverCrossSymbol::options`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::cover_cross_targets`] for an example.
+    pub fn cover_cross_options(&self) -> impl Iterator<Item = CoverageOption<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-CoverCross symbol.
+        let count = unsafe { sys::slang_symbol_cover_cross_option_count(raw) };
+        (0..count).map(move |index| CoverageOption {
+            sym_raw: raw,
+            index,
+            _design: PhantomData,
+        })
+    }
+
+    /// For a `CovergroupBody` symbol (the hidden scope holding a covergroup's
+    /// own coverpoints/crosses, reachable through a covergroup type's
+    /// [`Symbol::members`]): the `option`/`type_option` setters declared
+    /// directly in the covergroup body itself (e.g. the
+    /// `option.per_instance = 1;` of a covergroup, as opposed to one
+    /// declared inside a coverpoint or cross). Empty if this is not a
+    /// CovergroupBody symbol. A direct field read
+    /// (`slang::ast::CovergroupBodySymbol::options`), forced by the freeze
+    /// sweep — a pure read.
+    ///
+    /// This shares its implementation with [`Symbol::cover_cross_options`]
+    /// (and works equally on a `Coverpoint` symbol's own `options`); each
+    /// name matches the C++ member it mirrors on its own owner.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit clk;\n\
+    /// #     covergroup cg @(posedge clk);\n\
+    /// #         option.per_instance = 1;\n\
+    /// #         cp: coverpoint clk;\n\
+    /// #     endgroup\n\
+    /// #     cg cov = new();\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors(), "{}", design.diagnostics());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cov_ty = body.find("cov").unwrap().value_type().unwrap();
+    /// let cg_body = cov_ty
+    ///     .as_symbol()
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::CovergroupBody)
+    ///     .unwrap();
+    ///
+    /// let options: Vec<_> = cg_body.covergroup_options().collect();
+    /// assert_eq!(options.len(), 1);
+    /// assert!(!options[0].is_type_option());
+    /// assert_eq!(options[0].name(), "per_instance");
+    /// assert!(options[0].expression().is_some());
+    ///
+    /// // A non-owning symbol reports no options.
+    /// assert_eq!(cov_ty.as_symbol().covergroup_options().count(), 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn covergroup_options(&self) -> impl Iterator<Item = CoverageOption<'d>> + 'd {
+        self.cover_cross_options()
+    }
+
+    /// For a `Coverpoint` symbol (a `coverpoint` declaration inside a
+    /// covergroup): its sampled coverage expression (e.g. the `a` of `cp:
+    /// coverpoint a;`). `None` if this is not a Coverpoint symbol. Backed by
+    /// the symbol's declared-type initializer, which is forced by the
+    /// freeze sweep, so this is a pure read. Mirrors
+    /// `slang::ast::CoverpointSymbol::getCoverageExpr`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit clk; bit [3:0] a;\n\
+    /// #     covergroup cg @(posedge clk);\n\
+    /// #         cp: coverpoint a;\n\
+    /// #     endgroup\n\
+    /// #     cg cov = new();\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cov_ty = body.find("cov").unwrap().value_type().unwrap();
+    /// let cg_body = cov_ty
+    ///     .as_symbol()
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::CovergroupBody)
+    ///     .unwrap();
+    /// let cp = cg_body.find("cp").unwrap();
+    ///
+    /// // `a` is 4 bits wide; the coverage expression carries that same type
+    /// // (possibly through an implicit conversion node).
+    /// let expr = cp.coverpoint_coverage_expr().unwrap();
+    /// assert_eq!(expr.expr_type().unwrap().bit_width(), 4);
+    ///
+    /// // A non-Coverpoint symbol reports `None`.
+    /// assert!(cg_body.coverpoint_coverage_expr().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn coverpoint_coverage_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_coverpoint_coverage_expr(self.raw) })
+    }
+
+    /// For a `Coverpoint` symbol: its `iff` guard expression (e.g. the `en`
+    /// of `cp: coverpoint a iff (en);`). `None` if this is not a Coverpoint
+    /// symbol, or it has no `iff` clause. Forced by the freeze sweep, so
+    /// this is a pure read. Mirrors `slang::ast::CoverpointSymbol::
+    /// getIffExpr`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit clk; bit en; bit [3:0] a;\n\
+    /// #     covergroup cg @(posedge clk);\n\
+    /// #         cp: coverpoint a iff (en);\n\
+    /// #         nogate: coverpoint a;\n\
+    /// #     endgroup\n\
+    /// #     cg cov = new();\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cov_ty = body.find("cov").unwrap().value_type().unwrap();
+    /// let cg_body = cov_ty
+    ///     .as_symbol()
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::CovergroupBody)
+    ///     .unwrap();
+    /// let cp = cg_body.find("cp").unwrap();
+    /// assert!(cp.coverpoint_iff_expr().is_some());
+    ///
+    /// let nogate = cg_body.find("nogate").unwrap();
+    /// assert!(nogate.coverpoint_iff_expr().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn coverpoint_iff_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_coverpoint_iff_expr(self.raw) })
+    }
+
+    /// For an `ElabSystemTask` symbol (`$fatal`/`$error`/`$warning`/`$info`/
+    /// `$static_assert`): which task it is. `None` if this is not an
+    /// ElabSystemTask symbol. A direct field read
+    /// (`slang::ast::ElabSystemTaskSymbol::taskKind`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// use sv_lang::ElabSystemTaskKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     $info(\"hi\");\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let task = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::ElabSystemTask)
+    ///     .unwrap();
+    /// assert_eq!(task.elab_system_task_kind(), Some(ElabSystemTaskKind::Info));
+    /// # Ok(()) }
+    /// ```
+    pub fn elab_system_task_kind(&self) -> Option<ElabSystemTaskKind> {
+        if self.kind() != SymbolKind::ElabSystemTask {
+            return None;
+        }
+        // SAFETY: the symbol is an ElabSystemTask symbol.
+        Some(
+            match unsafe { sys::slang_symbol_elab_system_task_kind(self.raw) } {
+                sys::SLANG_ELAB_SYSTEM_TASK_ERROR => ElabSystemTaskKind::Error,
+                sys::SLANG_ELAB_SYSTEM_TASK_WARNING => ElabSystemTaskKind::Warning,
+                sys::SLANG_ELAB_SYSTEM_TASK_INFO => ElabSystemTaskKind::Info,
+                sys::SLANG_ELAB_SYSTEM_TASK_STATIC_ASSERT => ElabSystemTaskKind::StaticAssert,
+                _ => ElabSystemTaskKind::Fatal,
+            },
+        )
+    }
+
+    /// For an `ElabSystemTask` symbol: the condition expression of a
+    /// `$static_assert` (e.g. the `1 == 1` of `$static_assert(1 == 1);`).
+    /// `None` if this is not an ElabSystemTask symbol, or the task has no
+    /// condition. Forced by the freeze sweep, so this is a pure read.
+    /// Mirrors `slang::ast::ElabSystemTaskSymbol::getAssertCondition`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     $static_assert(1 == 1, \"never fires\");\n\
+    /// #     $info(\"hi\");\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let assert_task = body
+    ///     .members()
+    ///     .find(|m| {
+    ///         m.kind() == SymbolKind::ElabSystemTask
+    ///             && m.elab_system_task_assert_condition().is_some()
+    ///     })
+    ///     .unwrap();
+    /// assert!(assert_task.elab_system_task_assert_condition().is_some());
+    ///
+    /// let info_task = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::ElabSystemTask && m.elab_system_task_kind()
+    ///         == Some(sv_lang::ElabSystemTaskKind::Info))
+    ///     .unwrap();
+    /// assert!(info_task.elab_system_task_assert_condition().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn elab_system_task_assert_condition(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_elab_system_task_assert_condition(self.raw) })
+    }
+
+    /// For an `ElabSystemTask` symbol: its formatted message (the result of
+    /// evaluating and concatenating its arguments), or `None` if it carries
+    /// no message, or this is not an ElabSystemTask symbol. Forced by the
+    /// freeze sweep, so this is a pure read. Mirrors
+    /// `slang::ast::ElabSystemTaskSymbol::getMessage`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     $info(\"hello\");\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let task = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::ElabSystemTask)
+    ///     .unwrap();
+    /// assert_eq!(task.elab_system_task_message(), Some(": hello"));
+    /// # Ok(()) }
+    /// ```
+    pub fn elab_system_task_message(&self) -> Option<&'d str> {
+        let mut raw = empty_str();
+        // SAFETY: the symbol is valid; forced by the freeze sweep; `raw` is
+        // written only on success, and the string it borrows is owned by the
+        // design (allocated into the compilation's arena), valid for `'d`.
+        let set = unsafe { sys::slang_symbol_elab_system_task_message(self.raw, &mut raw) };
+        // SAFETY: `raw` was just written by a successful call above; the
+        // string it borrows is owned by the design, valid for `'d`.
+        set.then(|| unsafe { ffi::str_ref(raw) })
+    }
+
+    /// For an `ExplicitImport` symbol (`import pkg::name;`): the imported
+    /// name (`name`), as declared. Empty for a non-ExplicitImport symbol. A
+    /// direct field read (`slang::ast::ExplicitImportSymbol::importName`) —
+    /// a pure, allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package p; int x; endpackage\n\
+    /// #     module m; import p::x; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let imp = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::ExplicitImport)
+    ///     .unwrap();
+    /// assert_eq!(imp.explicit_import_name(), "x");
+    /// # Ok(()) }
+    /// ```
+    pub fn explicit_import_name(&self) -> &'d str {
+        // SAFETY: the symbol is valid; a direct field read.
+        unsafe { ffi::str_ref(sys::slang_symbol_explicit_import_name(self.raw)) }
+    }
+
+    /// For an `ExplicitImport` symbol: the name of the package it imports
+    /// from (`pkg` in `import pkg::name;`), as written. Empty for a
+    /// non-ExplicitImport symbol. A direct field read
+    /// (`slang::ast::ExplicitImportSymbol::packageName`) — a pure,
+    /// allocation-free read (unlike [`Self::explicit_import_package`], this
+    /// never needs the lazy package-resolution memo).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package p; int x; endpackage\n\
+    /// #     module m; import p::x; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let imp = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::ExplicitImport)
+    ///     .unwrap();
+    /// assert_eq!(imp.explicit_import_package_name(), "p");
+    /// # Ok(()) }
+    /// ```
+    pub fn explicit_import_package_name(&self) -> &'d str {
+        // SAFETY: the symbol is valid; a direct field read.
+        unsafe { ffi::str_ref(sys::slang_symbol_explicit_import_package_name(self.raw)) }
+    }
+
+    /// For an `ExplicitImport` symbol: the package it imports from. `None`
+    /// if this is not an ExplicitImport symbol, or the package name failed
+    /// to resolve. Every reachable ExplicitImport symbol is visited by the
+    /// diagnostic pass `slang_compilation_freeze` runs unconditionally
+    /// before its own sweep, so this is a pure read on a frozen design.
+    /// Mirrors `slang::ast::ExplicitImportSymbol::package`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package p; int x; endpackage\n\
+    /// #     module m; import p::x; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let imp = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::ExplicitImport)
+    ///     .unwrap();
+    /// let pkg = imp.explicit_import_package().unwrap();
+    /// assert_eq!(pkg.name(), "p");
+    /// # Ok(()) }
+    /// ```
+    pub fn explicit_import_package(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; forced by getAllDiagnostics() before
+        // any freeze sweep runs.
+        wrap(unsafe { sys::slang_symbol_explicit_import_package(self.raw) })
+    }
+
+    /// For an `ExplicitImport` symbol: the symbol it imports (a member of
+    /// the imported package). `None` if this is not an ExplicitImport
+    /// symbol, or the imported name failed to resolve. Forced the same way
+    /// as [`Self::explicit_import_package`], so this is a pure read on a
+    /// frozen design. Mirrors
+    /// `slang::ast::ExplicitImportSymbol::importedSymbol`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package p; int x; endpackage\n\
+    /// #     module m; import p::x; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let imp = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::ExplicitImport)
+    ///     .unwrap();
+    /// let target = imp.explicit_import_imported_symbol().unwrap();
+    /// assert_eq!(target.name(), "x");
+    /// # Ok(()) }
+    /// ```
+    pub fn explicit_import_imported_symbol(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; forced the same way as
+        // explicit_import_package.
+        wrap(unsafe { sys::slang_symbol_explicit_import_imported_symbol(self.raw) })
+    }
+
+    /// For a Variable-family symbol (`Variable`, `FormalArgument`, `Field`,
+    /// `ClassProperty`, `Iterator`, `PatternVar`, `ClockVar`,
+    /// `LocalAssertionVar`): its flag bitmask. All-zero
+    /// ([`VariableFlags::NONE`]) for any other symbol kind. A direct field
+    /// read (`slang::ast::VariableSymbol::flags`) — a pure, allocation-free
+    /// read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::VariableFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.members().find(|m| m.name() == "x").unwrap();
+    /// assert_eq!(x.variable_flags(), VariableFlags::NONE);
+    /// # Ok(()) }
+    /// ```
+    pub fn variable_flags(&self) -> VariableFlags {
+        // SAFETY: the symbol is valid; a direct field read.
+        VariableFlags(unsafe { sys::slang_symbol_variable_flags(self.raw) })
+    }
+
+    /// For a Variable-family symbol (see [`Self::variable_flags`] for which
+    /// kinds qualify): its lifetime (`automatic` or `static`).
+    /// [`VariableLifetime::Automatic`] for any other symbol kind. A direct
+    /// field read (`slang::ast::VariableSymbol::lifetime`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::VariableLifetime;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; static int x;\n\
+    /// #     function automatic int f(); automatic int y = 1; return y; endfunction\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.members().find(|m| m.name() == "x").unwrap();
+    /// assert_eq!(x.variable_lifetime(), VariableLifetime::Static);
+    ///
+    /// let f = body.members().find(|m| m.name() == "f").unwrap();
+    /// let y = f.members().find(|m| m.name() == "y").unwrap();
+    /// assert_eq!(y.variable_lifetime(), VariableLifetime::Automatic);
+    /// # Ok(()) }
+    /// ```
+    pub fn variable_lifetime(&self) -> VariableLifetime {
+        // SAFETY: the symbol is valid; a direct field read.
+        match unsafe { sys::slang_symbol_variable_lifetime(self.raw) } {
+            sys::SLANG_VARIABLE_LIFETIME_STATIC => VariableLifetime::Static,
+            _ => VariableLifetime::Automatic,
+        }
+    }
+
+    /// For a `WildcardImport` symbol (`import pkg::*;`): the name of the
+    /// package it imports from (`pkg` in `import pkg::*;`), as written.
+    /// Empty for a non-WildcardImport symbol. A direct field read
+    /// (`slang::ast::WildcardImportSymbol::packageName`) — a pure,
+    /// allocation-free read (unlike [`Self::wildcard_import_package`], this
+    /// never needs the lazy package-resolution memo).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package p; int x; endpackage\n\
+    /// #     module m; import p::*; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let imp = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::WildcardImport)
+    ///     .unwrap();
+    /// assert_eq!(imp.wildcard_import_package_name(), "p");
+    /// # Ok(()) }
+    /// ```
+    pub fn wildcard_import_package_name(&self) -> &'d str {
+        // SAFETY: the symbol is valid; a direct field read.
+        unsafe { ffi::str_ref(sys::slang_symbol_wildcard_import_package_name(self.raw)) }
+    }
+
+    /// For a `WildcardImport` symbol: the package it imports from. `None` if
+    /// this is not a WildcardImport symbol, or the package name failed to
+    /// resolve. Every reachable WildcardImport symbol is visited by the
+    /// diagnostic pass `slang_compilation_freeze` runs unconditionally
+    /// before its own sweep, so this is a pure read on a frozen design.
+    /// Mirrors `slang::ast::WildcardImportSymbol::getPackage`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "package p; int x; endpackage\n\
+    /// #     module m; import p::*; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let imp = body
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::WildcardImport)
+    ///     .unwrap();
+    /// let pkg = imp.wildcard_import_package().unwrap();
+    /// assert_eq!(pkg.name(), "p");
+    /// # Ok(()) }
+    /// ```
+    pub fn wildcard_import_package(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; forced by getAllDiagnostics() before
+        // any freeze sweep runs.
+        wrap(unsafe { sys::slang_symbol_wildcard_import_package(self.raw) })
+    }
+
+    /// For a `CoverageBin` symbol (a `bins`/`illegal_bins`/`ignore_bins`
+    /// declaration inside a coverpoint, or a `bins` selection inside a
+    /// cross): its kind. [`CoverageBinKind::Bins`] if this is not a
+    /// CoverageBin symbol. A direct field read
+    /// (`slang::ast::CoverageBinSymbol::binsKind`) — a pure, allocation-free
+    /// read.
+    ///
+    /// See [`Symbol::coverage_bin_values`] for an example that reaches
+    /// several CoverageBin symbols of differing kinds.
+    pub fn coverage_bin_kind(&self) -> CoverageBinKind {
+        // SAFETY: the symbol is valid; a direct field read.
+        CoverageBinKind::from_raw(unsafe { sys::slang_symbol_coverage_bin_kind(self.raw) })
+    }
+
+    /// For a `CoverageBin` symbol: true if it was declared with `[...]`
+    /// array syntax (e.g. `bins b[]` / `bins b[4]`), regardless of whether
+    /// an explicit size expression was given (see
+    /// [`Symbol::coverage_bin_number_of_bins_expr`]). False if this is not a
+    /// CoverageBin symbol. A direct field read
+    /// (`slang::ast::CoverageBinSymbol::isArray`) — a pure, allocation-free
+    /// read.
+    ///
+    /// See [`Symbol::coverage_bin_values`] for an example.
+    pub fn coverage_bin_is_array(&self) -> bool {
+        // SAFETY: the symbol is valid; a direct field read.
+        unsafe { sys::slang_symbol_coverage_bin_is_array(self.raw) }
+    }
+
+    /// For a `CoverageBin` symbol: true if declared with the `wildcard`
+    /// qualifier (`wildcard bins b = {...};`). False if this is not a
+    /// CoverageBin symbol. A direct field read
+    /// (`slang::ast::CoverageBinSymbol::isWildcard`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::coverage_bin_values`] for an example.
+    pub fn coverage_bin_is_wildcard(&self) -> bool {
+        // SAFETY: the symbol is valid; a direct field read.
+        unsafe { sys::slang_symbol_coverage_bin_is_wildcard(self.raw) }
+    }
+
+    /// For a `CoverageBin` symbol: true if it's the coverpoint's catch-all
+    /// `default` bin (`bins b = default;`) — also true for a `default
+    /// sequence` bin (see [`Symbol::coverage_bin_is_default_sequence`]).
+    /// False if this is not a CoverageBin symbol. A direct field read
+    /// (`slang::ast::CoverageBinSymbol::isDefault`) — a pure,
+    /// allocation-free read.
+    ///
+    /// See [`Symbol::coverage_bin_values`] for an example.
+    pub fn coverage_bin_is_default(&self) -> bool {
+        // SAFETY: the symbol is valid; a direct field read.
+        unsafe { sys::slang_symbol_coverage_bin_is_default(self.raw) }
+    }
+
+    /// For a `CoverageBin` symbol: true if it's specifically a `default
+    /// sequence` bin (`bins b = default sequence;`), as opposed to a plain
+    /// `default` bin. False if this is not a CoverageBin symbol. A direct
+    /// field read (`slang::ast::CoverageBinSymbol::isDefaultSequence`) — a
+    /// pure, allocation-free read.
+    ///
+    /// See [`Symbol::coverage_bin_values`] for an example.
+    pub fn coverage_bin_is_default_sequence(&self) -> bool {
+        // SAFETY: the symbol is valid; a direct field read.
+        unsafe { sys::slang_symbol_coverage_bin_is_default_sequence(self.raw) }
+    }
+
+    /// For a `CoverageBin` symbol: its `iff` guard expression, if any (e.g.
+    /// the `iff (en)` of `bins b = {1} iff (en);`). `None` if this is not a
+    /// CoverageBin symbol, or it has no `iff` clause. The underlying memo is
+    /// forced by the freeze sweep, so this is a pure read. Mirrors
+    /// `slang::ast::CoverageBinSymbol::getIffExpr`.
+    ///
+    /// See [`Symbol::coverage_bin_values`] for an example.
+    pub fn coverage_bin_iff_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_coverage_bin_iff_expr(self.raw) })
+    }
+
+    /// For a `CoverageBin` symbol: the explicit `[...]` bin-count expression
+    /// of an array bin (e.g. the `2` of `bins b[2] = {...}`). `None` if this
+    /// is not a CoverageBin symbol, or it has no explicit count (including a
+    /// non-array bin, or an array bin declared without one, e.g. `bins b[] =
+    /// {...}`). The underlying memo is forced by the freeze sweep, so this
+    /// is a pure read. Mirrors
+    /// `slang::ast::CoverageBinSymbol::getNumberOfBinsExpr`.
+    ///
+    /// See [`Symbol::coverage_bin_values`] for an example.
+    pub fn coverage_bin_number_of_bins_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_coverage_bin_number_of_bins_expr(self.raw) })
+    }
+
+    /// For a `CoverageBin` symbol initialized from a single expression that
+    /// denotes a whole coverage set rather than a value/range list (e.g. the
+    /// `arr` of `bins b = arr;` where `arr` is an array-typed expression):
+    /// that bound expression. `None` if this is not a CoverageBin symbol, or
+    /// it was initialized some other way (a value/range list, a transition
+    /// list, `default`, or a cross's `bins` selection). The underlying memo
+    /// is forced by the freeze sweep, so this is a pure read. Mirrors
+    /// `slang::ast::CoverageBinSymbol::getSetCoverageExpr`.
+    ///
+    /// See [`Symbol::coverage_bin_values`] for an example.
+    pub fn coverage_bin_set_coverage_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_coverage_bin_set_coverage_expr(self.raw) })
+    }
+
+    /// For a `CoverageBin` symbol: its `with (...)` filter expression, if
+    /// any (e.g. the `item > 12` of `bins b[2] = {[12:15]} with (item >
+    /// 12);`, evaluated once per candidate value with `item` bound to it).
+    /// `None` if this is not a CoverageBin symbol, or it has no `with`
+    /// clause. The underlying memo is forced by the freeze sweep, so this is
+    /// a pure read. Mirrors `slang::ast::CoverageBinSymbol::getWithExpr`.
+    ///
+    /// See [`Symbol::coverage_bin_values`] for an example.
+    pub fn coverage_bin_with_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_coverage_bin_with_expr(self.raw) })
+    }
+
+    /// For a `CoverageBin` symbol created from a cross's `bins` selection
+    /// (e.g. the `binsof(cp.hi)` of `bins sel = binsof(cp.hi);` inside a
+    /// `cross` body): its bound selection expression, as a [`SemNode`].
+    /// `None` if this is not a CoverageBin symbol, or it wasn't declared
+    /// from a `bins` selection (an ordinary coverpoint bin has none). The
+    /// underlying memo is forced by the freeze sweep, so this is a pure
+    /// read. Mirrors `slang::ast::CoverageBinSymbol::getCrossSelectExpr`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit clk; bit [3:0] a, b;\n\
+    /// #     covergroup cg @(posedge clk);\n\
+    /// #         cp_a: coverpoint a;\n\
+    /// #         cp_b: coverpoint b;\n\
+    /// #         cx: cross cp_a, cp_b {\n\
+    /// #             bins sel = binsof(cp_a) intersect {0};\n\
+    /// #         }\n\
+    /// #     endgroup\n\
+    /// #     cg cov = new();\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors(), "{}", design.diagnostics());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cov_ty = body.find("cov").unwrap().value_type().unwrap();
+    /// let cg_body = cov_ty
+    ///     .as_symbol()
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::CovergroupBody)
+    ///     .unwrap();
+    /// // A cross's own `bins` selections live in its hidden CoverCrossBody
+    /// // scope, exactly like a covergroup's coverpoints live in its hidden
+    /// // CovergroupBody scope.
+    /// let cx = cg_body.find("cx").unwrap();
+    /// let cross_body = cx
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::CoverCrossBody)
+    ///     .unwrap();
+    /// let sel = cross_body.find("sel").unwrap();
+    /// assert_eq!(sel.kind(), SymbolKind::CoverageBin);
+    ///
+    /// assert!(sel.coverage_bin_cross_select_expr().is_some());
+    /// // A plain coverpoint bin has none.
+    /// let cp_a = cg_body.find("cp_a").unwrap();
+    /// assert!(cp_a.coverage_bin_cross_select_expr().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn coverage_bin_cross_select_expr(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_symbol_coverage_bin_cross_select_expr(self.raw) })
+    }
+
+    /// For a `CoverageBin` symbol initialized from a value or range list
+    /// (e.g. the `1, [3:5]` of `bins b = {1, [3:5]};`): the bound
+    /// value/range expressions, in source order. Empty if this is not a
+    /// CoverageBin symbol, or it was initialized some other way. The
+    /// underlying memo is forced by the freeze sweep, so this is a pure
+    /// read. Mirrors `slang::ast::CoverageBinSymbol::getValues`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{CoverageBinKind, kinds::SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit clk; bit [3:0] a; bit en; bit [31:0] arr[] = '{1, 2, 3};\n\
+    /// #     covergroup cg @(posedge clk);\n\
+    /// #         cp: coverpoint a {\n\
+    /// #             wildcard bins lo = {4'b00??};\n\
+    /// #             bins hi[2] = {[12:15]} with (item > 12);\n\
+    /// #             illegal_bins bad = {8} iff (en);\n\
+    /// #             bins fromArr = arr;\n\
+    /// #             bins def = default;\n\
+    /// #         }\n\
+    /// #         seqcp: coverpoint a {\n\
+    /// #             bins seq = default sequence;\n\
+    /// #         }\n\
+    /// #     endgroup\n\
+    /// #     cg cov = new();\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors(), "{}", design.diagnostics());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cov_ty = body.find("cov").unwrap().value_type().unwrap();
+    /// let cg_body = cov_ty
+    ///     .as_symbol()
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::CovergroupBody)
+    ///     .unwrap();
+    /// let cp = cg_body.find("cp").unwrap();
+    ///
+    /// let lo = cp.find("lo").unwrap();
+    /// assert_eq!(lo.coverage_bin_kind(), CoverageBinKind::Bins);
+    /// assert!(lo.coverage_bin_is_wildcard());
+    /// assert!(!lo.coverage_bin_is_array());
+    /// assert_eq!(lo.coverage_bin_values().count(), 1);
+    ///
+    /// let hi = cp.find("hi").unwrap();
+    /// assert!(hi.coverage_bin_is_array());
+    /// assert!(hi.coverage_bin_number_of_bins_expr().is_some());
+    /// assert!(hi.coverage_bin_with_expr().is_some());
+    /// assert_eq!(hi.coverage_bin_values().count(), 1);
+    ///
+    /// let bad = cp.find("bad").unwrap();
+    /// assert_eq!(bad.coverage_bin_kind(), CoverageBinKind::IllegalBins);
+    /// assert!(bad.coverage_bin_iff_expr().is_some());
+    /// assert_eq!(bad.coverage_bin_values().count(), 1);
+    ///
+    /// let from_arr = cp.find("fromArr").unwrap();
+    /// assert!(from_arr.coverage_bin_set_coverage_expr().is_some());
+    /// assert_eq!(from_arr.coverage_bin_values().count(), 0);
+    ///
+    /// let def = cp.find("def").unwrap();
+    /// assert!(def.coverage_bin_is_default());
+    /// assert!(!def.coverage_bin_is_default_sequence());
+    /// assert_eq!(def.coverage_bin_values().count(), 0);
+    /// assert!(def.coverage_bin_iff_expr().is_none());
+    ///
+    /// let seq = cg_body.find("seqcp").unwrap().find("seq").unwrap();
+    /// assert!(seq.coverage_bin_is_default());
+    /// assert!(seq.coverage_bin_is_default_sequence());
+    /// # Ok(()) }
+    /// ```
+    pub fn coverage_bin_values(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-CoverageBin symbol.
+        let count = unsafe { sys::slang_symbol_coverage_bin_value_count(raw) };
+        (0..count).filter_map(move |index| {
+            // SAFETY: `raw` is valid; `index` in range.
+            wrap(unsafe { sys::slang_symbol_coverage_bin_value(raw, index) })
+        })
+    }
+
+    /// For a `CoverageBin` symbol (a `bins`/`illegal_bins`/`ignore_bins`
+    /// declaration with a `(... => ...)` transition list): its transition
+    /// sets, one per comma-separated alternative (e.g. two sets — `1,2 =>
+    /// 3` and `4=>5` — for `bins b = (1,2 => 3), (4=>5);`). Empty if this is
+    /// not a CoverageBin symbol, or it has no transition list. The
+    /// underlying memo is forced by the freeze sweep, so this is a pure
+    /// read. Mirrors `slang::ast::CoverageBinSymbol::getTransList`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RepeatKind;
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit clk; bit [3:0] a;\n\
+    /// #     covergroup cg @(posedge clk);\n\
+    /// #         cp: coverpoint a {\n\
+    /// #             bins t = (1,2 => 3[*2]), (4=>5);\n\
+    /// #         }\n\
+    /// #     endgroup\n\
+    /// #     cg cov = new();\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors(), "{}", design.diagnostics());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cov_ty = body.find("cov").unwrap().value_type().unwrap();
+    /// // A covergroup's own coverpoints live one level down, in its hidden
+    /// // CovergroupBody scope.
+    /// let cg_body = cov_ty
+    ///     .as_symbol()
+    ///     .members()
+    ///     .find(|m| m.kind() == SymbolKind::CovergroupBody)
+    ///     .unwrap();
+    /// let cp = cg_body.find("cp").unwrap();
+    /// let t = cp.find("t").unwrap();
+    ///
+    /// let sets: Vec<_> = t.coverage_bin_trans_sets().collect();
+    /// assert_eq!(sets.len(), 2);
+    ///
+    /// let first_ranges: Vec<_> = sets[0].ranges().collect();
+    /// assert_eq!(first_ranges.len(), 2);
+    /// assert_eq!(first_ranges[0].items().count(), 2); // "1,2"
+    /// assert_eq!(first_ranges[1].items().count(), 1); // "3[*2]"
+    /// assert_eq!(first_ranges[1].repeat_kind(), RepeatKind::Consecutive);
+    /// // `[*2]` is a single fixed count, not a `from:to` range: only
+    /// // `repeat_from` (the count itself) is set.
+    /// assert!(first_ranges[1].repeat_from().is_some());
+    /// assert!(first_ranges[1].repeat_to().is_none());
+    /// assert!(first_ranges[0].repeat_from().is_none());
+    ///
+    /// let second_ranges: Vec<_> = sets[1].ranges().collect();
+    /// assert_eq!(second_ranges.len(), 2); // "4" then "5"
+    /// assert_eq!(second_ranges[0].repeat_kind(), RepeatKind::None);
+    /// # Ok(()) }
+    /// ```
+    pub fn coverage_bin_trans_sets(&self) -> impl Iterator<Item = TransSet<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the symbol is valid; 0 for a non-CoverageBin symbol.
+        let count = unsafe { sys::slang_symbol_coverage_bin_trans_set_count(raw) };
+        (0..count).map(move |set_index| TransSet {
+            sym_raw: raw,
+            set_index,
+            _design: PhantomData,
         })
     }
 
@@ -1427,6 +12862,709 @@ impl<'d> Symbol<'d> {
     pub fn field_index(&self) -> u32 {
         // SAFETY: the symbol is valid; 0 for a non-field.
         unsafe { sys::slang_field_index(self.raw) }
+    }
+
+    /// For a `Field` symbol (from [`Type::fields`]): its `rand`/`randc` mode,
+    /// if it was declared inside a `rand`/`randc`-qualified struct/union
+    /// ([`RandMode::None`] otherwise, also for any other symbol kind). A
+    /// direct field read (`slang::ast::FieldSymbol::randMode`) — a pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RandMode;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     typedef struct { rand int a; randc byte b; logic c; } s_t; s_t s; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let t = body.find("s").unwrap().value_type().unwrap();
+    /// let fields: Vec<_> = t.fields().collect();
+    /// assert_eq!(fields[0].field_rand_mode(), RandMode::Rand);
+    /// assert_eq!(fields[1].field_rand_mode(), RandMode::RandC);
+    /// assert_eq!(fields[2].field_rand_mode(), RandMode::None);
+    /// # Ok(()) }
+    /// ```
+    pub fn field_rand_mode(&self) -> RandMode {
+        // SAFETY: the symbol is valid; returns SLANG_RAND_MODE_NONE for a
+        // non-Field symbol.
+        match unsafe { sys::slang_field_rand_mode(self.raw) } {
+            sys::SLANG_RAND_MODE_RAND => RandMode::Rand,
+            sys::SLANG_RAND_MODE_RANDC => RandMode::RandC,
+            _ => RandMode::None,
+        }
+    }
+
+    /// For a `ConstraintBlock` symbol (see [`Type::class_this_var`] and
+    /// [`Symbol::members`] on a class type for how to reach one), its raw
+    /// flag bitmask. All-zero ([`ConstraintBlockFlags::NONE`]) for any other
+    /// symbol.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ConstraintBlockFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C; rand int x; constraint c_pos { x > 0; }\n\
+    /// #      static constraint c_static { x > 0; } endclass\n\
+    /// #      module m; C obj; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let units = design.compilation_units().next().unwrap();
+    /// let class = units.find("C").unwrap();
+    /// let c_pos = class.find("c_pos").unwrap();
+    /// let c_static = class.find("c_static").unwrap();
+    /// assert_eq!(c_pos.constraint_block_flags(), ConstraintBlockFlags::NONE);
+    /// assert!(c_static.constraint_block_flags().contains(ConstraintBlockFlags::STATIC));
+    /// # Ok(()) }
+    /// ```
+    pub fn constraint_block_flags(&self) -> ConstraintBlockFlags {
+        // SAFETY: the symbol is valid; 0 for a non-constraint-block symbol.
+        ConstraintBlockFlags(unsafe { sys::slang_symbol_constraint_block_flags(self.raw) })
+    }
+
+    /// For a *non-static* `ConstraintBlock` symbol, its implicit `this`
+    /// variable (usable inside the constraint's own expressions to refer to
+    /// the enclosing instance). `None` for a static constraint block, or for
+    /// any other symbol.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C; rand int x; constraint c_pos { x > 0; }\n\
+    /// #      static constraint c_static { x > 0; } endclass\n\
+    /// #      module m; C obj; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let units = design.compilation_units().next().unwrap();
+    /// let class = units.find("C").unwrap();
+    /// assert_eq!(
+    ///     class.find("c_pos").unwrap().constraint_block_this_var().unwrap().name(),
+    ///     "this"
+    /// );
+    /// assert!(class.find("c_static").unwrap().constraint_block_this_var().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn constraint_block_this_var(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; set once at construction.
+        wrap(unsafe { sys::slang_symbol_constraint_block_this_var(self.raw) })
+    }
+
+    /// For a `ConstraintBlock` symbol, its bound constraint tree (the
+    /// semantic form of its `{ ... }` body), as a [`SemNode`] of domain
+    /// [`sys::SLANG_AST_CONSTRAINT`]. `None` for any other symbol.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C; rand int x; constraint c_pos { x > 0; } endclass\n\
+    /// #      module m; C obj; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let units = design.compilation_units().next().unwrap();
+    /// let c_pos = units.find("C").unwrap().find("c_pos").unwrap();
+    /// let tree = c_pos.constraint_block_constraints().unwrap();
+    /// // The block's own child is one `ExpressionConstraint`, wrapping `x > 0`.
+    /// let item = tree.children()[0];
+    /// let expr = item.children()[0].as_expression().unwrap();
+    /// assert_eq!(expr.kind(), ExpressionKind::BinaryOp);
+    /// # Ok(()) }
+    /// ```
+    pub fn constraint_block_constraints(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the symbol is valid; the constraint tree is forced by the
+        // freeze sweep, so this never mutates the frozen arena.
+        wrap(unsafe { sys::slang_symbol_constraint_block_constraints(self.raw) })
+    }
+
+    /// The resolved type this symbol declares (`slang::ast::DeclaredType::
+    /// getType`), via `Symbol::getDeclaredType()`. Unlike [`Self::value_type`]
+    /// (`ValueSymbol` only), this works for every `DeclaredType` carrier:
+    /// value symbols, type aliases, subroutine return types, net types, type
+    /// parameters, assertion ports, randseq productions, and coverpoints.
+    /// `None` for a symbol with no declared type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; typedef logic [7:0] byte_t; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let alias = body.find("byte_t").unwrap();
+    /// assert_eq!(alias.declared_type().unwrap().bit_width(), 8);
+    /// # Ok(()) }
+    /// ```
+    pub fn declared_type(&self) -> Option<Type<'d>> {
+        // SAFETY: the symbol is valid; forced for every carrier by the
+        // freeze sweep.
+        wrap(unsafe { sys::slang_declared_type_type(self.raw) })
+    }
+
+    /// The resolved initializer expression this symbol's declared type
+    /// carries (`slang::ast::DeclaredType::getInitializer`), via the same
+    /// general `getDeclaredType()` path as [`Self::declared_type`]. `None`
+    /// if there is none, or the symbol has no declared type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam int X = 3 * 4; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().declared_initializer().unwrap();
+    /// assert_eq!(init.constant().as_deref(), Some("12"));
+    /// # Ok(()) }
+    /// ```
+    pub fn declared_initializer(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; forced alongside declared_type().
+        wrap(unsafe { sys::slang_declared_type_initializer(self.raw) })
+    }
+
+    /// The source location to use when reporting diagnostics about this
+    /// symbol's declared-type initializer, set alongside the initializer
+    /// syntax before resolution (`slang::ast::DeclaredType::
+    /// getInitializerLocation`). A zeroed location if the symbol has no
+    /// declared type or no initializer syntax was ever set.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam int X = 3 * 4; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap();
+    /// assert!(x.declared_initializer_location().buffer != 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn declared_initializer_location(&self) -> SourceLoc {
+        // SAFETY: the symbol is valid; a pure, allocation-free read.
+        unsafe { sys::slang_declared_type_initializer_location(self.raw) }.into()
+    }
+
+    /// The initializer expression syntax previously set on this symbol's
+    /// declared type, tied to `tree`. `None` if none was set, the symbol has
+    /// no declared type, or the syntax does not belong to `tree`.
+    /// Mirrors `slang::ast::DeclaredType::getInitializerSyntax`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SyntaxKind;
+    /// let session = sv_lang::Session::new();
+    /// let tree = session.parse("module m; localparam int X = 3 * 4; endmodule\n")?;
+    /// let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add(&tree)?;
+    /// let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let node = body.find("X").unwrap().declared_initializer_syntax(&tree).unwrap();
+    /// assert_eq!(node.kind(), SyntaxKind::MultiplyExpression);
+    /// # Ok(()) }
+    /// ```
+    pub fn declared_initializer_syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the symbol is valid.
+        let node = unsafe { sys::slang_declared_type_initializer_syntax(self.raw) };
+        if node.ptr.is_null() || node.tree != tree.raw() {
+            return None;
+        }
+        Some(Node::from_raw_node(node))
+    }
+
+    /// The type syntax set directly on this symbol's declared type — NOT
+    /// following a link to another declared type — tied to `tree`. `None` if
+    /// the symbol has no declared type, its type links to another declared
+    /// type instead of carrying its own syntax, or the syntax does not
+    /// belong to `tree`. Mirrors `slang::ast::DeclaredType::getTypeSyntax`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SyntaxKind;
+    /// let session = sv_lang::Session::new();
+    /// let tree = session.parse("module m; logic [7:0] x; endmodule\n")?;
+    /// let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add(&tree)?;
+    /// let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let node = body.find("x").unwrap().declared_type_syntax(&tree).unwrap();
+    /// assert_eq!(node.kind(), SyntaxKind::LogicType);
+    /// # Ok(()) }
+    /// ```
+    pub fn declared_type_syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the symbol is valid.
+        let node = unsafe { sys::slang_declared_type_type_syntax(self.raw) };
+        if node.ptr.is_null() || node.tree != tree.raw() {
+            return None;
+        }
+        Some(Node::from_raw_node(node))
+    }
+
+    /// True if this symbol's declared type is still in the process of
+    /// resolving (slang's own self-referential type-cycle detector). On a
+    /// frozen design type resolution is always already complete, so this is
+    /// always `false` there; still a pure, allocation-free read. Mirrors
+    /// `slang::ast::DeclaredType::isEvaluating`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(!body.find("x").unwrap().declared_type_is_evaluating());
+    /// # Ok(()) }
+    /// ```
+    pub fn declared_type_is_evaluating(&self) -> bool {
+        // SAFETY: the symbol is valid; a pure, allocation-free read.
+        unsafe { sys::slang_declared_type_is_evaluating(self.raw) }
+    }
+
+    /// The kind restriction of a `ForwardingTypedef` symbol (see
+    /// [`ForwardTypeRestriction`]); `ForwardTypeRestriction::None` for any
+    /// other symbol. Set once at construction, so a pure, allocation-free
+    /// read. Mirrors `slang::ast::ForwardingTypedefSymbol::typeRestriction`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ForwardTypeRestriction;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "typedef class Fwd;\n\
+    /// #      class Fwd; endclass\n\
+    /// #      module m; Fwd f1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let fwd_ty = body.find("f1").unwrap().value_type().unwrap();
+    /// let fwd = fwd_ty.class_first_forward_decl().unwrap();
+    /// assert_eq!(fwd.forwarding_typedef_type_restriction(), ForwardTypeRestriction::Class);
+    /// # Ok(()) }
+    /// ```
+    pub fn forwarding_typedef_type_restriction(&self) -> ForwardTypeRestriction {
+        // SAFETY: the symbol is valid; SLANG_FORWARD_TYPE_NONE for any other
+        // symbol.
+        match unsafe { sys::slang_forwarding_typedef_type_restriction(self.raw) } {
+            sys::SLANG_FORWARD_TYPE_ENUM => ForwardTypeRestriction::Enum,
+            sys::SLANG_FORWARD_TYPE_STRUCT => ForwardTypeRestriction::Struct,
+            sys::SLANG_FORWARD_TYPE_UNION => ForwardTypeRestriction::Union,
+            sys::SLANG_FORWARD_TYPE_CLASS => ForwardTypeRestriction::Class,
+            sys::SLANG_FORWARD_TYPE_INTERFACE_CLASS => ForwardTypeRestriction::InterfaceClass,
+            _ => ForwardTypeRestriction::None,
+        }
+    }
+
+    /// The visibility modifier of a `ForwardingTypedef` symbol, if it
+    /// declared one (see [`Visibility`]). `None` if it declared none, or the
+    /// symbol is not a `ForwardingTypedef`. A pure, allocation-free read.
+    /// Mirrors `slang::ast::ForwardingTypedefSymbol::visibility`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "typedef class Fwd;\n\
+    /// #      class Fwd; endclass\n\
+    /// #      module m; Fwd f1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let fwd_ty = body.find("f1").unwrap().value_type().unwrap();
+    /// let fwd = fwd_ty.class_first_forward_decl().unwrap();
+    /// assert!(fwd.forwarding_typedef_visibility().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn forwarding_typedef_visibility(&self) -> Option<Visibility> {
+        let mut out = sys::SLANG_VISIBILITY_PUBLIC;
+        // SAFETY: the symbol is valid; `out` is a valid out-pointer.
+        let has = unsafe { sys::slang_forwarding_typedef_visibility(self.raw, &mut out) };
+        has.then_some(match out {
+            sys::SLANG_VISIBILITY_PROTECTED => Visibility::Protected,
+            sys::SLANG_VISIBILITY_LOCAL => Visibility::Local,
+            _ => Visibility::Public,
+        })
+    }
+
+    /// True if a `GenericClassDef` symbol (an unspecialized parameterized
+    /// class definition) was declared as an `interface class`; `false`
+    /// otherwise, including for any other symbol. A pure, allocation-free
+    /// read. Mirrors `slang::ast::GenericClassDefSymbol::isInterface`.
+    pub fn generic_class_is_interface(&self) -> bool {
+        // SAFETY: the symbol is valid; false for any other symbol.
+        unsafe { sys::slang_generic_class_is_interface(self.raw) }
+    }
+
+    /// The default specialization of a `GenericClassDef` symbol — the class
+    /// type obtained when every parameter uses its default value. `None` if
+    /// some parameter has no default (or for any other symbol). Forced by
+    /// the freeze sweep, so this is a pure read. Mirrors
+    /// `slang::ast::GenericClassDefSymbol::getDefaultSpecialization`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class G #(int W = 8); logic [W-1:0] data; endclass\n\
+    /// #      module m; G #(16) g1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let g1 = body.find("g1").unwrap().value_type().unwrap();
+    /// let generic = g1.class_generic_class().unwrap();
+    /// assert_eq!(generic.kind(), SymbolKind::GenericClassDef);
+    /// let spec = generic.generic_class_default_specialization().unwrap();
+    /// let data = spec.as_symbol().find("data").unwrap();
+    /// assert_eq!(data.value_type().unwrap().bit_width(), 8);
+    /// # Ok(()) }
+    /// ```
+    pub fn generic_class_default_specialization(&self) -> Option<Type<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_generic_class_default_specialization(self.raw) })
+    }
+
+    /// The first forward `typedef class` declaration that named this
+    /// `GenericClassDef` symbol. `None` if it was never forward declared
+    /// (including for any other symbol). Mirrors
+    /// `slang::ast::GenericClassDefSymbol::getFirstForwardDecl`.
+    pub fn generic_class_first_forward_decl(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; linked before this symbol is itself
+        // reachable, so this is a pure read.
+        wrap(unsafe { sys::slang_generic_class_first_forward_decl(self.raw) })
+    }
+
+    /// The specific net kind of a `NetType` symbol (see [`NetKind`]);
+    /// [`NetKind::Unknown`] for any other symbol. Set once at construction,
+    /// so a pure, allocation-free read. Mirrors `slang::ast::NetType::netKind`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::NetKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let wire = design.wire_net_type();
+    /// assert_eq!(wire.net_kind(), NetKind::Wire);
+    /// let top = design.top_instances().next().unwrap();
+    /// assert_eq!(top.net_kind(), NetKind::Unknown);
+    /// # Ok(()) }
+    /// ```
+    pub fn net_kind(&self) -> NetKind {
+        // SAFETY: the symbol is valid; NetKind::Unknown for any other symbol.
+        NetKind::from_raw(unsafe { sys::slang_net_type_net_kind(self.raw) })
+    }
+
+    /// The custom resolution function of a `NetType` symbol (declared with a
+    /// `nettype T name with func;` clause), as a `Subroutine` symbol. `None`
+    /// if it has none (including for any other symbol). The underlying memo
+    /// is forced by the freeze sweep, so this is a pure read. Mirrors
+    /// `slang::ast::NetType::getResolutionFunction`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "function automatic real Tsum(input real driver[]);\n\
+    /// #          Tsum = 0.0;\n\
+    /// #          foreach (driver[i]) Tsum += driver[i];\n\
+    /// #      endfunction\n\
+    /// #      nettype real wT;\n\
+    /// #      nettype real wTsum with Tsum;\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let wt = unit.find("wT").unwrap();
+    /// assert!(wt.net_type_resolution_function().is_none());
+    /// let wtsum = unit.find("wTsum").unwrap();
+    /// let f = wtsum.net_type_resolution_function().unwrap();
+    /// assert_eq!(f.kind(), SymbolKind::Subroutine);
+    /// assert_eq!(f.name(), "Tsum");
+    /// # Ok(()) }
+    /// ```
+    pub fn net_type_resolution_function(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; forced by the freeze sweep
+        // (FreezeVisitor's NetType branch), so this is a pure read.
+        wrap(unsafe { sys::slang_net_type_resolution_function(self.raw) })
+    }
+
+    /// True if a `NetType` symbol is one of the built-in kinds (i.e. not
+    /// user-defined); `false` for a user-defined nettype, and for any other
+    /// symbol. A pure, allocation-free read. Mirrors
+    /// `slang::ast::NetType::isBuiltIn`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("nettype real myreal;\nmodule m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert!(design.wire_net_type().net_type_is_built_in());
+    /// let myreal = design.compilation_units().next().unwrap().find("myreal").unwrap();
+    /// assert!(!myreal.net_type_is_built_in());
+    /// # Ok(()) }
+    /// ```
+    pub fn net_type_is_built_in(&self) -> bool {
+        // SAFETY: the symbol is valid; false for any other symbol.
+        unsafe { sys::slang_net_type_is_built_in(self.raw) }
+    }
+
+    /// True if a `NetType` symbol is the error placeholder nettype
+    /// ([`NetKind::Unknown`]); `false` otherwise, including for any other
+    /// symbol. A pure, allocation-free read. Mirrors
+    /// `slang::ast::NetType::isError`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// assert!(!design.wire_net_type().net_type_is_error());
+    /// # Ok(()) }
+    /// ```
+    pub fn net_type_is_error(&self) -> bool {
+        // SAFETY: the symbol is valid; false for any other symbol.
+        unsafe { sys::slang_net_type_is_error(self.raw) }
+    }
+
+    /// The net type that results from resolving a port connection between
+    /// this `internal` net type (inside a module) and an `external` one (at
+    /// the instantiation site), per IEEE 1800 §23.3.3.2, paired with whether
+    /// simulators should warn about the resolution. `None` if either symbol
+    /// is not a `NetType`. A pure, allocation-free read. Mirrors
+    /// `slang::ast::NetType::getSimulatedNetType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::NetTypeKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let wire = design.net_type(NetTypeKind::Wire);
+    /// let wand = design.net_type(NetTypeKind::WAnd);
+    /// let (result, should_warn) = wire.simulated_net_type(&wand).unwrap();
+    /// assert_eq!(result.id(), wand.id());
+    /// assert!(!should_warn);
+    /// # Ok(()) }
+    /// ```
+    pub fn simulated_net_type(&self, external: &Symbol<'d>) -> Option<(Symbol<'d>, bool)> {
+        let mut should_warn = false;
+        // SAFETY: both symbols are valid; `should_warn` is a valid out-pointer,
+        // left untouched (and a null node returned) if either is not a NetType.
+        let ast =
+            unsafe { sys::slang_net_type_get_simulated(self.raw, external.raw, &mut should_warn) };
+        wrap(ast).map(|sym| (sym, should_warn))
+    }
+}
+
+/// The raw flag bitmask of a Variable-family symbol
+/// (`slang::ast::VariableFlags`), combined with `|`. See
+/// [`Symbol::variable_flags`].
+///
+/// # Examples
+/// ```
+/// use sv_lang::VariableFlags;
+/// let flags = VariableFlags::CONST | VariableFlags::COMPILER_GENERATED;
+/// assert!(flags.contains(VariableFlags::CONST));
+/// assert!(!flags.contains(VariableFlags::REF_STATIC));
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VariableFlags(u32);
+
+impl VariableFlags {
+    /// No flags.
+    pub const NONE: VariableFlags = VariableFlags(0);
+    /// The variable is a constant, i.e. not modifiable after initialization.
+    pub const CONST: VariableFlags = VariableFlags(sys::SLANG_VARIABLE_FLAG_CONST);
+    /// The variable was not declared by the user but created during
+    /// compilation.
+    pub const COMPILER_GENERATED: VariableFlags =
+        VariableFlags(sys::SLANG_VARIABLE_FLAG_COMPILER_GENERATED);
+    /// The variable is a coverage option that is not modifiable outside of
+    /// the covergroup declaration.
+    pub const IMMUTABLE_COVERAGE_OPTION: VariableFlags =
+        VariableFlags(sys::SLANG_VARIABLE_FLAG_IMMUTABLE_COVERAGE_OPTION);
+    /// The variable is a formal argument of an overridden sample method in a
+    /// covergroup.
+    pub const COVERAGE_SAMPLE_FORMAL: VariableFlags =
+        VariableFlags(sys::SLANG_VARIABLE_FLAG_COVERAGE_SAMPLE_FORMAL);
+    /// This is a checker "free variable", which may behave
+    /// nondeterministically in simulation and participate differently in
+    /// formal verification.
+    pub const CHECKER_FREE_VARIABLE: VariableFlags =
+        VariableFlags(sys::SLANG_VARIABLE_FLAG_CHECKER_FREE_VARIABLE);
+    /// The variable is a function port with direction `ref static`.
+    pub const REF_STATIC: VariableFlags = VariableFlags(sys::SLANG_VARIABLE_FLAG_REF_STATIC);
+
+    /// The raw bitmask.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// True if all of `other`'s flags are set.
+    pub const fn contains(self, other: VariableFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl core::ops::BitOr for VariableFlags {
+    type Output = VariableFlags;
+    fn bitor(self, rhs: VariableFlags) -> VariableFlags {
+        VariableFlags(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for VariableFlags {
+    fn bitor_assign(&mut self, rhs: VariableFlags) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// The raw flag bitmask of a [`ConstraintBlock`](sv_lang_kinds::SymbolKind::ConstraintBlock)
+/// symbol (`slang::ast::ConstraintBlockFlags`), combined with `|`. See
+/// [`Symbol::constraint_block_flags`].
+///
+/// # Examples
+/// ```
+/// use sv_lang::ConstraintBlockFlags;
+/// let flags = ConstraintBlockFlags::STATIC | ConstraintBlockFlags::FINAL;
+/// assert!(flags.contains(ConstraintBlockFlags::STATIC));
+/// assert!(!flags.contains(ConstraintBlockFlags::PURE));
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConstraintBlockFlags(u32);
+
+impl ConstraintBlockFlags {
+    /// No flags.
+    pub const NONE: ConstraintBlockFlags = ConstraintBlockFlags(0);
+    /// The constraint is `pure`: it requires an implementation in a derived
+    /// class.
+    pub const PURE: ConstraintBlockFlags = ConstraintBlockFlags(sys::SLANG_CONSTRAINT_BLOCK_PURE);
+    /// The constraint is `static`: shared across all object instances rather
+    /// than per-instance.
+    pub const STATIC: ConstraintBlockFlags =
+        ConstraintBlockFlags(sys::SLANG_CONSTRAINT_BLOCK_STATIC);
+    /// The constraint block was declared `extern` (implicitly or explicitly).
+    pub const EXTERN: ConstraintBlockFlags =
+        ConstraintBlockFlags(sys::SLANG_CONSTRAINT_BLOCK_EXTERN);
+    /// The constraint block was *explicitly* declared `extern`, so an
+    /// out-of-block body is required rather than merely optional.
+    pub const EXPLICIT_EXTERN: ConstraintBlockFlags =
+        ConstraintBlockFlags(sys::SLANG_CONSTRAINT_BLOCK_EXPLICIT_EXTERN);
+    /// The constraint is marked `initial`: it must not override a base-class
+    /// constraint of the same name.
+    pub const INITIAL: ConstraintBlockFlags =
+        ConstraintBlockFlags(sys::SLANG_CONSTRAINT_BLOCK_INITIAL);
+    /// The constraint is marked `extends`: it must override a base-class
+    /// constraint of the same name.
+    pub const EXTENDS: ConstraintBlockFlags =
+        ConstraintBlockFlags(sys::SLANG_CONSTRAINT_BLOCK_EXTENDS);
+    /// The constraint is marked `final`: it cannot be overridden in a
+    /// derived class.
+    pub const FINAL: ConstraintBlockFlags = ConstraintBlockFlags(sys::SLANG_CONSTRAINT_BLOCK_FINAL);
+
+    /// The raw bitmask.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// True if all of `other`'s flags are set.
+    pub const fn contains(self, other: ConstraintBlockFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl core::ops::BitOr for ConstraintBlockFlags {
+    type Output = ConstraintBlockFlags;
+    fn bitor(self, rhs: ConstraintBlockFlags) -> ConstraintBlockFlags {
+        ConstraintBlockFlags(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for ConstraintBlockFlags {
+    fn bitor_assign(&mut self, rhs: ConstraintBlockFlags) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// The combination of integral-type traits for a [`Type`] (`slang::ast::
+/// IntegralFlags`), combined with `|`. See [`Type::integral_flags`].
+///
+/// # Examples
+/// ```
+/// use sv_lang::IntegralFlags;
+/// let flags = IntegralFlags::SIGNED | IntegralFlags::FOUR_STATE;
+/// assert!(flags.contains(IntegralFlags::SIGNED));
+/// assert!(!flags.contains(IntegralFlags::REG));
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IntegralFlags(u32);
+
+impl IntegralFlags {
+    /// No flags: unsigned, two-state.
+    pub const UNSIGNED: IntegralFlags = IntegralFlags(sys::SLANG_INTEGRAL_UNSIGNED);
+    /// The type is signed.
+    pub const SIGNED: IntegralFlags = IntegralFlags(sys::SLANG_INTEGRAL_SIGNED);
+    /// The type is four-state (can represent `x`/`z`).
+    pub const FOUR_STATE: IntegralFlags = IntegralFlags(sys::SLANG_INTEGRAL_FOUR_STATE);
+    /// The type used the `reg` keyword instead of `logic` (semantically
+    /// identical, but preserved for messaging).
+    pub const REG: IntegralFlags = IntegralFlags(sys::SLANG_INTEGRAL_REG);
+
+    /// The raw bitmask.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// True if all of `other`'s flags are set.
+    pub const fn contains(self, other: IntegralFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl core::ops::BitOr for IntegralFlags {
+    type Output = IntegralFlags;
+    fn bitor(self, rhs: IntegralFlags) -> IntegralFlags {
+        IntegralFlags(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for IntegralFlags {
+    fn bitor_assign(&mut self, rhs: IntegralFlags) {
+        self.0 |= rhs.0;
     }
 }
 
@@ -1812,6 +13950,2465 @@ impl<'d> Type<'d> {
         // non-class type. The baseClass memo is populated by the freeze sweep.
         wrap(unsafe { sys::slang_type_class_base(self.raw) })
     }
+
+    /// If this class type was specialized from a generic (parameterized)
+    /// class, the generic class definition it was specialized from. `None`
+    /// otherwise, including for a non-class type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class G #(int W = 8); logic [W-1:0] data; endclass\n\
+    /// #      class Plain; endclass\n\
+    /// #      module m; G #(16) g1; Plain p1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let g1 = body.find("g1").unwrap().value_type().unwrap();
+    /// let generic = g1.class_generic_class().unwrap();
+    /// assert_eq!(generic.name(), "G");
+    /// assert_eq!(generic.kind(), SymbolKind::GenericClassDef);
+    ///
+    /// let p1 = body.find("p1").unwrap().value_type().unwrap();
+    /// assert!(p1.class_generic_class().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn class_generic_class(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the type is valid; set once at specialization time.
+        wrap(unsafe { sys::slang_type_class_generic(self.raw) })
+    }
+
+    /// If this class type has a base class with a constructor, the
+    /// expression used to invoke it — the `super.new(...)` call this class's
+    /// own constructor makes explicitly, or one slang synthesizes for an
+    /// `extends Base(args)` / `extends Base(default)` clause. `None` if there
+    /// is no base-class constructor call, including for a class with no base
+    /// class, or a non-class type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class Base; function new(int x = 0); endfunction endclass\n\
+    /// #      class Derived extends Base; function new(); super.new(5); endfunction endclass\n\
+    /// #      module m; Base b1; Derived d1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let base_ty = body.find("b1").unwrap().value_type().unwrap();
+    /// assert!(base_ty.class_base_constructor_call().is_none());
+    ///
+    /// let derived_ty = body.find("d1").unwrap().value_type().unwrap();
+    /// let call = derived_ty.class_base_constructor_call().unwrap();
+    /// assert_eq!(call.kind(), ExpressionKind::NewClass);
+    /// # Ok(()) }
+    /// ```
+    pub fn class_base_constructor_call(&self) -> Option<Expression<'d>> {
+        // SAFETY: the type is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_type_class_base_constructor_call(self.raw) })
+    }
+
+    /// This class type's constructor: an explicit `new` method, or one
+    /// synthesized for an `extends Base(default)` clause with no explicit
+    /// `new`. `None` if it has neither, including for a non-class type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class Base; function new(int x = 0); endfunction endclass\n\
+    /// #      class Empty; endclass\n\
+    /// #      module m; Base b1; Empty e1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let base_ty = body.find("b1").unwrap().value_type().unwrap();
+    /// assert_eq!(base_ty.class_constructor().unwrap().name(), "new");
+    ///
+    /// let empty_ty = body.find("e1").unwrap().value_type().unwrap();
+    /// assert!(empty_ty.class_constructor().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn class_constructor(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the type is valid; a pure read (see slang.h for why the
+        // one allocating path is always already settled).
+        wrap(unsafe { sys::slang_type_class_constructor(self.raw) })
+    }
+
+    /// The first forward `typedef class` declaration that named this class
+    /// type, or `None` if it was never forward declared (including for a
+    /// non-class type).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "typedef class Fwd;\n\
+    /// #      class Fwd; endclass\n\
+    /// #      class Plain; endclass\n\
+    /// #      module m; Fwd f1; Plain p1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let fwd_ty = body.find("f1").unwrap().value_type().unwrap();
+    /// let decl = fwd_ty.class_first_forward_decl().unwrap();
+    /// assert_eq!(decl.kind(), SymbolKind::ForwardingTypedef);
+    ///
+    /// let plain_ty = body.find("p1").unwrap().value_type().unwrap();
+    /// assert!(plain_ty.class_first_forward_decl().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn class_first_forward_decl(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the type is valid; already linked before this class type is
+        // itself reachable (see slang.h).
+        wrap(unsafe { sys::slang_type_class_first_forward_decl(self.raw) })
+    }
+
+    /// The interface classes this class type implements, flattened across
+    /// the full inheritance hierarchy (if this class is itself an interface
+    /// class, the interface classes it extends instead). Empty for a
+    /// non-class type or a class that implements nothing.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface class IFace; endclass\n\
+    /// #      class C implements IFace; endclass\n\
+    /// #      module m; C c1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let ty = body.find("c1").unwrap().value_type().unwrap();
+    /// let names: Vec<_> = ty
+    ///     .class_implemented_interfaces()
+    ///     .map(|t| t.as_symbol().name().to_string())
+    ///     .collect();
+    /// assert_eq!(names, ["IFace"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn class_implemented_interfaces(&self) -> impl Iterator<Item = Type<'d>> {
+        let raw = self.raw;
+        // SAFETY: the type is valid; 0 for a non-class type.
+        let count = unsafe { sys::slang_type_class_implemented_interface_count(raw) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: the type is valid; index in range.
+            let ast = unsafe { sys::slang_type_class_implemented_interface(raw, i) };
+            wrap(ast)
+        })
+    }
+
+    /// True if this class type was declared `virtual` (abstract, requiring
+    /// an implementation in a derived class); false otherwise, including for
+    /// a non-class type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "virtual class Abs; endclass\n\
+    /// #      class Concrete extends Abs; endclass\n\
+    /// #      module m; Concrete c1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let ty = body.find("c1").unwrap().value_type().unwrap();
+    /// assert!(!ty.class_is_abstract());
+    /// assert!(ty.class_base().unwrap().class_is_abstract());
+    /// # Ok(()) }
+    /// ```
+    pub fn class_is_abstract(&self) -> bool {
+        // SAFETY: the type is valid; false for a non-class type.
+        unsafe { sys::slang_type_class_is_abstract(self.raw) }
+    }
+
+    /// True if this class type was declared `:final` (an 1800-2023 extension
+    /// forbidding it from being extended); false otherwise, including for a
+    /// non-class type.
+    pub fn class_is_final(&self) -> bool {
+        // SAFETY: the type is valid; false for a non-class type.
+        unsafe { sys::slang_type_class_is_final(self.raw) }
+    }
+
+    /// True if this class type is an `interface class`; false otherwise,
+    /// including for a non-class type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface class IFace; endclass\n\
+    /// #      class C implements IFace; endclass\n\
+    /// #      module m; IFace i1; C c1; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("i1").unwrap().value_type().unwrap().class_is_interface());
+    /// assert!(!body.find("c1").unwrap().value_type().unwrap().class_is_interface());
+    /// # Ok(()) }
+    /// ```
+    pub fn class_is_interface(&self) -> bool {
+        // SAFETY: the type is valid; false for a non-class type.
+        unsafe { sys::slang_type_class_is_interface(self.raw) }
+    }
+
+    /// The implicit `this` variable of a class type — a compiler-generated
+    /// variable usable by non-static class property initializers. `None` for
+    /// a non-class type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("class C; endclass\nmodule m; C c1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let ty = body.find("c1").unwrap().value_type().unwrap();
+    /// assert_eq!(ty.class_this_var().unwrap().name(), "this");
+    /// # Ok(()) }
+    /// ```
+    pub fn class_this_var(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the type is valid; set once at class construction.
+        wrap(unsafe { sys::slang_type_class_this_var(self.raw) })
+    }
+
+    /// The formal arguments of a covergroup type, in declaration order.
+    /// Empty for a non-covergroup type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit clk; bit x;\n\
+    /// #     covergroup cg(int lo, int hi) @(posedge clk);\n\
+    /// #         cp: coverpoint x;\n\
+    /// #     endgroup\n\
+    /// #     cg cg_inst;\n\
+    /// #     initial cg_inst = new(0, 10);\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let ty = body.find("cg_inst").unwrap().value_type().unwrap();
+    /// let names: Vec<_> = ty.covergroup_arguments().map(|a| a.name().to_string()).collect();
+    /// assert_eq!(names, ["lo", "hi"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn covergroup_arguments(&self) -> impl Iterator<Item = Symbol<'d>> {
+        let raw = self.raw;
+        // SAFETY: the type is valid; 0 for a non-covergroup type.
+        let count = unsafe { sys::slang_type_covergroup_argument_count(raw) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: the type is valid; index in range.
+            let ast = unsafe { sys::slang_type_covergroup_argument(raw, i) };
+            wrap(ast)
+        })
+    }
+
+    /// If this covergroup type was declared with `covergroup extends
+    /// base_cg` (an 1800-2023 extension), the base covergroup's type. `None`
+    /// otherwise, including for a non-covergroup type.
+    pub fn covergroup_base_group(&self) -> Option<Type<'d>> {
+        // SAFETY: the type is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_type_covergroup_base_group(self.raw) })
+    }
+
+    /// The sampling event of a covergroup type (e.g. the `@(posedge clk)` of
+    /// `covergroup cg @(posedge clk);`), as a [`SemNode`] of domain
+    /// [`sys::SLANG_AST_TIMING_CONTROL`]. `None` if the covergroup has no
+    /// sampling event of its own, including for a non-covergroup type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit clk; bit x;\n\
+    /// #     covergroup cg @(posedge clk);\n\
+    /// #         cp: coverpoint x;\n\
+    /// #     endgroup\n\
+    /// #     cg cg_inst;\n\
+    /// #     initial cg_inst = new();\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let ty = body.find("cg_inst").unwrap().value_type().unwrap();
+    /// assert!(ty.covergroup_coverage_event().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn covergroup_coverage_event(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the type is valid; forced by the freeze sweep.
+        wrap(unsafe { sys::slang_type_covergroup_coverage_event(self.raw) })
+    }
+
+    /// True if a DPI open-array type (a formal argument of a `DPI-C` import
+    /// with an unsized dimension, e.g. `logic a[]`) is the packed form
+    /// (`logic[]`) rather than the unpacked form. False for the unpacked
+    /// form, and false for any other type.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "import \"DPI-C\" function void f1(logic[]);\n\
+    /// #      import \"DPI-C\" function void f2(logic a[]);\n\
+    /// #      module m; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let arg_type = |func: &str| {
+    ///     unit.find(func)
+    ///         .unwrap()
+    ///         .members()
+    ///         .find(|s| s.kind() == SymbolKind::FormalArgument)
+    ///         .unwrap()
+    ///         .value_type()
+    ///         .unwrap()
+    /// };
+    /// assert!(arg_type("f1").dpi_open_array_is_packed());
+    /// assert!(!arg_type("f2").dpi_open_array_is_packed());
+    /// # Ok(()) }
+    /// ```
+    pub fn dpi_open_array_is_packed(&self) -> bool {
+        // SAFETY: the type is valid; false for any other type.
+        unsafe { sys::slang_type_dpi_open_array_is_packed(self.raw) }
+    }
+
+    /// The system-generated ID of an enum type; 0 for any other type.
+    /// Assigned once at construction, so a pure, allocation-free read.
+    /// Mirrors `slang::ast::EnumType::systemId`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; typedef enum { A, B } e_t; e_t e; logic [7:0] x; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("e").unwrap().value_type().unwrap().enum_system_id() != 0);
+    /// assert_eq!(body.find("x").unwrap().value_type().unwrap().enum_system_id(), 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn enum_system_id(&self) -> i32 {
+        // SAFETY: the type is valid; 0 for any other type.
+        unsafe { sys::slang_type_enum_system_id(self.raw) }
+    }
+
+    /// The floating-point kind of a `real`/`shortreal`/`realtime` type;
+    /// [`FloatKind::Real`] for any other type. A pure, allocation-free read.
+    /// Mirrors `slang::ast::FloatingType::floatKind`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::FloatKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; real r; shortreal sr; realtime rt; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.find("r").unwrap().value_type().unwrap().floating_kind(), FloatKind::Real);
+    /// assert_eq!(
+    ///     body.find("sr").unwrap().value_type().unwrap().floating_kind(),
+    ///     FloatKind::ShortReal
+    /// );
+    /// assert_eq!(
+    ///     body.find("rt").unwrap().value_type().unwrap().floating_kind(),
+    ///     FloatKind::RealTime
+    /// );
+    /// # Ok(()) }
+    /// ```
+    pub fn floating_kind(&self) -> FloatKind {
+        // SAFETY: the type is valid; SLANG_FLOAT_REAL for any other type.
+        match unsafe { sys::slang_type_floating_kind(self.raw) } {
+            sys::SLANG_FLOAT_SHORT_REAL => FloatKind::ShortReal,
+            sys::SLANG_FLOAT_REAL_TIME => FloatKind::RealTime,
+            _ => FloatKind::Real,
+        }
+    }
+
+    /// The range of a fixed-size unpacked array type's single dimension
+    /// (e.g. `[3:0]` in `logic [7:0] mem [3:0]`'s outer unpacked dimension);
+    /// a zeroed range for any other type. A pure, allocation-free read.
+    /// Mirrors `slang::ast::FixedSizeUnpackedArrayType::range`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] mem [3:0]; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let range = body.find("mem").unwrap().value_type().unwrap().fixed_unpacked_array_range();
+    /// assert_eq!(range.left, 3);
+    /// assert_eq!(range.right, 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn fixed_unpacked_array_range(&self) -> ConstantRange {
+        // SAFETY: the type is valid; a zeroed range for any other type.
+        ConstantRange::from_raw(unsafe { sys::slang_type_fixed_unpacked_array_range(self.raw) })
+    }
+
+    /// If this is an integral type (scalar, predefined integer, packed
+    /// array, packed struct/union, or enum), the address range of its bits
+    /// (e.g. `[7:0]`) — a packed array reports its own declared range, every
+    /// other integral kind reports `[bit_width-1:0]`; a zeroed range for any
+    /// non-integral type. A pure, allocation-free read. Mirrors
+    /// `slang::ast::IntegralType::getBitVectorRange`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; logic [7:0] y; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x_range = body.find("x").unwrap().value_type().unwrap().bit_vector_range();
+    /// assert_eq!(x_range.left, 31);
+    /// assert_eq!(x_range.right, 0);
+    /// let y_range = body.find("y").unwrap().value_type().unwrap().bit_vector_range();
+    /// assert_eq!(y_range.left, 7);
+    /// assert_eq!(y_range.right, 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn bit_vector_range(&self) -> ConstantRange {
+        // SAFETY: the type is valid; a zeroed range for a non-integral type.
+        ConstantRange::from_raw(unsafe { sys::slang_type_bit_vector_range(self.raw) })
+    }
+
+    /// True if an integral type was declared using the `reg` keyword
+    /// (looking through any packed-array dimensions to the underlying scalar
+    /// type); `false` for every other type, including a non-integral type.
+    /// A pure, allocation-free read. Mirrors
+    /// `slang::ast::IntegralType::isDeclaredReg`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; reg [3:0] r; logic l; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("r").unwrap().value_type().unwrap().is_declared_reg());
+    /// assert!(!body.find("l").unwrap().value_type().unwrap().is_declared_reg());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_declared_reg(&self) -> bool {
+        // SAFETY: the type is valid; false for a non-integral type.
+        unsafe { sys::slang_type_is_declared_reg(self.raw) }
+    }
+
+    /// The declared range of a packed array type's single dimension (e.g.
+    /// `[7:0]` in `logic [7:0] a`); a zeroed range for any other type.
+    /// Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::PackedArrayType::range`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] y; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let range = body.find("y").unwrap().value_type().unwrap().packed_array_range();
+    /// assert_eq!(range.left, 7);
+    /// assert_eq!(range.right, 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn packed_array_range(&self) -> ConstantRange {
+        // SAFETY: the type is valid; a zeroed range for any other type.
+        ConstantRange::from_raw(unsafe { sys::slang_type_packed_array_range(self.raw) })
+    }
+
+    /// The system-generated ID of a packed struct type; 0 for any other
+    /// type. Assigned once at construction, so a pure, allocation-free read.
+    /// Canonicalizes first. Mirrors `slang::ast::PackedStructType::systemId`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; struct packed { bit a; bit b; } s; logic l; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("s").unwrap().value_type().unwrap().packed_struct_system_id() != 0);
+    /// assert_eq!(body.find("l").unwrap().value_type().unwrap().packed_struct_system_id(), 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn packed_struct_system_id(&self) -> i32 {
+        // SAFETY: the type is valid; 0 for any other type.
+        unsafe { sys::slang_type_packed_struct_system_id(self.raw) }
+    }
+
+    /// True if a packed union type is declared `soft`; `false` for a
+    /// non-soft packed union, and for any other type. A pure,
+    /// allocation-free read. Canonicalizes first. Mirrors
+    /// `slang::ast::PackedUnionType::isSoft`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #          union soft { logic [7:0] a; logic [5:0] b; } su;\n\
+    /// #          union packed { logic [7:0] a; bit [7:0] b; } pu;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("su").unwrap().value_type().unwrap().packed_union_is_soft());
+    /// assert!(!body.find("pu").unwrap().value_type().unwrap().packed_union_is_soft());
+    /// # Ok(()) }
+    /// ```
+    pub fn packed_union_is_soft(&self) -> bool {
+        // SAFETY: the type is valid; false for any other type.
+        unsafe { sys::slang_type_packed_union_is_soft(self.raw) }
+    }
+
+    /// True if a packed union type is declared `tagged`; `false` for a
+    /// non-tagged packed union, and for any other type. A pure,
+    /// allocation-free read. Canonicalizes first. Mirrors
+    /// `slang::ast::PackedUnionType::isTagged`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #          union tagged packed { byte a; byte unsigned b; } tu;\n\
+    /// #          union packed { logic [7:0] a; bit [7:0] b; } pu;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("tu").unwrap().value_type().unwrap().packed_union_is_tagged());
+    /// assert!(!body.find("pu").unwrap().value_type().unwrap().packed_union_is_tagged());
+    /// # Ok(()) }
+    /// ```
+    pub fn packed_union_is_tagged(&self) -> bool {
+        // SAFETY: the type is valid; false for any other type.
+        unsafe { sys::slang_type_packed_union_is_tagged(self.raw) }
+    }
+
+    /// The system-generated ID of a packed union type; 0 for any other type.
+    /// Assigned once at construction, so a pure, allocation-free read.
+    /// Canonicalizes first. Mirrors `slang::ast::PackedUnionType::systemId`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; union packed { logic [7:0] a; bit [7:0] b; } pu; logic l; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("pu").unwrap().value_type().unwrap().packed_union_system_id() != 0);
+    /// assert_eq!(body.find("l").unwrap().value_type().unwrap().packed_union_system_id(), 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn packed_union_system_id(&self) -> i32 {
+        // SAFETY: the type is valid; 0 for any other type.
+        unsafe { sys::slang_type_packed_union_system_id(self.raw) }
+    }
+
+    /// The number of bits reserved for the tag of a `tagged` packed union
+    /// type; 0 for a non-tagged packed union, and for any other type. A
+    /// pure, allocation-free read. Canonicalizes first. Mirrors
+    /// `slang::ast::PackedUnionType::tagBits`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; union tagged packed { byte a; byte unsigned b; } tu; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.find("tu").unwrap().value_type().unwrap().packed_union_tag_bits(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn packed_union_tag_bits(&self) -> u32 {
+        // SAFETY: the type is valid; 0 for any other type.
+        unsafe { sys::slang_type_packed_union_tag_bits(self.raw) }
+    }
+
+    /// The system-generated ID of an unpacked struct type; 0 for any other
+    /// type. Assigned once at construction, so a pure, allocation-free
+    /// read. Canonicalizes first. Mirrors
+    /// `slang::ast::UnpackedStructType::systemId`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; typedef struct { bit a; bit b; } s_t; s_t s; logic l; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("s").unwrap().value_type().unwrap().unpacked_struct_system_id() != 0);
+    /// assert_eq!(body.find("l").unwrap().value_type().unwrap().unpacked_struct_system_id(), 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn unpacked_struct_system_id(&self) -> i32 {
+        // SAFETY: the type is valid; 0 for any other type.
+        unsafe { sys::slang_type_unpacked_struct_system_id(self.raw) }
+    }
+
+    /// True if an unpacked union type is declared `tagged`; `false` for a
+    /// non-tagged unpacked union, and for any other type. A pure,
+    /// allocation-free read. Canonicalizes first. Mirrors
+    /// `slang::ast::UnpackedUnionType::isTagged`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #          typedef union tagged { int a; shortreal b; } tu_t;\n\
+    /// #          typedef union { int a; shortreal b; } uu_t;\n\
+    /// #          tu_t tu; uu_t uu;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("tu").unwrap().value_type().unwrap().unpacked_union_is_tagged());
+    /// assert!(!body.find("uu").unwrap().value_type().unwrap().unpacked_union_is_tagged());
+    /// # Ok(()) }
+    /// ```
+    pub fn unpacked_union_is_tagged(&self) -> bool {
+        // SAFETY: the type is valid; false for any other type.
+        unsafe { sys::slang_type_unpacked_union_is_tagged(self.raw) }
+    }
+
+    /// The system-generated ID of an unpacked union type; 0 for any other
+    /// type. Assigned once at construction, so a pure, allocation-free
+    /// read. Canonicalizes first. Mirrors
+    /// `slang::ast::UnpackedUnionType::systemId`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #          typedef union { int a; shortreal b; } uu_t;\n\
+    /// #          uu_t uu; logic l;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("uu").unwrap().value_type().unwrap().unpacked_union_system_id() != 0);
+    /// assert_eq!(body.find("l").unwrap().value_type().unwrap().unpacked_union_system_id(), 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn unpacked_union_system_id(&self) -> i32 {
+        // SAFETY: the type is valid; 0 for any other type.
+        unsafe { sys::slang_type_unpacked_union_system_id(self.raw) }
+    }
+
+    /// The kind of a predefined integer type (see [`PredefinedIntegerKind`]);
+    /// [`PredefinedIntegerKind::ShortInt`] for any other type (check
+    /// [`Type::is_integral`] / [`Type::bit_width`] first to disambiguate). A
+    /// pure, allocation-free read. Canonicalizes first. Mirrors
+    /// `slang::ast::PredefinedIntegerType::integerKind`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::PredefinedIntegerKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #          int i; byte b; longint l; shortint s; integer g; time t;\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let kind_of = |name: &str| body.find(name).unwrap().value_type().unwrap().predefined_integer_kind();
+    /// assert_eq!(kind_of("i"), PredefinedIntegerKind::Int);
+    /// assert_eq!(kind_of("b"), PredefinedIntegerKind::Byte);
+    /// assert_eq!(kind_of("l"), PredefinedIntegerKind::LongInt);
+    /// assert_eq!(kind_of("s"), PredefinedIntegerKind::ShortInt);
+    /// assert_eq!(kind_of("g"), PredefinedIntegerKind::Integer);
+    /// assert_eq!(kind_of("t"), PredefinedIntegerKind::Time);
+    /// # Ok(()) }
+    /// ```
+    pub fn predefined_integer_kind(&self) -> PredefinedIntegerKind {
+        // SAFETY: the type is valid; SLANG_PREDEFINED_INTEGER_SHORTINT for
+        // any other type.
+        match unsafe { sys::slang_type_predefined_integer_kind(self.raw) } {
+            sys::SLANG_PREDEFINED_INTEGER_INT => PredefinedIntegerKind::Int,
+            sys::SLANG_PREDEFINED_INTEGER_LONGINT => PredefinedIntegerKind::LongInt,
+            sys::SLANG_PREDEFINED_INTEGER_BYTE => PredefinedIntegerKind::Byte,
+            sys::SLANG_PREDEFINED_INTEGER_INTEGER => PredefinedIntegerKind::Integer,
+            sys::SLANG_PREDEFINED_INTEGER_TIME => PredefinedIntegerKind::Time,
+            _ => PredefinedIntegerKind::ShortInt,
+        }
+    }
+
+    /// The maximum number of elements allowed in a queue type (e.g. 4 in
+    /// `int q[$:4]`; 0 for an unbounded `int q[$]`); 0 for any other type.
+    /// Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::QueueType::maxBound`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int bounded[$:4]; int unbounded[$]; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.find("bounded").unwrap().value_type().unwrap().queue_max_bound(), 4);
+    /// assert_eq!(body.find("unbounded").unwrap().value_type().unwrap().queue_max_bound(), 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn queue_max_bound(&self) -> u32 {
+        // SAFETY: the type is valid; 0 for any other type.
+        unsafe { sys::slang_type_queue_max_bound(self.raw) }
+    }
+
+    /// The scalar kind of a `ScalarType` (see [`ScalarKind`]);
+    /// [`ScalarKind::Bit`] for any other type (check
+    /// [`is_integral`](Self::is_integral) plus the canonical kind first to
+    /// disambiguate a genuine `bit` from a non-scalar type). Canonicalizes
+    /// first. Set once at construction, so a pure, allocation-free read.
+    /// Mirrors `slang::ast::ScalarType::scalarKind`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ScalarKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; bit b; logic l; reg r; int i; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.find("b").unwrap().value_type().unwrap().scalar_kind(), ScalarKind::Bit);
+    /// assert_eq!(body.find("l").unwrap().value_type().unwrap().scalar_kind(), ScalarKind::Logic);
+    /// assert_eq!(body.find("r").unwrap().value_type().unwrap().scalar_kind(), ScalarKind::Reg);
+    /// assert_eq!(body.find("i").unwrap().value_type().unwrap().scalar_kind(), ScalarKind::Bit);
+    /// # Ok(()) }
+    /// ```
+    pub fn scalar_kind(&self) -> ScalarKind {
+        // SAFETY: the type is valid; SLANG_SCALAR_BIT for any other type.
+        match unsafe { sys::slang_type_scalar_kind(self.raw) } {
+            sys::SLANG_SCALAR_LOGIC => ScalarKind::Logic,
+            sys::SLANG_SCALAR_REG => ScalarKind::Reg,
+            _ => ScalarKind::Bit,
+        }
+    }
+
+    /// True if this type's value can be treated as string-like: the string
+    /// type itself, plus byte arrays and every integral type. Canonicalizes
+    /// first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::canBeStringLike`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; byte s[]; int x; real r; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("s").unwrap().value_type().unwrap().can_be_string_like());
+    /// assert!(body.find("x").unwrap().value_type().unwrap().can_be_string_like());
+    /// assert!(!body.find("r").unwrap().value_type().unwrap().can_be_string_like());
+    /// # Ok(()) }
+    /// ```
+    pub fn can_be_string_like(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_can_be_string_like(self.raw) }
+    }
+
+    /// For an associative array type with an explicit (non-wildcard) index
+    /// type, that index type; `None` for a wildcard-indexed (`[*]`)
+    /// associative array, or for any other type. Canonicalizes first. A
+    /// pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::getAssociativeIndexType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; int keyed[string]; int wild[*]; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let keyed = body.find("keyed").unwrap().value_type().unwrap();
+    /// assert_eq!(keyed.associative_index_type().unwrap().to_sv_string(), "string");
+    /// let wild = body.find("wild").unwrap().value_type().unwrap();
+    /// assert!(wild.associative_index_type().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn associative_index_type(&self) -> Option<Type<'d>> {
+        // SAFETY: the type is valid; a null node for any other type.
+        wrap(unsafe { sys::slang_type_associative_index_type(self.raw) })
+    }
+
+    /// `$bits` of the type: the number of bits produced/consumed by a
+    /// bitstream (streaming) cast. 0 if the type has no statically known
+    /// bitstream size (e.g. a dynamic array, associative array, or queue).
+    /// Canonicalizes first. For a class type this reads
+    /// `ClassType::getBitstreamWidth`, whose memo the freeze sweep
+    /// force-resolves, so this remains a pure read. Mirrors
+    /// `slang::ast::Type::getBitstreamWidth`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; int q[$]; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.find("x").unwrap().value_type().unwrap().bitstream_width(), 8);
+    /// assert_eq!(body.find("q").unwrap().value_type().unwrap().bitstream_width(), 0);
+    /// # Ok(()) }
+    /// ```
+    pub fn bitstream_width(&self) -> u64 {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_bitstream_width(self.raw) }
+    }
+
+    /// If `self` and `other` are both class types with a common base class
+    /// somewhere in their inheritance chains, that common base type; `None`
+    /// otherwise (including when either is not a class type). Canonicalizes
+    /// both first. Walks each chain via `ClassType::getBaseClass`, whose
+    /// memo the freeze sweep force-resolves, so this is a pure read. Mirrors
+    /// `slang::ast::Type::getCommonBase`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class Base; endclass\n\
+    /// #      class A extends Base; endclass\n\
+    /// #      class B extends Base; endclass\n\
+    /// #      module m; A a; B b; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let at = body.find("a").unwrap().value_type().unwrap();
+    /// let bt = body.find("b").unwrap().value_type().unwrap();
+    /// assert_eq!(at.common_base(&bt).unwrap().to_sv_string(), "Base");
+    /// # Ok(()) }
+    /// ```
+    pub fn common_base(&self, other: &Type<'d>) -> Option<Type<'d>> {
+        self.assert_same_compilation(other);
+        // SAFETY: both are valid and (asserted) from the same compilation;
+        // a null node unless both are class types with a common base.
+        wrap(unsafe { sys::slang_type_common_base(self.raw, other.raw) })
+    }
+
+    /// The combination of integral-type traits for this type (see
+    /// [`IntegralFlags`]); all-zero ([`IntegralFlags::UNSIGNED`]) for a
+    /// non-integral type. Canonicalizes first. A pure, allocation-free read.
+    /// Mirrors `slang::ast::Type::getIntegralFlags`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::IntegralFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int si; logic [7:0] u; real r; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let si = body.find("si").unwrap().value_type().unwrap().integral_flags();
+    /// assert!(si.contains(IntegralFlags::SIGNED));
+    /// let u = body.find("u").unwrap().value_type().unwrap().integral_flags();
+    /// assert!(!u.contains(IntegralFlags::SIGNED));
+    /// assert!(u.contains(IntegralFlags::FOUR_STATE));
+    /// assert_eq!(
+    ///     body.find("r").unwrap().value_type().unwrap().integral_flags(),
+    ///     IntegralFlags::UNSIGNED
+    /// );
+    /// # Ok(()) }
+    /// ```
+    pub fn integral_flags(&self) -> IntegralFlags {
+        // SAFETY: the type is valid; all-zero for a non-integral type.
+        IntegralFlags(unsafe { sys::slang_type_integral_flags(self.raw) })
+    }
+
+    /// The "selectable" width of the type: the size used to determine
+    /// whether static-portion assignments to it overlap with each other.
+    /// Dynamically sized types report 1. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::getSelectableWidth`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; string s; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.find("x").unwrap().value_type().unwrap().selectable_width(), 8);
+    /// assert_eq!(body.find("s").unwrap().value_type().unwrap().selectable_width(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn selectable_width(&self) -> u64 {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_selectable_width(self.raw) }
+    }
+
+    /// True if this type has a statically fixed size range — a packed array
+    /// or fixed-size unpacked array, or any integral type (whose range is
+    /// its bitwidth); false otherwise. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::hasFixedRange`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x[3:0]; int q[$]; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("x").unwrap().value_type().unwrap().has_fixed_range());
+    /// assert!(!body.find("q").unwrap().value_type().unwrap().has_fixed_range());
+    /// # Ok(()) }
+    /// ```
+    pub fn has_fixed_range(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_has_fixed_range(self.raw) }
+    }
+
+    /// The fixed range of the type (see [`has_fixed_range`](Self::has_fixed_range)) —
+    /// the same value [`bit_vector_range`](Self::bit_vector_range) /
+    /// [`fixed_unpacked_array_range`](Self::fixed_unpacked_array_range) each
+    /// report for their own kind, unified into one accessor dispatched on
+    /// the type's own canonical kind; a zeroed range if the type has no
+    /// fixed range. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::getFixedRange`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; string s; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let r = body.find("x").unwrap().value_type().unwrap().fixed_range();
+    /// assert_eq!((r.left, r.right), (7, 0));
+    /// let none = body.find("s").unwrap().value_type().unwrap().fixed_range();
+    /// assert_eq!((none.left, none.right), (0, 0));
+    /// # Ok(()) }
+    /// ```
+    pub fn fixed_range(&self) -> ConstantRange {
+        // SAFETY: the type is valid; a zeroed range for any other type.
+        ConstantRange::from_raw(unsafe { sys::slang_type_fixed_range(self.raw) })
+    }
+
+    /// True if `self` is a class type that implements the interface class
+    /// `iface_class` (directly, or via a base class), or is itself an
+    /// interface class that extends it; false otherwise (including when
+    /// either is not a class type). Walks the base-class chain via
+    /// `ClassType::getBaseClass` and reads
+    /// `ClassType::getImplementedInterfaces`, both of whose underlying memos
+    /// the freeze sweep force-resolves, so this is a pure read. Mirrors
+    /// `slang::ast::Type::implements`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface class IFoo; endclass\n\
+    /// #      class Impl implements IFoo; endclass\n\
+    /// #      class Other; endclass\n\
+    /// #      module m; Impl i; Other o; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let it = body.find("i").unwrap().value_type().unwrap();
+    /// let ot = body.find("o").unwrap().value_type().unwrap();
+    /// let ifoo = it.class_implemented_interfaces().next().unwrap();
+    /// assert!(it.implements(&ifoo));
+    /// assert!(!ot.implements(&ifoo));
+    /// # Ok(()) }
+    /// ```
+    pub fn implements(&self, iface_class: &Type<'d>) -> bool {
+        self.assert_same_compilation(iface_class);
+        // SAFETY: both are valid and (asserted) from the same compilation.
+        unsafe { sys::slang_type_implements(self.raw, iface_class.raw) }
+    }
+
+    /// True if this is an aggregate type — an unpacked struct, unpacked
+    /// union, or any fixed/dynamic/associative array or queue; false for
+    /// any "singular" type (including packed aggregates and scalars).
+    /// Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isAggregate`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; struct { int a; } s[3]; logic [7:0] x; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("s").unwrap().value_type().unwrap().is_aggregate());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_aggregate());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_aggregate(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_aggregate(self.raw) }
+    }
+
+    /// True if this type node is itself a type alias (a `typedef`) — unlike
+    /// every other `is_*` predicate here, this does NOT canonicalize first:
+    /// it reports true only for the alias node itself, not for a reference
+    /// that merely resolves to one. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isAlias`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; typedef logic [3:0] nib_t; nib_t n; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let t = body.find("n").unwrap().value_type().unwrap();
+    /// assert!(t.is_alias());
+    /// assert!(!t.canonical().is_alias());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_alias(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_alias(self.raw) }
+    }
+
+    /// True if this is an associative array type; false otherwise.
+    /// Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isAssociativeArray`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int keyed[string]; int x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("keyed").unwrap().value_type().unwrap().is_associative_array());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_associative_array());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_associative_array(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_associative_array(self.raw) }
+    }
+
+    /// True if `rhs` can be bit-stream cast to `self` — i.e. a
+    /// `self'(rhs_expr)` streaming/bitstream cast between the two would be
+    /// legal. Canonicalizes both first. A pure, allocation-free read.
+    /// Mirrors `slang::ast::Type::isBitstreamCastable`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic [15:0] x; logic [7:0] y[1:0]; real r; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let xt = body.find("x").unwrap().value_type().unwrap();
+    /// let yt = body.find("y").unwrap().value_type().unwrap();
+    /// let rt = body.find("r").unwrap().value_type().unwrap();
+    /// assert!(xt.is_bitstream_castable(&yt));
+    /// assert!(!xt.is_bitstream_castable(&rt));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_bitstream_castable(&self, rhs: &Type<'d>) -> bool {
+        self.assert_same_compilation(rhs);
+        // SAFETY: both are valid and (asserted) from the same compilation.
+        unsafe { sys::slang_type_is_bitstream_castable(self.raw, rhs.raw) }
+    }
+
+    /// True if this type can be packed into a stream of bits — an integral
+    /// type, a string, an unpacked array/struct whose elements/fields all
+    /// satisfy this, or a non-interface, non-cyclic class whose properties
+    /// all satisfy this. If `destination` is true, this is checked in the
+    /// context of the destination side of a bitstream cast, which disallows
+    /// associative arrays and any class. Canonicalizes first; recurses
+    /// through element/field/property types, all of whose underlying
+    /// `getType()` memos the freeze sweep force-resolves, so this is a pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isBitstreamType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic [7:0] x; int keyed[string]; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let xt = body.find("x").unwrap().value_type().unwrap();
+    /// let kt = body.find("keyed").unwrap().value_type().unwrap();
+    /// assert!(xt.is_bitstream_type(false));
+    /// assert!(kt.is_bitstream_type(false));
+    /// assert!(!kt.is_bitstream_type(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_bitstream_type(&self, destination: bool) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_bitstream_type(self.raw, destination) }
+    }
+
+    /// True if this type is convertible to a boolean predicate for use in a
+    /// conditional expression — any numeric type, or a null/chandle/string/
+    /// event/class/covergroup/virtual-interface type. Canonicalizes first. A
+    /// pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isBooleanConvertible`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; event e; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("x").unwrap().value_type().unwrap().is_boolean_convertible());
+    /// assert!(body.find("e").unwrap().value_type().unwrap().is_boolean_convertible());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_boolean_convertible(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_boolean_convertible(self.raw) }
+    }
+
+    /// True if this is an unpacked array of `byte`, the shape various
+    /// string-related language rules check for to interpret such an
+    /// argument as a string. Canonicalizes first. A pure, allocation-free
+    /// read. Mirrors `slang::ast::Type::isByteArray`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; byte b[]; int x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("b").unwrap().value_type().unwrap().is_byte_array());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_byte_array());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_byte_array(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_byte_array(self.raw) }
+    }
+
+    /// True if this is a C-handle type. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isCHandle`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; chandle h; int x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("h").unwrap().value_type().unwrap().is_chandle());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_chandle());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_chandle(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_chandle(self.raw) }
+    }
+
+    /// True if `rhs` is "cast compatible" to `self` — implicitly or
+    /// explicitly convertible to it (assignment compatible, or an
+    /// enum/string/integral special case per IEEE 1800 §6.22.4); the reverse
+    /// is not necessarily true. Canonicalizes both first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isCastCompatible`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; typedef enum { A, B } e_t; e_t e; int x; string s; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let et = body.find("e").unwrap().value_type().unwrap();
+    /// let xt = body.find("x").unwrap().value_type().unwrap();
+    /// let st = body.find("s").unwrap().value_type().unwrap();
+    /// assert!(et.is_cast_compatible(&xt));
+    /// assert!(!et.is_cast_compatible(&st));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_cast_compatible(&self, rhs: &Type<'d>) -> bool {
+        self.assert_same_compilation(rhs);
+        // SAFETY: both are valid and (asserted) from the same compilation.
+        unsafe { sys::slang_type_is_cast_compatible(self.raw, rhs.raw) }
+    }
+
+    /// True if this is a covergroup type. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isCovergroup`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; covergroup cg; c: coverpoint x; endgroup\n\
+    /// #      int x; cg g = new; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let gt = body.find("g").unwrap().value_type().unwrap();
+    /// let xt = body.find("x").unwrap().value_type().unwrap();
+    /// assert!(gt.is_covergroup());
+    /// assert!(!xt.is_covergroup());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_covergroup(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_covergroup(self.raw) }
+    }
+
+    /// True if `self` is a class type that derives from the class type
+    /// `base` (directly, or via a base class), or if `self`'s canonical type
+    /// is the error type (permissively treated as derived from anything, to
+    /// avoid knock-on errors); false otherwise, including when `base` is not
+    /// a class type. Canonicalizes both first; walks the base-class chain
+    /// via `ClassType::getBaseClass`, whose memo the freeze sweep
+    /// force-resolves, so this is a pure read. Mirrors
+    /// `slang::ast::Type::isDerivedFrom`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class Base; endclass\n\
+    /// #      class Derived extends Base; endclass\n\
+    /// #      class Other; endclass\n\
+    /// #      module m; Derived d; Other o; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let dt = body.find("d").unwrap().value_type().unwrap();
+    /// let ot = body.find("o").unwrap().value_type().unwrap();
+    /// let base = dt.class_base().unwrap();
+    /// assert!(dt.is_derived_from(&base));
+    /// assert!(!ot.is_derived_from(&base));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_derived_from(&self, base: &Type<'d>) -> bool {
+        self.assert_same_compilation(base);
+        // SAFETY: both are valid and (asserted) from the same compilation.
+        unsafe { sys::slang_type_is_derived_from(self.raw, base.raw) }
+    }
+
+    /// True if this is a dynamic array, associative array, or queue type;
+    /// false otherwise (including for a fixed-size unpacked array).
+    /// Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isDynamicallySizedArray`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int q[$]; int x[3:0]; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("q").unwrap().value_type().unwrap().is_dynamically_sized_array());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_dynamically_sized_array());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_dynamically_sized_array(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_dynamically_sized_array(self.raw) }
+    }
+
+    /// True if this is the error type, reported for a type that failed to
+    /// resolve. Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isError`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(design.error_type().is_error());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_error());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_error(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_error(self.raw) }
+    }
+
+    /// True if this is an event type. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isEvent`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; event e; int x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("e").unwrap().value_type().unwrap().is_event());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_event());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_event(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_event(self.raw) }
+    }
+
+    /// True if this type has a fixed bitstream size, as opposed to a
+    /// dynamically sized type like a dynamic array, associative array,
+    /// queue, or string — an integral or floating type; a fixed-size
+    /// unpacked array, struct, or union whose elements/fields all satisfy
+    /// this; or a class whose bitstream width is nonzero. Canonicalizes
+    /// first; recurses through element/field types and (for classes) reads
+    /// `ClassType::getBitstreamWidth`, all pre-forced by the freeze sweep,
+    /// so this is a pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isFixedSize`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x[3:0]; string s; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("x").unwrap().value_type().unwrap().is_fixed_size());
+    /// assert!(!body.find("s").unwrap().value_type().unwrap().is_fixed_size());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_fixed_size(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_fixed_size(self.raw) }
+    }
+
+    /// True if this is a floating point type (`real`, `shortreal`, or
+    /// `realtime`). Canonicalizes first. A pure, allocation-free read.
+    /// Mirrors `slang::ast::Type::isFloating`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; real r; int x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("r").unwrap().value_type().unwrap().is_floating());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_floating());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_floating(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_floating(self.raw) }
+    }
+
+    /// True if this is a type that acts like a handle — a class, event,
+    /// chandle, virtual interface, or the null type. Canonicalizes first. A
+    /// pure, allocation-free read. Mirrors `slang::ast::Type::isHandleType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; chandle h; int x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("h").unwrap().value_type().unwrap().is_handle_type());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_handle_type());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_handle_type(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_handle_type(self.raw) }
+    }
+
+    /// True if this type is considered iterable — any type with a fixed
+    /// range, any array, or a string, excluding plain scalar
+    /// (`bit`/`logic`/`reg`) types. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isIterable`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x[3:0]; bit b; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("x").unwrap().value_type().unwrap().is_iterable());
+    /// assert!(!body.find("b").unwrap().value_type().unwrap().is_iterable());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_iterable(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_iterable(self.raw) }
+    }
+
+    /// True if this is the null type. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isNull`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(design.null_type().is_null());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_null());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_null(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_null(self.raw) }
+    }
+
+    /// True if this is a numeric type — any integral or floating type.
+    /// Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isNumeric`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; real r; int x; string s; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("r").unwrap().value_type().unwrap().is_numeric());
+    /// assert!(body.find("x").unwrap().value_type().unwrap().is_numeric());
+    /// assert!(!body.find("s").unwrap().value_type().unwrap().is_numeric());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_numeric(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_numeric(self.raw) }
+    }
+
+    /// True if this is a type that is a handle to some object that contains
+    /// accessible members — a class, covergroup, or virtual interface type
+    /// (unlike [`is_handle_type`](Type::is_handle_type), this excludes
+    /// `chandle`, `event`, and the null type). Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isObjectHandleType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; class C; endclass C c; chandle h; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("c").unwrap().value_type().unwrap().is_object_handle_type());
+    /// assert!(!body.find("h").unwrap().value_type().unwrap().is_object_handle_type());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_object_handle_type(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_object_handle_type(self.raw) }
+    }
+
+    /// True if this is a packed array type. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isPackedArray`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] pa; int pi; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("pa").unwrap().value_type().unwrap().is_packed_array());
+    /// assert!(!body.find("pi").unwrap().value_type().unwrap().is_packed_array());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_packed_array(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_packed_array(self.raw) }
+    }
+
+    /// True if this is a packed union type. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isPackedUnion`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n\
+    /// #     union packed { logic [7:0] a; logic [7:0] b; } pu;\n\
+    /// #     int pi;\n\
+    /// # endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("pu").unwrap().value_type().unwrap().is_packed_union());
+    /// assert!(!body.find("pi").unwrap().value_type().unwrap().is_packed_union());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_packed_union(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_packed_union(self.raw) }
+    }
+
+    /// True if this is a predefined integer type (`int`, `shortint`,
+    /// `longint`, `byte`, `integer`, or `time`). Canonicalizes first. A
+    /// pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isPredefinedInteger`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int pi; logic [7:0] pa; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("pi").unwrap().value_type().unwrap().is_predefined_integer());
+    /// assert!(!body.find("pa").unwrap().value_type().unwrap().is_predefined_integer());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_predefined_integer(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_predefined_integer(self.raw) }
+    }
+
+    /// True if this is the property type (the type of an assertion property
+    /// expression, e.g. an assertion port declared `property`).
+    /// Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isPropertyType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n\
+    /// #     property p2(property pr); pr; endproperty\n\
+    /// #     int pi;\n\
+    /// # endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let p2 = body.find("p2").unwrap();
+    /// let pr = p2.find("pr").unwrap().declared_type().unwrap();
+    /// assert!(pr.is_property_type());
+    /// assert!(!body.find("pi").unwrap().value_type().unwrap().is_property_type());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_property_type(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_property_type(self.raw) }
+    }
+
+    /// True if this is a queue type. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isQueue`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int q[$]; int fixed_arr[3:0]; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("q").unwrap().value_type().unwrap().is_queue());
+    /// assert!(!body.find("fixed_arr").unwrap().value_type().unwrap().is_queue());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_queue(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_queue(self.raw) }
+    }
+
+    /// True if this is a scalar integral type (`bit`, `logic`, or `reg`).
+    /// Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isScalar`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; bit sc; int pi; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("sc").unwrap().value_type().unwrap().is_scalar());
+    /// assert!(!body.find("pi").unwrap().value_type().unwrap().is_scalar());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_scalar(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_scalar(self.raw) }
+    }
+
+    /// True if this is the sequence type (the type of an assertion sequence
+    /// expression, e.g. an assertion port declared `sequence`).
+    /// Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isSequenceType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n\
+    /// #     property p1(sequence sq); sq; endproperty\n\
+    /// #     int pi;\n\
+    /// # endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let p1 = body.find("p1").unwrap();
+    /// let sq = p1.find("sq").unwrap().declared_type().unwrap();
+    /// assert!(sq.is_sequence_type());
+    /// assert!(!body.find("pi").unwrap().value_type().unwrap().is_sequence_type());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_sequence_type(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_sequence_type(self.raw) }
+    }
+
+    /// True if this is a simple bit vector type — a predefined integer
+    /// type, a scalar type, or a packed array whose element type is a
+    /// scalar. Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isSimpleBitVector`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int pi; logic [7:0] pa; real r; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("pi").unwrap().value_type().unwrap().is_simple_bit_vector());
+    /// assert!(body.find("pa").unwrap().value_type().unwrap().is_simple_bit_vector());
+    /// assert!(!body.find("r").unwrap().value_type().unwrap().is_simple_bit_vector());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_simple_bit_vector(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_simple_bit_vector(self.raw) }
+    }
+
+    /// True if this type is considered a "simple type" — a built-in
+    /// integer, a floating type, a string, a class, or a type alias. Unlike
+    /// most `is_*` predicates on `Type`, this checks the type node's own
+    /// kind directly rather than canonicalizing first, matching
+    /// `slang::ast::Type::isSimpleType` exactly (so it reports `true` for
+    /// any alias regardless of what it ultimately resolves to). A pure,
+    /// allocation-free read.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int pi; int fixed_arr[3:0]; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("pi").unwrap().value_type().unwrap().is_simple_type());
+    /// assert!(!body.find("fixed_arr").unwrap().value_type().unwrap().is_simple_type());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_simple_type(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_simple_type(self.raw) }
+    }
+
+    /// True if this is a "singular" type — the opposite of an aggregate
+    /// type, i.e. every type except unpacked structs, unpacked unions, and
+    /// arrays. Canonicalizes first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isSingular`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int pi; int fixed_arr[3:0]; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("pi").unwrap().value_type().unwrap().is_singular());
+    /// assert!(!body.find("fixed_arr").unwrap().value_type().unwrap().is_singular());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_singular(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_singular(self.raw) }
+    }
+
+    /// True if this is a tagged union, packed or unpacked. Canonicalizes
+    /// first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isTaggedUnion`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n\
+    /// #     union tagged packed { void inv; logic [7:0] v; } tu;\n\
+    /// #     union packed { logic [7:0] a; logic [7:0] b; } pu;\n\
+    /// # endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("tu").unwrap().value_type().unwrap().is_tagged_union());
+    /// assert!(!body.find("pu").unwrap().value_type().unwrap().is_tagged_union());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_tagged_union(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_tagged_union(self.raw) }
+    }
+
+    /// True if this is the type reference type — the type of a `type(...)`
+    /// expression. Canonicalizes first. A pure, allocation-free read.
+    /// Mirrors `slang::ast::Type::isTypeRefType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; localparam bit r = (type(int) == type(logic)); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("r").unwrap().initializer().unwrap();
+    /// assert!(init.left().unwrap().expr_type().unwrap().is_type_ref_type());
+    /// assert!(!init.expr_type().unwrap().is_type_ref_type());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_type_ref_type(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_type_ref_type(self.raw) }
+    }
+
+    /// True if this is the unbounded type — the type of the `$` token used
+    /// as an unbounded literal (e.g. a parameter default value). Canonicalizes
+    /// first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isUnbounded`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; parameter P = $; int pi; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("P").unwrap().value_type().unwrap().is_unbounded());
+    /// assert!(!body.find("pi").unwrap().value_type().unwrap().is_unbounded());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_unbounded(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_unbounded(self.raw) }
+    }
+
+    /// True if this is an unpacked structure type. Canonicalizes first. A
+    /// pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isUnpackedStruct`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n\
+    /// #     struct { int a; int b; } us;\n\
+    /// #     union { int a; int b; } uu;\n\
+    /// # endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("us").unwrap().value_type().unwrap().is_unpacked_struct());
+    /// assert!(!body.find("uu").unwrap().value_type().unwrap().is_unpacked_struct());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_unpacked_struct(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_unpacked_struct(self.raw) }
+    }
+
+    /// True if this is an unpacked union type. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isUnpackedUnion`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n\
+    /// #     union { int a; int b; } uu;\n\
+    /// #     struct { int a; int b; } us;\n\
+    /// # endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("uu").unwrap().value_type().unwrap().is_unpacked_union());
+    /// assert!(!body.find("us").unwrap().value_type().unwrap().is_unpacked_union());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_unpacked_union(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_unpacked_union(self.raw) }
+    }
+
+    /// The default value for an uninitialized variable of this type (e.g.
+    /// all zero bits for a four-state integral type). Canonicalizes first.
+    /// Builds a fresh [`ConstantValue`](crate::ConstantValue) on the
+    /// regular process heap on every call (never the design's frozen
+    /// arena), so this is a pure read on a shared [`Design`]. Mirrors
+    /// `slang::ast::Type::getDefaultValue`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let t = body.find("x").unwrap().value_type().unwrap();
+    /// let default = t.default_value().unwrap();
+    /// assert_eq!(default.as_integer().unwrap().bit_width(), 8);
+    /// # Ok(()) }
+    /// ```
+    pub fn default_value(&self) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the type is valid; out-error checked.
+        let raw = unsafe { sys::slang_type_default_value(self.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: owned handle, free on error.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// Coerces `value` into a constant appropriate for this type — e.g.
+    /// resizing and re-signing an integral value. Returns `None` for a type
+    /// this cannot coerce an integer into (any type other than integral,
+    /// floating, or string — those non-integer coercions are outside
+    /// [`OwnedSVInt`](crate::OwnedSVInt)'s representation). As with
+    /// [`default_value`](Self::default_value), this only allocates on the
+    /// regular process heap, so it is a pure read on a shared [`Design`].
+    /// Mirrors `slang::ast::Type::coerceValue`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; localparam int X = 300; logic [3:0] y; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let value = init.constant_integer_copy().unwrap();
+    /// let yt = body.find("y").unwrap().value_type().unwrap();
+    /// let coerced = yt.coerce_value(&value).unwrap();
+    /// // 300 truncated to 4 bits is 300 % 16 == 12.
+    /// assert_eq!(coerced.as_i64(), Some(12));
+    /// # Ok(()) }
+    /// ```
+    pub fn coerce_value(&self, value: &crate::OwnedSVInt) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the type is valid; `value.raw()` is a valid handle owned
+        // by `value` (not consumed by the callee); out-error checked.
+        let raw = unsafe { sys::slang_type_coerce_value(self.raw, value.raw(), &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: owned handle, free on error.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// True if this is the untyped type — the type given to a
+    /// sequence/property/`let` formal port that declares no type at all
+    /// (e.g. the `x` in `sequence s(x); ... endsequence`). Canonicalizes
+    /// first. A pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isUntypedType`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("sequence s(x); x; endsequence\nmodule m; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let seq = unit.find("s").unwrap();
+    /// let x = seq.find("x").unwrap().declared_type().unwrap();
+    /// assert!(x.is_untyped_type());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_untyped_type(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_untyped_type(self.raw) }
+    }
+
+    /// True if this type is valid for use as a DPI import/export function
+    /// argument (integral, floating, string, chandle, void, an array of a
+    /// valid element type, or an unpacked struct whose fields are all
+    /// valid). Canonicalizes first (and recurses into array element /
+    /// unpacked struct field types, whose `DeclaredType` memo the freeze
+    /// sweep force-resolves), so this is a pure, allocation-free read.
+    /// Mirrors `slang::ast::Type::isValidForDPIArg`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; int x; class C; endclass; C c; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("x").unwrap().value_type().unwrap().is_valid_for_dpi_arg());
+    /// assert!(!body.find("c").unwrap().value_type().unwrap().is_valid_for_dpi_arg());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_valid_for_dpi_arg(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_valid_for_dpi_arg(self.raw) }
+    }
+
+    /// True if this type is valid for use as a DPI import/export function
+    /// return value (void, floating, chandle, string, a scalar type, or a
+    /// two-state predefined integer type). Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isValidForDPIReturn`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; real r; logic [7:0] l; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("r").unwrap().value_type().unwrap().is_valid_for_dpi_return());
+    /// // A four-state predefined integer type (`logic`) is not.
+    /// assert!(!body.find("l").unwrap().value_type().unwrap().is_valid_for_dpi_return());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_valid_for_dpi_return(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_valid_for_dpi_return(self.raw) }
+    }
+
+    /// True if this type is valid for use as a random variable declared with
+    /// the given `mode`, under the given `language_version` (slang's raw
+    /// `LanguageVersion` encoding: 0 = 1364-2005, 1 = 1800-2017, 2 =
+    /// 1800-2023 — floating-point `rand` members are only legal since
+    /// 1800-2023). Canonicalizes first and recurses into array element types
+    /// (whose `DeclaredType` memo the freeze sweep force-resolves), so this
+    /// is a pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isValidForRand`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::RandMode;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int i; real r; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let int_t = body.find("i").unwrap().value_type().unwrap();
+    /// let real_t = body.find("r").unwrap().value_type().unwrap();
+    ///
+    /// // Integral types are valid for `rand` under any mode or version.
+    /// assert!(int_t.is_valid_for_rand(RandMode::Rand, 1));
+    /// assert!(int_t.is_valid_for_rand(RandMode::None, 1));
+    ///
+    /// // Floating types need `rand` (not `randc`) *and* 1800-2023 (version 2).
+    /// assert!(real_t.is_valid_for_rand(RandMode::Rand, 2));
+    /// assert!(!real_t.is_valid_for_rand(RandMode::Rand, 1));
+    /// assert!(!real_t.is_valid_for_rand(RandMode::RandC, 2));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_valid_for_rand(&self, mode: RandMode, language_version: u32) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_valid_for_rand(self.raw, mode.to_raw(), language_version) }
+    }
+
+    /// True if this type is valid for use in a sequence/property expression
+    /// — it must be cast-compatible with an integral type (integral,
+    /// string, or floating). Canonicalizes first. A pure, allocation-free
+    /// read. Mirrors `slang::ast::Type::isValidForSequence`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; int x; class C; endclass; C c; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("x").unwrap().value_type().unwrap().is_valid_for_sequence());
+    /// assert!(!body.find("c").unwrap().value_type().unwrap().is_valid_for_sequence());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_valid_for_sequence(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_valid_for_sequence(self.raw) }
+    }
+
+    /// True if this is a virtual interface type. Canonicalizes first. A
+    /// pure, allocation-free read. Mirrors
+    /// `slang::ast::Type::isVirtualInterface`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "interface I; endinterface\n\
+    /// #      module m; virtual I vif; int x; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("vif").unwrap().value_type().unwrap().is_virtual_interface());
+    /// assert!(!body.find("x").unwrap().value_type().unwrap().is_virtual_interface());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_virtual_interface(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_virtual_interface(self.raw) }
+    }
+
+    /// True if this is the Void type. Canonicalizes first. A pure,
+    /// allocation-free read. Mirrors `slang::ast::Type::isVoid`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; function void f(); endfunction\n\
+    /// #      function int g(); return 0; endfunction\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let f = body.find("f").unwrap().declared_type().unwrap();
+    /// let g = body.find("g").unwrap().declared_type().unwrap();
+    /// assert!(f.is_void());
+    /// assert!(!g.is_void());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_void(&self) -> bool {
+        // SAFETY: the type is valid.
+        unsafe { sys::slang_type_is_void(self.raw) }
+    }
+
+    /// The visibility modifier of a `TypeAliasType` (a `typedef`), e.g.
+    /// `local`/`protected` on a class-scoped typedef (see [`Visibility`]).
+    /// Returns [`Visibility::Public`] (slang's own field default) for a type
+    /// node that is not a type alias. Set once at construction, so a pure,
+    /// allocation-free read. Mirrors `slang::ast::TypeAliasType::visibility`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::Visibility;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C;\n\
+    /// #      local typedef int t;\n\
+    /// #      typedef int u;\n\
+    /// #      endclass\n\
+    /// #      module m; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let unit = design.compilation_units().next().unwrap();
+    /// let c = unit.find("C").unwrap();
+    /// let t = c.find("t").unwrap().as_type().unwrap();
+    /// let u = c.find("u").unwrap().as_type().unwrap();
+    /// assert_eq!(t.type_alias_visibility(), Visibility::Local);
+    /// assert_eq!(u.type_alias_visibility(), Visibility::Public);
+    /// # Ok(()) }
+    /// ```
+    pub fn type_alias_visibility(&self) -> Visibility {
+        // SAFETY: the type is valid.
+        match unsafe { sys::slang_type_alias_visibility(self.raw) } {
+            sys::SLANG_VISIBILITY_PROTECTED => Visibility::Protected,
+            sys::SLANG_VISIBILITY_LOCAL => Visibility::Local,
+            _ => Visibility::Public,
+        }
+    }
+}
+
+/// Selects a style for anonymous (unnamed, e.g. an inline unpacked struct)
+/// types in printed output (see
+/// [`TypePrintingOptions::anonymous_type_style`]). Mirrors
+/// `slang::ast::TypePrintingOptions::AnonymousTypeStyle`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnonymousTypeStyle {
+    /// Print the compiler-internal system ID name (the default).
+    SystemName,
+    /// Print a synthesized, more human-friendly name.
+    FriendlyName,
+}
+
+/// The options that control a [`TypePrinter`]'s output — a subset of
+/// `slang::ast::TypePrintingOptions`'s public fields. Read with
+/// [`TypePrinter::options`], write with [`TypePrinter::set_options`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypePrintingOptions {
+    /// Elide the names of scopes containing the types. Mirrors
+    /// `TypePrintingOptions::elideScopeNames`.
+    pub elide_scope_names: bool,
+    /// Print classes and covergroups as links instead of their expanded
+    /// type details. Mirrors `TypePrintingOptions::classesAsLinks`.
+    pub classes_as_links: bool,
+    /// Print enums as links instead of their expanded type details. Mirrors
+    /// `TypePrintingOptions::enumsAsLinks`.
+    pub enums_as_links: bool,
+    /// Selects a style for anonymous types. Mirrors
+    /// `TypePrintingOptions::anonymousTypeStyle`.
+    pub anonymous_type_style: AnonymousTypeStyle,
+    /// Optionally add quotes around type names. Mirrors
+    /// `TypePrintingOptions::quoteChar`, which is a single C `char`; only
+    /// the low byte of a non-ASCII `char` crosses the FFI boundary.
+    pub quote_char: Option<char>,
+    /// Print an 'aka' note when unwrapping typedefs. Mirrors
+    /// `TypePrintingOptions::printAKA`.
+    pub print_aka: bool,
+    /// Skip over scoped type names completely. Mirrors
+    /// `TypePrintingOptions::skipScopedTypeNames`.
+    pub skip_scoped_type_names: bool,
+    /// Skip expanding typedefs. Mirrors
+    /// `TypePrintingOptions::skipTypeDefs`.
+    pub skip_type_defs: bool,
+    /// Include the enum's base type. Mirrors
+    /// `TypePrintingOptions::fullEnumType`.
+    pub full_enum_type: bool,
+    /// Print typedefs as links instead of their expanded type details.
+    /// Mirrors `TypePrintingOptions::typedefsAsLinks`.
+    pub typedefs_as_links: bool,
+    /// Print the constant range of integral types for packed non-array
+    /// objects. Mirrors `TypePrintingOptions::printIntegralRange`.
+    pub print_integral_range: bool,
+    /// A limit on the size of a friendly-named struct/union member list,
+    /// beyond which the output will be abbreviated. Mirrors
+    /// `TypePrintingOptions::friendlyMemberCharLimit`.
+    pub friendly_member_char_limit: usize,
+}
+
+impl Default for TypePrintingOptions {
+    fn default() -> Self {
+        TypePrintingOptions {
+            elide_scope_names: false,
+            classes_as_links: false,
+            enums_as_links: false,
+            anonymous_type_style: AnonymousTypeStyle::SystemName,
+            quote_char: None,
+            print_aka: false,
+            skip_scoped_type_names: false,
+            skip_type_defs: false,
+            full_enum_type: false,
+            typedefs_as_links: false,
+            print_integral_range: false,
+            friendly_member_char_limit: 60,
+        }
+    }
+}
+
+impl TypePrintingOptions {
+    fn from_raw(o: sys::slang_type_printing_options) -> Self {
+        TypePrintingOptions {
+            elide_scope_names: o.elide_scope_names,
+            classes_as_links: o.classes_as_links,
+            enums_as_links: o.enums_as_links,
+            anonymous_type_style: if o.anonymous_type_style == sys::SLANG_ANON_TYPE_FRIENDLY_NAME {
+                AnonymousTypeStyle::FriendlyName
+            } else {
+                AnonymousTypeStyle::SystemName
+            },
+            quote_char: o.has_quote_char.then_some(o.quote_char as u8 as char),
+            print_aka: o.print_aka,
+            skip_scoped_type_names: o.skip_scoped_type_names,
+            skip_type_defs: o.skip_type_defs,
+            full_enum_type: o.full_enum_type,
+            typedefs_as_links: o.typedefs_as_links,
+            print_integral_range: o.print_integral_range,
+            friendly_member_char_limit: o.friendly_member_char_limit,
+        }
+    }
+
+    fn to_raw(self) -> sys::slang_type_printing_options {
+        sys::slang_type_printing_options {
+            elide_scope_names: self.elide_scope_names,
+            classes_as_links: self.classes_as_links,
+            enums_as_links: self.enums_as_links,
+            anonymous_type_style: match self.anonymous_type_style {
+                AnonymousTypeStyle::SystemName => sys::SLANG_ANON_TYPE_SYSTEM_NAME,
+                AnonymousTypeStyle::FriendlyName => sys::SLANG_ANON_TYPE_FRIENDLY_NAME,
+            },
+            has_quote_char: self.quote_char.is_some(),
+            quote_char: self
+                .quote_char
+                .map(|c| c as u8 as core::ffi::c_char)
+                .unwrap_or(0),
+            print_aka: self.print_aka,
+            skip_scoped_type_names: self.skip_scoped_type_names,
+            skip_type_defs: self.skip_type_defs,
+            full_enum_type: self.full_enum_type,
+            typedefs_as_links: self.typedefs_as_links,
+            print_integral_range: self.print_integral_range,
+            friendly_member_char_limit: self.friendly_member_char_limit,
+        }
+    }
+}
+
+/// A utility object that renders [`Type`]s to a string in SystemVerilog
+/// syntax, accumulating into its own internal buffer across calls to
+/// [`append`](Self::append). Independent of any [`Design`]'s frozen arena
+/// (it allocates only its own buffer on the regular process heap), so it may
+/// be created, used, and destroyed freely while a `Design` is shared
+/// read-only across threads. Mirrors `slang::ast::TypePrinter`.
+pub struct TypePrinter {
+    raw: sys::slang_type_printer,
+}
+
+// SAFETY: a TypePrinter exclusively owns its own buffer and touches no
+// state shared with any other handle, so moving it across threads (the only
+// thing `Send` grants — `TypePrinter` is not `Sync`, so concurrent access
+// still requires external synchronization) is sound.
+unsafe impl Send for TypePrinter {}
+
+impl Default for TypePrinter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for TypePrinter {
+    fn drop(&mut self) {
+        // SAFETY: `raw` is a valid owned handle, dropped exactly once.
+        unsafe { sys::slang_type_printer_destroy(self.raw) };
+    }
+}
+
+impl TypePrinter {
+    /// Creates a new type printer with slang's default options (see
+    /// [`TypePrintingOptions::default`]).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let t = body.find("x").unwrap().value_type().unwrap();
+    /// let mut printer = sv_lang::TypePrinter::new();
+    /// printer.append(&t);
+    /// assert_eq!(printer.text(), "logic[7:0]");
+    /// # Ok(()) }
+    /// ```
+    pub fn new() -> Self {
+        let mut err = ffi::error();
+        // SAFETY: out-error checked; on success the returned handle is
+        // non-null.
+        let raw = unsafe { sys::slang_type_printer_create(&mut err) };
+        assert!(!raw.is_null(), "slang_type_printer_create failed");
+        TypePrinter { raw }
+    }
+
+    /// Appends `ty` to the printer's internal string buffer, rendered in
+    /// SystemVerilog syntax. A pure read of `ty` (mutates only this
+    /// printer's own buffer, never the design's frozen arena). Mirrors
+    /// `slang::ast::TypePrinter::append`.
+    pub fn append(&mut self, ty: &Type<'_>) {
+        // SAFETY: `self.raw` is a valid owned handle; `ty.raw` is a valid
+        // type node.
+        unsafe { sys::slang_type_printer_append(self.raw, ty.raw) };
+    }
+
+    /// Clears the printer's internal string buffer. Mirrors
+    /// `slang::ast::TypePrinter::clear`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let t = body.find("x").unwrap().value_type().unwrap();
+    /// let mut printer = sv_lang::TypePrinter::new();
+    /// printer.append(&t);
+    /// assert!(!printer.text().is_empty());
+    /// printer.clear();
+    /// assert!(printer.text().is_empty());
+    /// # Ok(()) }
+    /// ```
+    pub fn clear(&mut self) {
+        // SAFETY: `self.raw` is a valid owned handle.
+        unsafe { sys::slang_type_printer_clear(self.raw) };
+    }
+
+    /// Returns the printer's accumulated string buffer as a copy. Named
+    /// `text` rather than `to_string` since an inherent `to_string` would
+    /// shadow (and is linted against as a substitute for) `Display`. Mirrors
+    /// `slang::ast::TypePrinter::toString`.
+    pub fn text(&self) -> String {
+        let mut err = ffi::error();
+        // SAFETY: `self.raw` is a valid owned handle; the string is owned.
+        unsafe { ffi::owned_str(sys::slang_type_printer_to_string(self.raw, &mut err)) }
+    }
+
+    /// The printer's current options (see [`TypePrintingOptions`]). Mirrors
+    /// reading `slang::ast::TypePrinter::options`.
+    pub fn options(&self) -> TypePrintingOptions {
+        // SAFETY: `self.raw` is a valid owned handle.
+        TypePrintingOptions::from_raw(unsafe { sys::slang_type_printer_options(self.raw) })
+    }
+
+    /// Replaces the printer's options wholesale (see
+    /// [`TypePrintingOptions`]). Mirrors writing
+    /// `slang::ast::TypePrinter::options`.
+    ///
+    /// # Examples
+    /// ```
+    /// use sv_lang::{AnonymousTypeStyle, TypePrintingOptions, TypePrinter};
+    ///
+    /// let mut printer = TypePrinter::new();
+    /// assert_eq!(printer.options().anonymous_type_style, AnonymousTypeStyle::SystemName);
+    /// assert!(!printer.options().classes_as_links);
+    ///
+    /// printer.set_options(TypePrintingOptions {
+    ///     anonymous_type_style: AnonymousTypeStyle::FriendlyName,
+    ///     classes_as_links: true,
+    ///     ..Default::default()
+    /// });
+    /// assert_eq!(printer.options().anonymous_type_style, AnonymousTypeStyle::FriendlyName);
+    /// assert!(printer.options().classes_as_links);
+    /// ```
+    pub fn set_options(&mut self, options: TypePrintingOptions) {
+        // SAFETY: `self.raw` is a valid owned handle.
+        unsafe { sys::slang_type_printer_set_options(self.raw, options.to_raw()) };
+    }
+}
+
+impl Expression<'_> {
+    /// Cross-crate accessor for the raw handle (used by `dataflow`'s
+    /// `FlowContext::eval_constant`).
+    pub(crate) fn raw(&self) -> sys::slang_ast {
+        self.raw
+    }
 }
 
 impl<'d> Expression<'d> {
@@ -1894,6 +16491,179 @@ impl<'d> Expression<'d> {
         wrap(ast)
     }
 
+    /// Asserts `other` comes from the same compilation as `self`. See
+    /// [`Type::assert_same_compilation`] for why the shared `'d` brand alone
+    /// is not proof.
+    fn assert_same_compilation(&self, other: sys::slang_ast, what: &str) {
+        assert!(
+            self.raw.compilation == other.compilation,
+            "{what} across two different Designs"
+        );
+    }
+
+    /// The symbol this expression directly references — mirrors
+    /// [`slang::ast::Expression::getSymbolReference`][ref]. Unlike
+    /// [`referenced_symbol`](Self::referenced_symbol) (which always behaves
+    /// as if `allow_packed` were `true`), passing `false` excludes a select
+    /// or member access into a *packed* type: only unpacked aggregates
+    /// (arrays, structs, unions, object handles) then count as an
+    /// addressable whole symbol. `None` if this expression has no direct
+    /// symbol reference.
+    ///
+    /// [ref]: https://sv-lang.com/classslang_1_1ast_1_1_expression.html
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic [7:0] packed_arr; logic sel = packed_arr[0]; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let sel = body.find("sel").unwrap().initializer().unwrap(); // `packed_arr[0]`
+    /// assert_eq!(
+    ///     sel.symbol_reference(true).unwrap().name(),
+    ///     "packed_arr"
+    /// );
+    /// // A select into a *packed* array is excluded when `allow_packed` is false.
+    /// assert!(sel.symbol_reference(false).is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn symbol_reference(&self, allow_packed: bool) -> Option<Symbol<'d>> {
+        // SAFETY: the expression is valid.
+        wrap(unsafe { sys::slang_expr_symbol_reference(self.raw, allow_packed) })
+    }
+
+    /// True if any subexpression of this expression is a hierarchical
+    /// reference (a name resolved via `scope.member`-style hierarchical
+    /// lookup, rather than ordinary lexical scoping).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module leaf; logic [7:0] v = 8'd1; endmodule\n\
+    /// #      module top; leaf u_leaf(); logic [7:0] w = u_leaf.v; logic [7:0] z = 8'd2; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("w").unwrap().initializer().unwrap().has_hierarchical_reference());
+    /// assert!(!body.find("z").unwrap().initializer().unwrap().has_hierarchical_reference());
+    /// # Ok(()) }
+    /// ```
+    pub fn has_hierarchical_reference(&self) -> bool {
+        // SAFETY: the expression is valid.
+        unsafe { sys::slang_expr_has_hierarchical_reference(self.raw) }
+    }
+
+    /// True if `self` is structurally equivalent to `other` (same shape and
+    /// constants once implicit type conversions are looked through).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic [7:0] x; wire [7:0] a = x + 1; wire [7:0] b = x + 1;\n\
+    /// #      wire [7:0] c = x + 2; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let a = body.find("a").unwrap().initializer().unwrap();
+    /// let b = body.find("b").unwrap().initializer().unwrap();
+    /// let c = body.find("c").unwrap().initializer().unwrap();
+    /// assert!(a.is_equivalent_to(&b));
+    /// assert!(!a.is_equivalent_to(&c));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_equivalent_to(&self, other: &Expression<'d>) -> bool {
+        self.assert_same_compilation(other.raw, "Expression comparison");
+        // SAFETY: both are valid and (asserted) from the same compilation.
+        unsafe { sys::slang_expr_is_equivalent_to(self.raw, other.raw) }
+    }
+
+    /// True if this expression is implicitly treated as a string in a
+    /// string context — a string literal, or an integral expression built
+    /// up out of string literals via operators, concatenation, replication,
+    /// or a value range.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; localparam bit [15:0] s = {\"h\", \"i\"}; localparam int n = 4; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("s").unwrap().initializer().unwrap().is_implicit_string());
+    /// assert!(!body.find("n").unwrap().initializer().unwrap().is_implicit_string());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_implicit_string(&self) -> bool {
+        // SAFETY: the expression is valid.
+        unsafe { sys::slang_expr_is_implicit_string(self.raw) }
+    }
+
+    /// True if this expression could be implicitly assigned to a value of
+    /// `ty` (IEEE 1800 §6.22.3 assignment compatibility, plus the
+    /// string/enum/relaxed-conversion special cases).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; typedef enum { A, B } e_t;\n\
+    /// #      logic [7:0] x = 8'd1; logic [3:0] y = 4'd2; e_t z; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("x").unwrap().initializer().unwrap();
+    /// let y_ty = body.find("y").unwrap().value_type().unwrap();
+    /// let z_ty = body.find("z").unwrap().value_type().unwrap();
+    /// // Any two integral types are assignment-compatible regardless of width.
+    /// assert!(x.is_implicitly_assignable_to(&y_ty));
+    /// // A plain integral value is not implicitly assignable to an unrelated enum.
+    /// assert!(!x.is_implicitly_assignable_to(&z_ty));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_implicitly_assignable_to(&self, ty: &Type<'d>) -> bool {
+        self.assert_same_compilation(ty.raw, "Expression/Type comparison");
+        // SAFETY: both are valid and (asserted) from the same compilation.
+        unsafe { sys::slang_expr_is_implicitly_assignable_to(self.raw, ty.raw) }
+    }
+
+    /// True if this expression is represented by an unsized integer value —
+    /// an integer literal written without an explicit size (e.g. the `4` in
+    /// `x + 4`), or an unbased unsized literal (`'1`, `'z`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; localparam int a = 4; localparam int b = 8'd4; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert!(body.find("a").unwrap().initializer().unwrap().is_unsized_integer());
+    /// assert!(!body.find("b").unwrap().initializer().unwrap().is_unsized_integer());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_unsized_integer(&self) -> bool {
+        // SAFETY: the expression is valid.
+        unsafe { sys::slang_expr_is_unsized_integer(self.raw) }
+    }
+
     /// The already-folded constant value, printed as SystemVerilog, if this
     /// expression has one cached (see [`FreezeReport`]). This never evaluates,
     /// so it is a pure read safe on a shared design. Owned.
@@ -1949,6 +16719,1199 @@ impl<'d> Expression<'d> {
         }
         // SAFETY: `raw` is a valid owned handle (or null); consumed.
         unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// Internal: the already-folded constant as an owned raw handle (see
+    /// [`constant_value`](Self::constant_value)), for the derived
+    /// `constant_*` accessors below to further transform. The caller takes
+    /// ownership (must eventually `slang_constant_destroy` it). `None` if
+    /// there is no cached constant.
+    fn folded_constant_raw(&self) -> Option<sys::slang_constant> {
+        let mut err = ffi::error();
+        // SAFETY: the expression is valid; out-error checked.
+        let raw = unsafe { sys::slang_expression_constant_value(self.raw, &mut err) };
+        if ffi::check(&err).is_err() || raw.is_null() {
+            if !raw.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        Some(raw)
+    }
+
+    /// The size in bits of the already-folded constant when flattened to a
+    /// bitstream: the bit width for an integer, `8 * length` for a string,
+    /// or the recursive sum of element widths for an array/queue/union.
+    /// Mirrors `slang::ConstantValue::getBitstreamWidth`. `None` if the
+    /// expression has no cached constant. A pure read.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam logic [15:0] X = 16'd12; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_bitstream_width(), Some(16));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_bitstream_width(&self) -> Option<u64> {
+        let raw = self.folded_constant_raw()?;
+        // SAFETY: `raw` is valid; pure read, no allocation.
+        let width = unsafe { sys::slang_constant_bitstream_width(raw) };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        Some(width)
+    }
+
+    /// A slice `[upper:lower]` of the already-folded constant, with an
+    /// implicit "bad" fill for any out-of-range unpacked-array element.
+    /// Mirrors `slang::ConstantValue::getSlice` with a bad default value.
+    /// Valid for an integer (a bit-range slice), an unpacked array or queue
+    /// (an element range), or a string (a single-character select, which
+    /// requires `upper == lower`). `None` if the expression has no cached
+    /// constant, or the constant is not one of those kinds.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam logic [7:0] X = 8'hAB; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let low_nibble = init.constant_slice(3, 0).unwrap();
+    /// assert_eq!(low_nibble.as_i64(), Some(0xB));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_slice(&self, upper: i32, lower: i32) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        let mut err = ffi::error();
+        // SAFETY: `raw` valid; out-error checked.
+        let sliced = unsafe { sys::slang_constant_get_slice(raw, upper, lower, &mut err) };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        if ffi::check(&err).is_err() {
+            if !sliced.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(sliced) };
+            }
+            return None;
+        }
+        // SAFETY: `sliced` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(sliced) }
+    }
+
+    /// The already-folded constant converted to `real`. Mirrors
+    /// `slang::ConstantValue::convertToReal`. `None` if the expression has
+    /// no cached constant, or the constant is not real/shortreal/integer.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam int X = 4; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_as_real().unwrap().as_f64(), Some(4.0));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_as_real(&self) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        let mut err = ffi::error();
+        // SAFETY: `raw` valid; out-error checked.
+        let converted = unsafe { sys::slang_constant_convert_to_real(raw, &mut err) };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        if ffi::check(&err).is_err() {
+            if !converted.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(converted) };
+            }
+            return None;
+        }
+        // SAFETY: `converted` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(converted) }
+    }
+
+    /// The already-folded constant converted to `shortreal`. Mirrors
+    /// `slang::ConstantValue::convertToShortReal`. `None` if the expression
+    /// has no cached constant, or the constant is not real/shortreal/
+    /// integer.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam int X = 4; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_as_short_real().unwrap().as_f64(), Some(4.0));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_as_short_real(&self) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        let mut err = ffi::error();
+        // SAFETY: `raw` valid; out-error checked.
+        let converted = unsafe { sys::slang_constant_convert_to_short_real(raw, &mut err) };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        if ffi::check(&err).is_err() {
+            if !converted.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(converted) };
+            }
+            return None;
+        }
+        // SAFETY: `converted` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(converted) }
+    }
+
+    /// The already-folded constant converted to a string per IEEE 1800-2017
+    /// §6.16 (each 8-bit chunk of an integer, MSB-first, becomes a
+    /// character, with all-zero chunks dropped). Mirrors
+    /// `slang::ConstantValue::convertToStr`. `None` if the expression has no
+    /// cached constant, or the constant is neither a string nor an integer.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [23:0] X = \"hi!\"; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_as_str().unwrap().as_str(), Some("hi!"));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_as_str(&self) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        let mut err = ffi::error();
+        // SAFETY: `raw` valid; out-error checked.
+        let converted = unsafe { sys::slang_constant_convert_to_str(raw, &mut err) };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        if ffi::check(&err).is_err() {
+            if !converted.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(converted) };
+            }
+            return None;
+        }
+        // SAFETY: `converted` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(converted) }
+    }
+
+    /// The already-folded constant converted to a fixed-size unpacked array
+    /// of `size` 8-bit (`is_signed`) byte constants — an integer or string
+    /// is first converted to a string (as [`constant_as_str`](Self::constant_as_str))
+    /// and then packed one character per byte, zero-padded or truncated to
+    /// `size`; an unpacked array is passed through unchanged. `size` 0 uses
+    /// the natural (string) length. Mirrors
+    /// `slang::ConstantValue::convertToByteArray`. `None` if the expression
+    /// has no cached constant, or the constant is none of those kinds.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [15:0] X = \"hi\"; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let bytes = init.constant_as_byte_array(0, false).unwrap();
+    /// assert_eq!(bytes.as_array().map(|a| a.len()), Some(2));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_as_byte_array(
+        &self,
+        size: u32,
+        is_signed: bool,
+    ) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        let mut err = ffi::error();
+        // SAFETY: `raw` valid; out-error checked.
+        let converted =
+            unsafe { sys::slang_constant_convert_to_byte_array(raw, size, is_signed, &mut err) };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        if ffi::check(&err).is_err() {
+            if !converted.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(converted) };
+            }
+            return None;
+        }
+        // SAFETY: `converted` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(converted) }
+    }
+
+    /// The already-folded constant converted to a queue of 8-bit
+    /// (`is_signed`) byte constants — an integer or string is first
+    /// converted to a string (as [`constant_as_str`](Self::constant_as_str))
+    /// and then packed one character per element; a queue is passed through
+    /// unchanged. Mirrors `slang::ConstantValue::convertToByteQueue`. `None`
+    /// if the expression has no cached constant, or the constant is none of
+    /// those kinds.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [15:0] X = \"hi\"; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let bytes = init.constant_as_byte_queue(false).unwrap();
+    /// assert_eq!(bytes.as_array().map(|a| a.len()), Some(2));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_as_byte_queue(&self, is_signed: bool) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        let mut err = ffi::error();
+        // SAFETY: `raw` valid; out-error checked.
+        let converted =
+            unsafe { sys::slang_constant_convert_to_byte_queue(raw, is_signed, &mut err) };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        if ffi::check(&err).is_err() {
+            if !converted.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(converted) };
+            }
+            return None;
+        }
+        // SAFETY: `converted` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(converted) }
+    }
+
+    /// Internal: runs `f` with the borrowed `slang_svint` of the
+    /// already-folded constant, if it is an integer. Destroys the temporary
+    /// constant handle afterwards, so `f` must not let the svint escape.
+    fn with_folded_svint<T>(&self, f: impl FnOnce(sys::slang_svint) -> T) -> Option<T> {
+        let raw = self.folded_constant_raw()?;
+        // SAFETY: `raw` is valid; the returned handle borrows it and is used
+        // only while `raw` is still alive, below.
+        let v = unsafe { sys::slang_constant_integer(raw) };
+        let result = if v.is_null() { None } else { Some(f(v)) };
+        // SAFETY: we own `raw` and are done reading it (and anything
+        // borrowed from it, per `f`'s contract).
+        unsafe { sys::slang_constant_destroy(raw) };
+        result
+    }
+
+    /// The minimum number of bits needed to represent the already-folded
+    /// integer constant's value — [`SVInt::active_bits`](crate::SVInt::active_bits)
+    /// plus one when a signed value's top active bit would otherwise be
+    /// mistaken for the sign bit, collapsing to 1 for an all-zero value.
+    /// Mirrors `slang::SVInt::getMinRepresentedBits`. `None` if the
+    /// expression has no cached integer constant. A pure read.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam int X = 4; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_min_represented_bits(), Some(4));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_min_represented_bits(&self) -> Option<u32> {
+        // SAFETY: `v` is valid for the duration of the call.
+        self.with_folded_svint(|v| unsafe { sys::slang_svint_min_represented_bits(v) })
+    }
+
+    /// Whether the already-folded integer constant's value is even (its
+    /// low-order bit is 0). Mirrors `slang::SVInt::isEven`. `None` if the
+    /// expression has no cached integer constant. A pure read.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam int X = 4; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_is_even(), Some(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_is_even(&self) -> Option<bool> {
+        // SAFETY: `v` is valid for the duration of the call.
+        self.with_folded_svint(|v| unsafe { sys::slang_svint_is_even(v) })
+    }
+
+    /// Whether the already-folded integer constant's value is odd (its
+    /// low-order bit is 1). Mirrors `slang::SVInt::isOdd`. `None` if the
+    /// expression has no cached integer constant. A pure read.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam int X = 5; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_is_odd(), Some(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_is_odd(&self) -> Option<bool> {
+        // SAFETY: `v` is valid for the duration of the call.
+        self.with_folded_svint(|v| unsafe { sys::slang_svint_is_odd(v) })
+    }
+
+    /// Whether the already-folded integer constant's most-significant bit is
+    /// set (a raw top-bit test, independent of the value's declared
+    /// signedness). Mirrors `slang::SVInt::isNegative`. `None` if the
+    /// expression has no cached integer constant. A pure read.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit signed [7:0] X = -1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_is_negative(), Some(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_is_negative(&self) -> Option<bool> {
+        // SAFETY: `v` is valid for the duration of the call.
+        self.with_folded_svint(|v| unsafe { sys::slang_svint_is_negative(v) })
+    }
+
+    /// Whether every bit of the already-folded integer constant from `msb`
+    /// (inclusive) up to the top bit equals the sign bit (bit
+    /// `bit_width - 1`). Mirrors `slang::SVInt::isSignExtendedFrom`. `None`
+    /// if the expression has no cached integer constant. A pure read.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit signed [7:0] X = -1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_is_sign_extended_from(0), Some(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_is_sign_extended_from(&self, msb: u32) -> Option<bool> {
+        // SAFETY: `v` is valid for the duration of the call.
+        self.with_folded_svint(|v| unsafe { sys::slang_svint_is_sign_extended_from(v, msb) })
+    }
+
+    /// The bitwise AND-reduction of every bit of the already-folded integer
+    /// constant. Mirrors `slang::SVInt::reductionAnd`. `None` if the
+    /// expression has no cached integer constant. A pure read.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b1111; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_reduction_and(), Some(sv_lang::Bit::One));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_reduction_and(&self) -> Option<crate::Bit> {
+        self.with_folded_svint(|v| {
+            // SAFETY: `v` is valid for the duration of the call.
+            crate::Bit::from_raw(unsafe { sys::slang_svint_reduction_and(v) })
+        })
+    }
+
+    /// The bitwise OR-reduction of every bit of the already-folded integer
+    /// constant. Mirrors `slang::SVInt::reductionOr`. `None` if the
+    /// expression has no cached integer constant. A pure read.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b0100; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_reduction_or(), Some(sv_lang::Bit::One));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_reduction_or(&self) -> Option<crate::Bit> {
+        self.with_folded_svint(|v| {
+            // SAFETY: `v` is valid for the duration of the call.
+            crate::Bit::from_raw(unsafe { sys::slang_svint_reduction_or(v) })
+        })
+    }
+
+    /// The bitwise XOR-reduction (parity) of every bit of the already-folded
+    /// integer constant. Mirrors `slang::SVInt::reductionXor`. `None` if the
+    /// expression has no cached integer constant. A pure read.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b0111; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_reduction_xor(), Some(sv_lang::Bit::One));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_reduction_xor(&self) -> Option<crate::Bit> {
+        self.with_folded_svint(|v| {
+            // SAFETY: `v` is valid for the duration of the call.
+            crate::Bit::from_raw(unsafe { sys::slang_svint_reduction_xor(v) })
+        })
+    }
+
+    /// Internal: runs `f` with the borrowed `slang_svint`s of `self`'s and
+    /// `rhs`'s already-folded integer constants, if both are integers.
+    /// Destroys both temporary constant handles afterwards, so `f` must not
+    /// let either svint escape.
+    fn with_folded_svint_pair<T>(
+        &self,
+        rhs: &Expression<'_>,
+        f: impl FnOnce(sys::slang_svint, sys::slang_svint) -> T,
+    ) -> Option<T> {
+        let lraw = self.folded_constant_raw()?;
+        let Some(rraw) = rhs.folded_constant_raw() else {
+            // SAFETY: we own `lraw` and are done reading it.
+            unsafe { sys::slang_constant_destroy(lraw) };
+            return None;
+        };
+        // SAFETY: both handles are valid; the borrowed svints are used only
+        // while both are still alive, below.
+        let lv = unsafe { sys::slang_constant_integer(lraw) };
+        // SAFETY: as above.
+        let rv = unsafe { sys::slang_constant_integer(rraw) };
+        let result = if lv.is_null() || rv.is_null() {
+            None
+        } else {
+            Some(f(lv, rv))
+        };
+        // SAFETY: we own both handles and are done reading them (and
+        // anything borrowed from them, per `f`'s contract).
+        unsafe { sys::slang_constant_destroy(lraw) };
+        // SAFETY: as above.
+        unsafe { sys::slang_constant_destroy(rraw) };
+        result
+    }
+
+    /// Four-state logical implication `self -> rhs` (`!self || rhs` under
+    /// reduction-OR truthiness) between the already-folded integer constants
+    /// of `self` and `rhs`. Mirrors the static `slang::SVInt::logicalImpl`.
+    /// `None` if either expression has no cached integer constant.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit X = 0; localparam bit Y = 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap().initializer().unwrap();
+    /// let y = body.find("Y").unwrap().initializer().unwrap();
+    /// assert_eq!(x.constant_logical_impl(&y), Some(sv_lang::Bit::One));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_logical_impl(&self, rhs: &Expression<'_>) -> Option<crate::Bit> {
+        self.with_folded_svint_pair(rhs, |lv, rv| {
+            // SAFETY: `lv`/`rv` are valid for the duration of this call.
+            crate::Bit::from_raw(unsafe { sys::slang_svint_logical_impl(lv, rv) })
+        })
+    }
+
+    /// Four-state logical equivalence (`logical_impl(self, rhs) &&
+    /// logical_impl(rhs, self)`) between the already-folded integer
+    /// constants of `self` and `rhs`. Mirrors the static
+    /// `slang::SVInt::logicalEquiv`. `None` if either expression has no
+    /// cached integer constant.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit X = 1; localparam bit Y = 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap().initializer().unwrap();
+    /// let y = body.find("Y").unwrap().initializer().unwrap();
+    /// assert_eq!(x.constant_logical_equiv(&y), Some(sv_lang::Bit::One));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_logical_equiv(&self, rhs: &Expression<'_>) -> Option<crate::Bit> {
+        self.with_folded_svint_pair(rhs, |lv, rv| {
+            // SAFETY: `lv`/`rv` are valid for the duration of this call.
+            crate::Bit::from_raw(unsafe { sys::slang_svint_logical_equiv(lv, rv) })
+        })
+    }
+
+    /// `self` raised to the power `rhs` (IEEE 1800 `**` semantics), computed
+    /// over the already-folded integer constants of `self` and `rhs`, as a
+    /// new [`ConstantValue`](crate::ConstantValue) of the same bit width as
+    /// `self`'s. Mirrors `slang::SVInt::pow`. `None` if either expression has
+    /// no cached integer constant, or the underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam int X = 2; localparam int Y = 10; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap().initializer().unwrap();
+    /// let y = body.find("Y").unwrap().initializer().unwrap();
+    /// assert_eq!(x.constant_pow(&y).unwrap().as_i64(), Some(1024));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_pow(&self, rhs: &Expression<'_>) -> Option<crate::ConstantValue> {
+        let lraw = self.folded_constant_raw()?;
+        let Some(rraw) = rhs.folded_constant_raw() else {
+            // SAFETY: we own `lraw` and are done reading it.
+            unsafe { sys::slang_constant_destroy(lraw) };
+            return None;
+        };
+        // SAFETY: both handles valid, alive for the duration of this call.
+        let lv = unsafe { sys::slang_constant_integer(lraw) };
+        // SAFETY: as above.
+        let rv = unsafe { sys::slang_constant_integer(rraw) };
+        let result = if lv.is_null() || rv.is_null() {
+            None
+        } else {
+            let mut err = ffi::error();
+            // SAFETY: `lv`/`rv` valid; out-error checked.
+            let out = unsafe { sys::slang_svint_pow(lv, rv, &mut err) };
+            if ffi::check(&err).is_err() {
+                if !out.is_null() {
+                    // SAFETY: a non-null handle on error is still owned; free it.
+                    unsafe { sys::slang_constant_destroy(out) };
+                }
+                None
+            } else {
+                // SAFETY: `out` is a valid owned handle (or null); consumed.
+                unsafe { crate::ConstantValue::from_raw(out) }
+            }
+        };
+        // SAFETY: we own both handles and are done reading them.
+        unsafe { sys::slang_constant_destroy(lraw) };
+        // SAFETY: as above.
+        unsafe { sys::slang_constant_destroy(rraw) };
+        result
+    }
+
+    /// `self` concatenated with itself `times` times (IEEE 1800 multiple
+    /// concatenation), computed over the already-folded integer constants of
+    /// `self` and `times`, as a new [`ConstantValue`](crate::ConstantValue).
+    /// Mirrors `slang::SVInt::replicate` (`times` must be a known,
+    /// non-negative, 32-bit-representable value). `None` if either
+    /// expression has no cached integer constant, or the underlying call
+    /// fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [1:0] X = 2'b10; localparam int N = 3; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap().initializer().unwrap();
+    /// let n = body.find("N").unwrap().initializer().unwrap();
+    /// let rep = x.constant_replicate(&n).unwrap();
+    /// assert_eq!(rep.as_integer().unwrap().bit_width(), 6);
+    /// assert_eq!(rep.as_i64(), Some(0b10_10_10));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_replicate(&self, times: &Expression<'_>) -> Option<crate::ConstantValue> {
+        let lraw = self.folded_constant_raw()?;
+        let Some(rraw) = times.folded_constant_raw() else {
+            // SAFETY: we own `lraw` and are done reading it.
+            unsafe { sys::slang_constant_destroy(lraw) };
+            return None;
+        };
+        // SAFETY: both handles valid, alive for the duration of this call.
+        let lv = unsafe { sys::slang_constant_integer(lraw) };
+        // SAFETY: as above.
+        let rv = unsafe { sys::slang_constant_integer(rraw) };
+        let result = if lv.is_null() || rv.is_null() {
+            None
+        } else {
+            let mut err = ffi::error();
+            // SAFETY: `lv`/`rv` valid; out-error checked.
+            let out = unsafe { sys::slang_svint_replicate(lv, rv, &mut err) };
+            if ffi::check(&err).is_err() {
+                if !out.is_null() {
+                    // SAFETY: a non-null handle on error is still owned; free it.
+                    unsafe { sys::slang_constant_destroy(out) };
+                }
+                None
+            } else {
+                // SAFETY: `out` is a valid owned handle (or null); consumed.
+                unsafe { crate::ConstantValue::from_raw(out) }
+            }
+        };
+        // SAFETY: we own both handles and are done reading them.
+        unsafe { sys::slang_constant_destroy(lraw) };
+        // SAFETY: as above.
+        unsafe { sys::slang_constant_destroy(rraw) };
+        result
+    }
+
+    /// Internal: shared body of `constant_resize`/`constant_sext`/
+    /// `constant_zext` — calls `f` with the borrowed `slang_svint` of the
+    /// already-folded integer constant and `bits`, wrapping the resulting
+    /// new owned constant.
+    fn folded_svint_resize_like(
+        &self,
+        bits: u32,
+        f: unsafe extern "C" fn(
+            sys::slang_svint,
+            u32,
+            *mut sys::slang_error,
+        ) -> sys::slang_constant,
+    ) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        // SAFETY: `raw` valid; the borrowed svint is used only while `raw`
+        // is still alive, below.
+        let v = unsafe { sys::slang_constant_integer(raw) };
+        let result = if v.is_null() {
+            None
+        } else {
+            let mut err = ffi::error();
+            // SAFETY: `v` valid; out-error checked.
+            let out = unsafe { f(v, bits, &mut err) };
+            if ffi::check(&err).is_err() {
+                if !out.is_null() {
+                    // SAFETY: a non-null handle on error is still owned; free it.
+                    unsafe { sys::slang_constant_destroy(out) };
+                }
+                None
+            } else {
+                // SAFETY: `out` is a valid owned handle (or null); consumed.
+                unsafe { crate::ConstantValue::from_raw(out) }
+            }
+        };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        result
+    }
+
+    /// The already-folded integer constant resized to `bits`: truncated if
+    /// smaller, sign/zero-extended (per its own signedness) if larger,
+    /// unchanged if equal. Mirrors `slang::SVInt::resize`. `None` if the
+    /// expression has no cached integer constant, `bits` is 0, or the
+    /// underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [7:0] X = 8'hAB; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let resized = init.constant_resize(4).unwrap();
+    /// assert_eq!(resized.as_integer().unwrap().bit_width(), 4);
+    /// assert_eq!(resized.as_i64(), Some(0xB));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_resize(&self, bits: u32) -> Option<crate::ConstantValue> {
+        self.folded_svint_resize_like(bits, sys::slang_svint_resize)
+    }
+
+    /// The already-folded integer constant with its bits reversed (bit 0 and
+    /// the top bit swap, and so on), as a new
+    /// [`ConstantValue`](crate::ConstantValue) of the same width. Mirrors
+    /// `slang::SVInt::reverse`. `None` if the expression has no cached
+    /// integer constant, or the underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b1000; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let reversed = init.constant_reverse().unwrap();
+    /// assert_eq!(reversed.as_i64(), Some(0b0001));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_reverse(&self) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        // SAFETY: `raw` valid; the borrowed svint is used only while `raw`
+        // is still alive, below.
+        let v = unsafe { sys::slang_constant_integer(raw) };
+        let result = if v.is_null() {
+            None
+        } else {
+            let mut err = ffi::error();
+            // SAFETY: `v` valid; out-error checked.
+            let out = unsafe { sys::slang_svint_reverse(v, &mut err) };
+            if ffi::check(&err).is_err() {
+                if !out.is_null() {
+                    // SAFETY: a non-null handle on error is still owned; free it.
+                    unsafe { sys::slang_constant_destroy(out) };
+                }
+                None
+            } else {
+                // SAFETY: `out` is a valid owned handle (or null); consumed.
+                unsafe { crate::ConstantValue::from_raw(out) }
+            }
+        };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        result
+    }
+
+    /// The already-folded integer constant sign-extended to `bits`. Mirrors
+    /// `slang::SVInt::sext`. `None` if the expression has no cached integer
+    /// constant, `bits` is not strictly greater than the constant's own bit
+    /// width, or the underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit signed [3:0] X = -4'sd1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let sexted = init.constant_sext(8).unwrap();
+    /// assert_eq!(sexted.as_integer().unwrap().bit_width(), 8);
+    /// assert_eq!(sexted.as_i64(), Some(-1));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_sext(&self, bits: u32) -> Option<crate::ConstantValue> {
+        self.folded_svint_resize_like(bits, sys::slang_svint_sext)
+    }
+
+    /// The already-folded integer constant zero-extended to `bits`. Mirrors
+    /// `slang::SVInt::zext`. `None` if the expression has no cached integer
+    /// constant, `bits` is not strictly greater than the constant's own bit
+    /// width, or the underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit signed [3:0] X = -4'sd1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let zexted = init.constant_zext(8).unwrap();
+    /// assert_eq!(zexted.as_integer().unwrap().bit_width(), 8);
+    /// assert_eq!(zexted.as_i64(), Some(0xF));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_zext(&self, bits: u32) -> Option<crate::ConstantValue> {
+        self.folded_svint_resize_like(bits, sys::slang_svint_zext)
+    }
+
+    /// The already-folded integer constant extended to `bits`: sign-extended
+    /// (mirrors `slang::SVInt::sext`) if `is_signed` is true, zero-extended
+    /// (mirrors `slang::SVInt::zext`) otherwise. Mirrors
+    /// `slang::SVInt::extend`. `None` if the expression has no cached
+    /// integer constant, `bits` is not strictly greater than the constant's
+    /// own bit width, or the underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit signed [3:0] X = -4'sd1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let sexted = init.constant_extend(8, true).unwrap();
+    /// assert_eq!(sexted.as_i64(), Some(-1));
+    /// let zexted = init.constant_extend(8, false).unwrap();
+    /// assert_eq!(zexted.as_i64(), Some(0xF));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_extend(&self, bits: u32, is_signed: bool) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        // SAFETY: `raw` valid; the borrowed svint is used only while `raw`
+        // is still alive, below.
+        let v = unsafe { sys::slang_constant_integer(raw) };
+        let result = if v.is_null() {
+            None
+        } else {
+            let mut err = ffi::error();
+            // SAFETY: `v` valid; out-error checked.
+            let out = unsafe { sys::slang_svint_extend(v, bits, is_signed, &mut err) };
+            if ffi::check(&err).is_err() {
+                if !out.is_null() {
+                    // SAFETY: a non-null handle on error is still owned; free it.
+                    unsafe { sys::slang_constant_destroy(out) };
+                }
+                None
+            } else {
+                // SAFETY: `out` is a valid owned handle (or null); consumed.
+                unsafe { crate::ConstantValue::from_raw(out) }
+            }
+        };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        result
+    }
+
+    /// The already-folded integer constant truncated to its low `bits` bits.
+    /// Mirrors `slang::SVInt::trunc`. `None` if the expression has no cached
+    /// integer constant, `bits` is 0, `bits` exceeds the constant's own bit
+    /// width, or the underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [7:0] X = 8'hAB; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let truncated = init.constant_trunc(4).unwrap();
+    /// assert_eq!(truncated.as_integer().unwrap().bit_width(), 4);
+    /// assert_eq!(truncated.as_i64(), Some(0xB));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_trunc(&self, bits: u32) -> Option<crate::ConstantValue> {
+        self.folded_svint_resize_like(bits, sys::slang_svint_trunc)
+    }
+
+    /// A subrange `[msb:lsb]` of the already-folded integer constant's bits,
+    /// as a new `ConstantValue` of width `msb - lsb + 1`. An out-of-range
+    /// index comes back as x (slang's own out-of-bounds handling), so this
+    /// only fails on `msb < lsb`. Mirrors `slang::SVInt::slice` directly.
+    /// (See also [`constant_slice`](Self::constant_slice), the more general
+    /// `slang::ConstantValue::getSlice` — which, for an integer, is defined
+    /// as exactly this same call.) `None` if the expression has no cached
+    /// integer constant, `msb < lsb`, or the underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [7:0] X = 8'hA5; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let sliced = init.constant_bit_slice(3, 0).unwrap();
+    /// assert_eq!(sliced.as_integer().unwrap().bit_width(), 4);
+    /// assert_eq!(sliced.as_i64(), Some(0x5));
+    /// // Out-of-range bits come back as x, matching `SVInt::slice`.
+    /// let oob = init.constant_bit_slice(11, 8).unwrap();
+    /// assert!(oob.as_integer().unwrap().has_unknown());
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_bit_slice(&self, msb: i32, lsb: i32) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        // SAFETY: `raw` valid; the borrowed svint is used only while `raw`
+        // is still alive, below.
+        let v = unsafe { sys::slang_constant_integer(raw) };
+        let result = if v.is_null() {
+            None
+        } else {
+            let mut err = ffi::error();
+            // SAFETY: `v` valid; out-error checked.
+            let out = unsafe { sys::slang_svint_slice(v, msb, lsb, &mut err) };
+            if ffi::check(&err).is_err() {
+                if !out.is_null() {
+                    // SAFETY: a non-null handle on error is still owned; free it.
+                    unsafe { sys::slang_constant_destroy(out) };
+                }
+                None
+            } else {
+                // SAFETY: `out` is a valid owned handle (or null); consumed.
+                unsafe { crate::ConstantValue::from_raw(out) }
+            }
+        };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        result
+    }
+
+    /// Internal: shared body of `constant_and`/`constant_or`/`constant_xor`/
+    /// `constant_xnor` — calls `f` with the borrowed `slang_svint`s of
+    /// `self`'s and `rhs`'s already-folded integer constants, wrapping the
+    /// resulting new owned constant.
+    fn folded_svint_pair_op(
+        &self,
+        rhs: &Expression<'_>,
+        f: unsafe extern "C" fn(
+            sys::slang_svint,
+            sys::slang_svint,
+            *mut sys::slang_error,
+        ) -> sys::slang_constant,
+    ) -> Option<crate::ConstantValue> {
+        let lraw = self.folded_constant_raw()?;
+        let Some(rraw) = rhs.folded_constant_raw() else {
+            // SAFETY: we own `lraw` and are done reading it.
+            unsafe { sys::slang_constant_destroy(lraw) };
+            return None;
+        };
+        // SAFETY: both handles valid, alive for the duration of this call.
+        let lv = unsafe { sys::slang_constant_integer(lraw) };
+        // SAFETY: as above.
+        let rv = unsafe { sys::slang_constant_integer(rraw) };
+        let result = if lv.is_null() || rv.is_null() {
+            None
+        } else {
+            let mut err = ffi::error();
+            // SAFETY: `lv`/`rv` valid; out-error checked.
+            let out = unsafe { f(lv, rv, &mut err) };
+            if ffi::check(&err).is_err() {
+                if !out.is_null() {
+                    // SAFETY: a non-null handle on error is still owned; free it.
+                    unsafe { sys::slang_constant_destroy(out) };
+                }
+                None
+            } else {
+                // SAFETY: `out` is a valid owned handle (or null); consumed.
+                unsafe { crate::ConstantValue::from_raw(out) }
+            }
+        };
+        // SAFETY: we own both handles and are done reading them.
+        unsafe { sys::slang_constant_destroy(lraw) };
+        // SAFETY: as above.
+        unsafe { sys::slang_constant_destroy(rraw) };
+        result
+    }
+
+    /// Bitwise XNOR of the already-folded integer constants of `self` and
+    /// `rhs` (the narrower operand is extended to match, exactly like
+    /// [`constant_and`](Self::constant_and) et al.), as a new
+    /// `ConstantValue`. Mirrors `slang::SVInt::xnor`. `None` if either
+    /// expression has no cached integer constant, or the underlying call
+    /// fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b1100; localparam bit [3:0] Y = 4'b1010; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap().initializer().unwrap();
+    /// let y = body.find("Y").unwrap().initializer().unwrap();
+    /// assert_eq!(x.constant_xnor(&y).unwrap().as_i64(), Some(0b1001));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_xnor(&self, rhs: &Expression<'_>) -> Option<crate::ConstantValue> {
+        self.folded_svint_pair_op(rhs, sys::slang_svint_xnor)
+    }
+
+    /// Bitwise AND of the already-folded integer constants of `self` and
+    /// `rhs` (the narrower operand is extended to match the wider one's
+    /// width and signedness), as a new `ConstantValue`. Mirrors
+    /// `slang::SVInt::operator&`. `None` if either expression has no cached
+    /// integer constant, or the underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b1100; localparam bit [3:0] Y = 4'b1010; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap().initializer().unwrap();
+    /// let y = body.find("Y").unwrap().initializer().unwrap();
+    /// assert_eq!(x.constant_and(&y).unwrap().as_i64(), Some(0b1000));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_and(&self, rhs: &Expression<'_>) -> Option<crate::ConstantValue> {
+        self.folded_svint_pair_op(rhs, sys::slang_svint_and)
+    }
+
+    /// Bitwise OR of the already-folded integer constants of `self` and
+    /// `rhs` (the narrower operand is extended to match), as a new
+    /// `ConstantValue`. Mirrors `slang::SVInt::operator|`. `None` if either
+    /// expression has no cached integer constant, or the underlying call
+    /// fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b1100; localparam bit [3:0] Y = 4'b1010; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap().initializer().unwrap();
+    /// let y = body.find("Y").unwrap().initializer().unwrap();
+    /// assert_eq!(x.constant_or(&y).unwrap().as_i64(), Some(0b1110));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_or(&self, rhs: &Expression<'_>) -> Option<crate::ConstantValue> {
+        self.folded_svint_pair_op(rhs, sys::slang_svint_or)
+    }
+
+    /// Bitwise XOR of the already-folded integer constants of `self` and
+    /// `rhs` (the narrower operand is extended to match), as a new
+    /// `ConstantValue`. Mirrors `slang::SVInt::operator^`. `None` if either
+    /// expression has no cached integer constant, or the underlying call
+    /// fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b1100; localparam bit [3:0] Y = 4'b1010; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap().initializer().unwrap();
+    /// let y = body.find("Y").unwrap().initializer().unwrap();
+    /// assert_eq!(x.constant_xor(&y).unwrap().as_i64(), Some(0b0110));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_xor(&self, rhs: &Expression<'_>) -> Option<crate::ConstantValue> {
+        self.folded_svint_pair_op(rhs, sys::slang_svint_xor)
+    }
+
+    /// Bitwise NOT (one's complement) of the already-folded integer
+    /// constant, as a new `ConstantValue` of the same width. Mirrors
+    /// `slang::SVInt::operator~` (unary). `None` if the expression has no
+    /// cached integer constant, or the underlying call fails.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b1100; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// assert_eq!(init.constant_not().unwrap().as_i64(), Some(0b0011));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_not(&self) -> Option<crate::ConstantValue> {
+        let raw = self.folded_constant_raw()?;
+        // SAFETY: `raw` valid; the borrowed svint is used only while `raw`
+        // is still alive, below.
+        let v = unsafe { sys::slang_constant_integer(raw) };
+        let result = if v.is_null() {
+            None
+        } else {
+            let mut err = ffi::error();
+            // SAFETY: `v` valid; out-error checked.
+            let out = unsafe { sys::slang_svint_not(v, &mut err) };
+            if ffi::check(&err).is_err() {
+                if !out.is_null() {
+                    // SAFETY: a non-null handle on error is still owned; free it.
+                    unsafe { sys::slang_constant_destroy(out) };
+                }
+                None
+            } else {
+                // SAFETY: `out` is a valid owned handle (or null); consumed.
+                unsafe { crate::ConstantValue::from_raw(out) }
+            }
+        };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        result
+    }
+
+    /// A fresh, independently owned, *mutable* copy of the already-folded
+    /// integer constant — the live counterpart of the immutable snapshot
+    /// [`constant_value`](Self::constant_value) returns. Use this to reach
+    /// the in-place `SVInt` mutators (`slang::SVInt::operator&=` and
+    /// friends) through [`OwnedSVInt`](crate::OwnedSVInt). `None` if the
+    /// expression has no cached integer constant.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [3:0] X = 4'b1010; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// let mut owned = init.constant_integer_copy().unwrap();
+    /// assert_eq!(owned.snapshot().as_i64(), Some(0b1010));
+    /// owned.set_all_ones();
+    /// assert_eq!(owned.snapshot().as_i64(), Some(0b1111));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_integer_copy(&self) -> Option<crate::OwnedSVInt> {
+        let raw = self.folded_constant_raw()?;
+        // SAFETY: `raw` is a valid owned handle; consumed by `from_raw`
+        // (which frees it if it doesn't turn out to be an integer).
+        unsafe { crate::OwnedSVInt::from_raw(raw) }
+    }
+
+    /// For an `IntegerLiteral` expression, its value as a structured
+    /// [`ConstantValue`](crate::ConstantValue). Unlike
+    /// [`constant_value`](Self::constant_value), this is always available
+    /// for an integer literal — the value is set once at construction, not
+    /// lazily folded — and never evaluates. `None` if this is not an
+    /// `IntegerLiteral`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; bit [7:0] x = 8'd12; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let lit = body.find("x").unwrap().initializer().unwrap(); // the `8'd12` literal
+    /// let v = lit.integer_literal_value().unwrap();
+    /// assert_eq!(v.as_i64(), Some(12));
+    /// assert_eq!(v.as_integer().unwrap().bit_width(), 8);
+    /// # Ok(()) }
+    /// ```
+    pub fn integer_literal_value(&self) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the expression is valid; out-error checked.
+        let raw = unsafe { sys::slang_expr_integer_literal_value(self.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// For an `IntegerLiteral` expression, whether the original source token
+    /// was written without an explicit size (e.g. the `4` in `4'd4` is
+    /// sized while a bare `4` is not). `None` if this is not an
+    /// `IntegerLiteral`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; localparam int a = 4; localparam bit [7:0] b = 8'd4; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(
+    ///     body.find("a").unwrap().initializer().unwrap().is_declared_unsized(),
+    ///     Some(true)
+    /// );
+    /// assert_eq!(
+    ///     body.find("b").unwrap().initializer().unwrap().is_declared_unsized(),
+    ///     Some(false)
+    /// );
+    /// # Ok(()) }
+    /// ```
+    pub fn is_declared_unsized(&self) -> Option<bool> {
+        (self.kind() == ExpressionKind::IntegerLiteral)
+            // SAFETY: the expression is valid and is an IntegerLiteral.
+            .then(|| unsafe { sys::slang_expr_integer_literal_is_declared_unsized(self.raw) })
     }
 
     /// The immediate semantic children of this expression, in slang's own
@@ -2137,6 +18100,35 @@ impl<'d> Expression<'d> {
         // SAFETY: the expression is valid.
         let ast = unsafe { sys::slang_expr_call_subroutine(self.raw) };
         wrap(ast)
+    }
+
+    /// For a `Call` expression, the system task/function/method it invokes
+    /// (e.g. `$clog2`), or `None` for a user-subroutine call or a non-call.
+    /// The counterpart to [`call_subroutine`](Self::call_subroutine), which
+    /// is `None` exactly when this is `Some`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap(); // `$clog2(8)`
+    /// let sub = call.system_subroutine().unwrap();
+    /// assert_eq!(sub.name(), "$clog2");
+    /// assert!(!sub.is_task());
+    /// assert!(call.call_subroutine().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn system_subroutine(&self) -> Option<SystemMethod<'d>> {
+        // SAFETY: the expression is valid.
+        let raw = unsafe { sys::slang_expr_call_system_subroutine(self.raw) };
+        (!raw.is_null()).then_some(SystemMethod {
+            raw,
+            _design: PhantomData,
+        })
     }
 
     /// For a `MemberAccess` expression (`s.field`), the accessed member symbol.
@@ -2347,6 +18339,1636 @@ impl<'d> Expression<'d> {
     pub fn replication_concat(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-replication.
         wrap(unsafe { sys::slang_expr_replication_concat(self.raw) })
+    }
+
+    /// For a `RealLiteral` expression, its value as a `f64`. `None` if this
+    /// is not one.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; real r = 3.5; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let lit = body.find("r").unwrap().initializer().unwrap();
+    /// assert_eq!(lit.kind(), ExpressionKind::RealLiteral);
+    /// assert_eq!(lit.real_literal_value(), Some(3.5));
+    /// # Ok(()) }
+    /// ```
+    pub fn real_literal_value(&self) -> Option<f64> {
+        (self.kind() == ExpressionKind::RealLiteral)
+            // SAFETY: the expression is valid and is a RealLiteral.
+            .then(|| unsafe { sys::slang_expr_real_literal_value(self.raw) })
+    }
+
+    /// For a `TimeLiteral` expression (e.g. the `1.5` of `1.5ns`), its value
+    /// as a `f64`, in the units of [`time_literal_scale`](Self::time_literal_scale).
+    /// `None` if this is not a `TimeLiteral`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; realtime t = 1.5ns; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let lit = body.find("t").unwrap().initializer().unwrap();
+    /// assert_eq!(lit.kind(), ExpressionKind::TimeLiteral);
+    /// assert_eq!(lit.time_literal_value(), Some(1.5));
+    /// # Ok(()) }
+    /// ```
+    pub fn time_literal_value(&self) -> Option<f64> {
+        (self.kind() == ExpressionKind::TimeLiteral)
+            // SAFETY: the expression is valid and is a TimeLiteral.
+            .then(|| unsafe { sys::slang_expr_time_literal_value(self.raw) })
+    }
+
+    /// The time scale in effect for a `TimeLiteral` expression's context
+    /// (see [`TimeScale`]). `None` if this is not a `TimeLiteral`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("`timescale 1ns/1ps\nmodule m; realtime t = 1.5ns; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let lit = body.find("t").unwrap().initializer().unwrap();
+    /// let scale = lit.time_literal_scale().unwrap();
+    /// assert_eq!(scale.base.magnitude, 1);
+    /// assert_eq!(scale.precision.magnitude, 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn time_literal_scale(&self) -> Option<TimeScale> {
+        let mut raw = sys::slang_time_scale {
+            base_unit: 0,
+            base_magnitude: 0,
+            precision_unit: 0,
+            precision_magnitude: 0,
+        };
+        // SAFETY: the expression is valid; `raw` is a valid out-pointer.
+        let set = unsafe { sys::slang_expr_time_literal_scale(self.raw, &mut raw) };
+        set.then(|| TimeScale::from_raw(raw))
+    }
+
+    /// For an `UnbasedUnsizedIntegerLiteral` expression (e.g. `'1`, `'z`),
+    /// its raw single-bit value before it is filled out to the expression's
+    /// type. `None` if this is not an `UnbasedUnsizedIntegerLiteral`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// use sv_lang::Bit;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x = '1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let lit = body.find("x").unwrap().initializer().unwrap();
+    /// assert_eq!(lit.kind(), ExpressionKind::UnbasedUnsizedIntegerLiteral);
+    /// assert_eq!(lit.unbased_unsized_literal_bit(), Some(Bit::One));
+    /// # Ok(()) }
+    /// ```
+    pub fn unbased_unsized_literal_bit(&self) -> Option<crate::Bit> {
+        (self.kind() == ExpressionKind::UnbasedUnsizedIntegerLiteral).then(|| {
+            // SAFETY: the expression is valid and is an UnbasedUnsizedIntegerLiteral.
+            crate::Bit::from_raw(unsafe { sys::slang_expr_unbased_unsized_literal_bit(self.raw) })
+        })
+    }
+
+    /// For an `UnbasedUnsizedIntegerLiteral` expression, its value sized to
+    /// the type of the expression (e.g. `'1` in an 8-bit context yields
+    /// `8'hff`), as a structured [`ConstantValue`](crate::ConstantValue).
+    /// This is always available (the fill is computed from the
+    /// already-set literal bit and type, not lazily folded), so this never
+    /// evaluates and is a pure read. `None` if this is not an
+    /// `UnbasedUnsizedIntegerLiteral`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x = '1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let lit = body.find("x").unwrap().initializer().unwrap();
+    /// let v = lit.unbased_unsized_literal_value().unwrap();
+    /// assert_eq!(v.as_integer().unwrap().bit_width(), 8);
+    /// assert_eq!(v.as_i64(), Some(0xff));
+    /// # Ok(()) }
+    /// ```
+    pub fn unbased_unsized_literal_value(&self) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the expression is valid; out-error checked.
+        let raw = unsafe { sys::slang_expr_unbased_unsized_literal_value(self.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// For a `TaggedUnion` expression (`tag{value}`), the value-setting
+    /// expression. `None` if the member being set is a void member (no value
+    /// expression), or this is not a `TaggedUnion` expression.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; typedef union tagged { void Invalid; int Valid; } u_t;\n\
+    /// #      u_t u = tagged Valid 5; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("u").unwrap().initializer().unwrap();
+    /// assert_eq!(init.kind(), ExpressionKind::TaggedUnion);
+    /// let value = init.tagged_union_value().unwrap();
+    /// assert_eq!(value.constant_value().unwrap().as_i64(), Some(5));
+    /// # Ok(()) }
+    /// ```
+    pub fn tagged_union_value(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node for a void member or
+        // any other expression kind.
+        wrap(unsafe { sys::slang_expr_tagged_union_value(self.raw) })
+    }
+
+    /// The left-hand operand of an `Inside` expression (`expr inside {...}`),
+    /// or `None`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{ExpressionKind, SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic [7:0] x; logic y;\n\
+    /// #      initial y = (x inside {8'd1, [8'd2:8'd4]}); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap();
+    /// let inside = assign.right().unwrap();
+    /// assert_eq!(inside.kind(), ExpressionKind::Inside);
+    /// assert_eq!(inside.inside_left().unwrap().referenced_symbol().unwrap().name(), "x");
+    /// assert_eq!(inside.inside_range_list().len(), 2);
+    /// # Ok(()) }
+    /// ```
+    pub fn inside_left(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node for a non-Inside node.
+        wrap(unsafe { sys::slang_expr_inside_left(self.raw) })
+    }
+
+    /// The set-membership ranges of an `Inside` expression
+    /// (`expr inside {a, b:c}`). Empty if this is not an `Inside` node. See
+    /// [`inside_left`](Self::inside_left).
+    pub fn inside_range_list(&self) -> Vec<Expression<'d>> {
+        // SAFETY: the expression is valid.
+        let count = unsafe { sys::slang_expr_inside_range_count(self.raw) };
+        (0..count)
+            .filter_map(|index| {
+                // SAFETY: `index` is in range of the just-read count.
+                wrap(unsafe { sys::slang_expr_inside_range(self.raw, index) })
+            })
+            .collect()
+    }
+
+    /// The size expression of a `NewArray` expression (`new[n]`, i.e. the
+    /// `n`), or `None`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; int n = 4; int arr[]; initial arr = new[n]; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// use sv_lang::kinds::SymbolKind;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap();
+    /// let new_array = assign.right().unwrap();
+    /// assert_eq!(new_array.kind(), ExpressionKind::NewArray);
+    /// assert_eq!(
+    ///     new_array.new_array_size().unwrap().referenced_symbol().unwrap().name(),
+    ///     "n"
+    /// );
+    /// assert!(new_array.new_array_init().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn new_array_size(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node for a non-NewArray node.
+        wrap(unsafe { sys::slang_expr_new_array_size(self.raw) })
+    }
+
+    /// The optional initializer expression of a `NewArray` expression
+    /// (`new[n](init)`, i.e. `init`). `None` if it has none, or this is not
+    /// a `NewArray` node. See [`new_array_size`](Self::new_array_size).
+    pub fn new_array_init(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node when absent.
+        wrap(unsafe { sys::slang_expr_new_array_init(self.raw) })
+    }
+
+    /// For a `NewClass` expression (`new(args)`), the bound `Call`
+    /// expression invoking the class's constructor. `None` if it has none
+    /// (no explicit constructor and no arguments), or this is not a
+    /// `NewClass` node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{ExpressionKind, SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "class C; int x; function new(int v); x = v; endfunction endclass\n\
+    /// #      module m; C obj; initial obj = new(3); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap();
+    /// let new_class = assign.right().unwrap();
+    /// assert_eq!(new_class.kind(), ExpressionKind::NewClass);
+    /// assert!(new_class.new_class_constructor_call().is_some());
+    /// assert_eq!(new_class.new_class_is_super_class(), Some(false));
+    /// # Ok(()) }
+    /// ```
+    pub fn new_class_constructor_call(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node when absent.
+        wrap(unsafe { sys::slang_expr_new_class_constructor_call(self.raw) })
+    }
+
+    /// For a `NewClass` expression, whether it invokes a superclass's
+    /// constructor (`super.new(...)`). `None` if this is not a `NewClass`
+    /// node. See [`new_class_constructor_call`](Self::new_class_constructor_call).
+    pub fn new_class_is_super_class(&self) -> Option<bool> {
+        (self.kind() == ExpressionKind::NewClass)
+            // SAFETY: the expression is valid and is a NewClass.
+            .then(|| unsafe { sys::slang_expr_new_class_is_super_class(self.raw) })
+    }
+
+    /// The arguments passed to a `NewCovergroup` expression
+    /// (`new covergroup_type(args)`). Empty if this is not a `NewCovergroup`
+    /// node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{ExpressionKind, SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input logic clk, input logic [2:0] a);\n\
+    /// #      covergroup cg(int lo); cp: coverpoint a; endgroup\n\
+    /// #      cg cgh; initial cgh = new(1); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap();
+    /// let new_cg = assign.right().unwrap();
+    /// assert_eq!(new_cg.kind(), ExpressionKind::NewCovergroup);
+    /// assert_eq!(new_cg.new_covergroup_arguments().len(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn new_covergroup_arguments(&self) -> Vec<Expression<'d>> {
+        // SAFETY: the expression is valid.
+        let count = unsafe { sys::slang_expr_new_covergroup_argument_count(self.raw) };
+        (0..count)
+            .filter_map(|index| {
+                // SAFETY: `index` is in range of the just-read count.
+                wrap(unsafe { sys::slang_expr_new_covergroup_argument(self.raw, index) })
+            })
+            .collect()
+    }
+
+    /// For an `ArbitrarySymbol` expression (a symbol reference used where an
+    /// expression is expected, e.g. the module-name argument to
+    /// `$printtimescale`), the referenced symbol. `None` if this is not one.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{ExpressionKind, SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module leaf; endmodule\n\
+    /// #     module top; leaf u_leaf(); initial $printtimescale(u_leaf); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let call = block.body().unwrap().expr().unwrap(); // `$printtimescale(u_leaf)`
+    /// let arg = call.children()[0].as_expression().unwrap();
+    /// assert_eq!(arg.kind(), ExpressionKind::ArbitrarySymbol);
+    /// assert_eq!(arg.arbitrary_symbol().unwrap().name(), "u_leaf");
+    /// # Ok(()) }
+    /// ```
+    pub fn arbitrary_symbol(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the expression is valid; a null node for a non-ArbitrarySymbol.
+        wrap(unsafe { sys::slang_expr_arbitrary_symbol(self.raw) })
+    }
+
+    /// For an `Assignment` expression, whether it is a compound assignment
+    /// (`+=`, `&=`, ...). `None` if this is not an assignment.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; initial x += 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap(); // `x += 1`
+    /// assert_eq!(assign.is_compound_assignment(), Some(true));
+    /// assert_eq!(assign.assignment_op(), Some(sv_lang::BinaryOp::Add));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_compound_assignment(&self) -> Option<bool> {
+        (self.kind() == ExpressionKind::Assignment)
+            // SAFETY: the expression is valid and is an Assignment.
+            .then(|| unsafe { sys::slang_expr_assignment_is_compound(self.raw) })
+    }
+
+    /// For an `Assignment` expression, whether it was implied by its lhs
+    /// being the target of an lvalue argument or port connection — i.e.
+    /// there is no explicit assignment operator or right-hand side in the
+    /// source. `None` if this is not an assignment.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; initial x += 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap(); // `x += 1`, an ordinary assignment
+    /// assert_eq!(assign.is_lvalue_arg(), Some(false));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_lvalue_arg(&self) -> Option<bool> {
+        (self.kind() == ExpressionKind::Assignment)
+            // SAFETY: the expression is valid and is an Assignment.
+            .then(|| unsafe { sys::slang_expr_assignment_is_lvalue_arg(self.raw) })
+    }
+
+    /// For a compound `Assignment` expression (`+=`, `&=`, ...), the implied
+    /// binary operator (e.g. [`BinaryOp::Add`] for `+=`). `None` for a simple
+    /// assignment or a non-assignment node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{BinaryOp, kinds::SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x; initial x = 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap(); // `x = 1`, a simple assignment
+    /// assert_eq!(assign.assignment_op(), None);
+    /// let _ = BinaryOp::Add;
+    /// # Ok(()) }
+    /// ```
+    pub fn assignment_op(&self) -> Option<BinaryOp> {
+        // SAFETY: the expression is valid; the sentinel UINT32_MAX comes back
+        // for a non-assignment or a simple assignment either way.
+        BinaryOp::from_raw(unsafe { sys::slang_expr_assignment_op(self.raw) })
+    }
+
+    /// The timing control of an `Assignment` expression (e.g. the `#5` in
+    /// `x = #5 y;`), as a [`SemNode`]. `None` if it has none, or this is not
+    /// an assignment.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int x, y; initial x = #5 y; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap(); // `x = #5 y`
+    /// assert!(assign.assignment_timing().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn assignment_timing(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the expression is valid; a null node for a kind/case with
+        // no timing control.
+        wrap(unsafe { sys::slang_expr_assignment_timing(self.raw) })
+    }
+
+    /// The elements of a `SimpleAssignmentPattern`, `StructuredAssignmentPattern`,
+    /// or `ReplicatedAssignmentPattern` expression (`'{...}`). Empty if this
+    /// is none of those three kinds.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int arr[3] = '{1, 2, 3}; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("arr").unwrap().initializer().unwrap(); // `'{1, 2, 3}`
+    /// let elems = init.pattern_elements();
+    /// assert_eq!(elems.len(), 3);
+    /// # Ok(()) }
+    /// ```
+    pub fn pattern_elements(&self) -> Vec<Expression<'d>> {
+        // SAFETY: the expression is valid.
+        let count = unsafe { sys::slang_expr_pattern_element_count(self.raw) };
+        (0..count)
+            .filter_map(|index| {
+                // SAFETY: `index` is in range of the just-read count.
+                wrap(unsafe { sys::slang_expr_pattern_element(self.raw, index) })
+            })
+            .collect()
+    }
+
+    /// The replication-count expression of a `ReplicatedAssignmentPattern`
+    /// expression (`'{n{...}}`, i.e. the `n`). `None` for any other node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int arr[3] = '{3{7}}; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("arr").unwrap().initializer().unwrap(); // `'{3{7}}`
+    /// assert_eq!(init.kind(), ExpressionKind::ReplicatedAssignmentPattern);
+    /// let count = init.replicated_pattern_count().unwrap();
+    /// assert_eq!(count.constant_value().unwrap().as_i64(), Some(3));
+    /// assert_eq!(init.pattern_elements().len(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn replicated_pattern_count(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node for any other kind.
+        wrap(unsafe { sys::slang_expr_replicated_pattern_count(self.raw) })
+    }
+
+    /// The member setters (`member: value`) of a `StructuredAssignmentPattern`
+    /// expression (`'{...}`). Empty if this is not a `StructuredAssignmentPattern`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; typedef struct { int a; int b; } s_t;\n\
+    /// #      s_t s = '{a: 1, b: 2}; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("s").unwrap().initializer().unwrap();
+    /// let setters = init.structured_pattern_member_setters();
+    /// assert_eq!(setters.len(), 2);
+    /// assert_eq!(setters[0].member().name(), "a");
+    /// assert_eq!(setters[0].expr().constant_value().unwrap().as_i64(), Some(1));
+    /// assert_eq!(setters[1].member().name(), "b");
+    /// assert_eq!(setters[1].expr().constant_value().unwrap().as_i64(), Some(2));
+    /// # Ok(()) }
+    /// ```
+    pub fn structured_pattern_member_setters(&self) -> Vec<MemberSetter<'d>> {
+        // SAFETY: the expression is valid.
+        let count = unsafe { sys::slang_expr_structured_pattern_member_setter_count(self.raw) };
+        (0..count)
+            .map(|index| MemberSetter {
+                expr_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The type setters (`type_name: value`) of a `StructuredAssignmentPattern`
+    /// expression. Empty if this is not a `StructuredAssignmentPattern`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int arr[3] = '{int: 5, default: 0}; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("arr").unwrap().initializer().unwrap();
+    /// let setters = init.structured_pattern_type_setters();
+    /// assert_eq!(setters.len(), 1);
+    /// assert_eq!(setters[0].expr().constant_value().unwrap().as_i64(), Some(5));
+    /// # Ok(()) }
+    /// ```
+    pub fn structured_pattern_type_setters(&self) -> Vec<TypeSetter<'d>> {
+        // SAFETY: the expression is valid.
+        let count = unsafe { sys::slang_expr_structured_pattern_type_setter_count(self.raw) };
+        (0..count)
+            .map(|index| TypeSetter {
+                expr_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The index setters (`[n]: value`) of a `StructuredAssignmentPattern`
+    /// expression. Empty if this is not a `StructuredAssignmentPattern`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int arr[3] = '{0: 9, default: 0}; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("arr").unwrap().initializer().unwrap();
+    /// let setters = init.structured_pattern_index_setters();
+    /// assert_eq!(setters.len(), 1);
+    /// assert_eq!(setters[0].index().constant_value().unwrap().as_i64(), Some(0));
+    /// assert_eq!(setters[0].expr().constant_value().unwrap().as_i64(), Some(9));
+    /// # Ok(()) }
+    /// ```
+    pub fn structured_pattern_index_setters(&self) -> Vec<IndexSetter<'d>> {
+        // SAFETY: the expression is valid.
+        let count = unsafe { sys::slang_expr_structured_pattern_index_setter_count(self.raw) };
+        (0..count)
+            .map(|index| IndexSetter {
+                expr_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The default setter expression of a `StructuredAssignmentPattern`
+    /// expression (`'{default: value, ...}`, i.e. `value`) — applied to any
+    /// element that doesn't match a more specific member/type/index setter.
+    /// `None` if this pattern has no default setter, or this is not a
+    /// `StructuredAssignmentPattern`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int arr[3] = '{0: 9, default: 7}; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("arr").unwrap().initializer().unwrap();
+    /// let def = init.structured_pattern_default_setter().unwrap();
+    /// assert_eq!(def.constant_value().unwrap().as_i64(), Some(7));
+    /// # Ok(()) }
+    /// ```
+    pub fn structured_pattern_default_setter(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node if there is no default
+        // setter, or this is not a `StructuredAssignmentPattern`.
+        wrap(unsafe { sys::slang_expr_structured_pattern_default_setter(self.raw) })
+    }
+
+    /// The bitstream width of a `StreamingConcatenation` expression
+    /// (`{<<{...}}`, `{>>{...}}`). `None` for any other node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic [7:0] a; logic [15:0] b = {<<{a}}; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// // slang wraps a size-changing streaming concatenation in an explicit
+    /// // widening Conversion; unwrap it to reach the Streaming node itself.
+    /// let init = body.find("b").unwrap().initializer().unwrap();
+    /// assert_eq!(init.kind(), ExpressionKind::Conversion);
+    /// let stream = init.conversion_operand().unwrap();
+    /// assert_eq!(stream.kind(), ExpressionKind::Streaming);
+    /// assert_eq!(stream.streaming_bitstream_width(), Some(8));
+    /// assert_eq!(stream.streaming_is_fixed_size(), Some(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn streaming_bitstream_width(&self) -> Option<u64> {
+        (self.kind() == ExpressionKind::Streaming)
+            // SAFETY: the expression is valid and is a Streaming node.
+            .then(|| unsafe { sys::slang_expr_streaming_bitstream_width(self.raw) })
+    }
+
+    /// The slice size of a `StreamingConcatenation` expression: `Some(0)` for
+    /// a left-to-right concatenation, otherwise the size (in bits) of the
+    /// blocks to slice and reorder for a right-to-left concatenation. `None`
+    /// for any other node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic [7:0] a; logic [15:0] b = {<<8{a}}; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("b").unwrap().initializer().unwrap();
+    /// let stream = init.conversion_operand().unwrap(); // unwrap the widening Conversion
+    /// assert_eq!(stream.streaming_slice_size(), Some(8));
+    /// # Ok(()) }
+    /// ```
+    pub fn streaming_slice_size(&self) -> Option<u64> {
+        (self.kind() == ExpressionKind::Streaming)
+            // SAFETY: the expression is valid and is a Streaming node.
+            .then(|| unsafe { sys::slang_expr_streaming_slice_size(self.raw) })
+    }
+
+    /// True if a `StreamingConcatenation` expression has a fixed size (as
+    /// opposed to involving a dynamically sized element, e.g. a queue or
+    /// dynamic array stream operand). `None` for any other node.
+    /// See [`streaming_bitstream_width`](Self::streaming_bitstream_width) for
+    /// an example.
+    pub fn streaming_is_fixed_size(&self) -> Option<bool> {
+        (self.kind() == ExpressionKind::Streaming)
+            // SAFETY: the expression is valid and is a Streaming node.
+            .then(|| unsafe { sys::slang_expr_streaming_is_fixed_size(self.raw) })
+    }
+
+    /// The stream expressions of a `StreamingConcatenation` expression's
+    /// operand list. Empty if this is not a `StreamingConcatenation`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic [7:0] a, b; logic [15:0] c = {<<{a, b}}; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("c").unwrap().initializer().unwrap();
+    /// let stream = init.conversion_operand().unwrap(); // unwrap the widening Conversion
+    /// let streams = stream.streams();
+    /// assert_eq!(streams.len(), 2);
+    /// assert_eq!(streams[0].operand().referenced_symbol().unwrap().name(), "a");
+    /// assert_eq!(streams[1].operand().referenced_symbol().unwrap().name(), "b");
+    /// assert!(streams[0].with_expr().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn streams(&self) -> Vec<StreamExpr<'d>> {
+        // SAFETY: the expression is valid.
+        let count = unsafe { sys::slang_expr_streaming_stream_count(self.raw) };
+        (0..count)
+            .map(|index| StreamExpr {
+                expr_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The value of a `StringLiteral` expression (the processed text between
+    /// the quotes, with escapes resolved). `None` for any other node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(r#"module m; bit [23:0] s = "hi\n"; endmodule"#)?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// // Sized to match the literal's packed width exactly, so no wrapping
+    /// // Conversion is inserted and the initializer is the literal itself.
+    /// let init = body.find("s").unwrap().initializer().unwrap();
+    /// assert_eq!(init.kind(), ExpressionKind::StringLiteral);
+    /// assert_eq!(init.string_literal_value().as_deref(), Some("hi\n"));
+    /// assert_eq!(init.string_literal_raw_value().as_deref(), Some(r#""hi\n""#));
+    /// # Ok(()) }
+    /// ```
+    pub fn string_literal_value(&self) -> Option<String> {
+        (self.kind() == ExpressionKind::StringLiteral).then(|| {
+            // SAFETY: the expression is valid and is a StringLiteral; the
+            // returned string borrows stable storage owned by the compilation.
+            unsafe { ffi::borrowed_str(sys::slang_expr_string_literal_value(self.raw)) }
+        })
+    }
+
+    /// The raw, unprocessed text of a `StringLiteral` expression's source
+    /// token (escapes not resolved; the enclosing double quotes ARE
+    /// included, e.g. `"hi\n"` for the source `"hi\n"`). `None` for any
+    /// other node. See [`string_literal_value`](Self::string_literal_value)
+    /// for an example.
+    pub fn string_literal_raw_value(&self) -> Option<String> {
+        (self.kind() == ExpressionKind::StringLiteral).then(|| {
+            // SAFETY: the expression is valid and is a StringLiteral; the
+            // returned string borrows stable storage owned by the compilation.
+            unsafe { ffi::borrowed_str(sys::slang_expr_string_literal_raw_value(self.raw)) }
+        })
+    }
+
+    /// The value of a `StringLiteral` expression interpreted as an integer
+    /// constant (SystemVerilog packs a string literal's bytes into an
+    /// unsigned packed vector when it's used in an integer context). Unlike
+    /// [`constant_value`](Self::constant_value), this is always available for
+    /// a string literal — the integer value is computed once at
+    /// construction, not lazily folded — and never evaluates. `None` if this
+    /// is not a `StringLiteral`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(r#"module m; bit [15:0] x = "AB"; endmodule"#)?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let lit = body.find("x").unwrap().initializer().unwrap();
+    /// let v = lit.string_literal_int_value().unwrap();
+    /// // "AB" packs to 0x4142.
+    /// assert_eq!(v.as_i64(), Some(0x4142));
+    /// # Ok(()) }
+    /// ```
+    pub fn string_literal_int_value(&self) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the expression is valid; out-error checked.
+        let raw = unsafe { sys::slang_expr_string_literal_int_value(self.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// For an `AssertionInstance` expression (the expanded instantiation of a
+    /// named sequence or property), whether it is a recursive property
+    /// instantiation. `None` if this is not an assertion instance.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n\
+    /// #     property p(int i); i > 0; endproperty\n\
+    /// #     initial begin assert property (p(3)); end\n\
+    /// #     endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assert_stmt = block.body().unwrap().statements()[0];
+    /// let spec = assert_stmt.children()[0]; // the property-spec AssertionExpr
+    /// let inst = spec.children()[0].as_expression().unwrap(); // the `p(3)` instance
+    /// assert_eq!(inst.is_recursive_property(), Some(false));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_recursive_property(&self) -> Option<bool> {
+        (self.kind() == ExpressionKind::AssertionInstance)
+            // SAFETY: the expression is valid and is an AssertionInstance.
+            .then(|| unsafe { sys::slang_expr_assertion_instance_is_recursive(self.raw) })
+    }
+
+    /// The local variables materialized in the body of an `AssertionInstance`
+    /// expression's assertion item. Empty if this is not an assertion
+    /// instance.
+    pub fn assertion_local_vars(&self) -> Vec<Symbol<'d>> {
+        // SAFETY: the expression is valid.
+        let count = unsafe { sys::slang_expr_assertion_instance_local_var_count(self.raw) };
+        (0..count)
+            .filter_map(|index| {
+                // SAFETY: `index` is in range of the just-read count.
+                wrap(unsafe { sys::slang_expr_assertion_instance_local_var(self.raw, index) })
+            })
+            .collect()
+    }
+
+    /// The arguments to an `AssertionInstance` expression's assertion item:
+    /// each entry pairs the formal port with the bound actual (see
+    /// [`AssertionInstanceArg`]). Empty if this is not an assertion instance.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{ExpressionKind, SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n\
+    /// #     property p(int i); i > 0; endproperty\n\
+    /// #     initial begin assert property (p(3)); end\n\
+    /// #     endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assert_stmt = block.body().unwrap().statements()[0];
+    /// let spec = assert_stmt.children()[0];
+    /// let inst = spec.children()[0].as_expression().unwrap();
+    /// let args = inst.assertion_arguments();
+    /// assert_eq!(args.len(), 1);
+    /// assert_eq!(args[0].port.name(), "i");
+    /// // The actual (`3`) is bound as a plain expression, since `i` has an
+    /// // ordinary (non-sequence/property/event) type.
+    /// let actual = args[0].actual.as_expression().unwrap();
+    /// assert_eq!(actual.kind(), ExpressionKind::IntegerLiteral);
+    /// # Ok(()) }
+    /// ```
+    pub fn assertion_arguments(&self) -> Vec<AssertionInstanceArg<'d>> {
+        // SAFETY: the expression is valid.
+        let count = unsafe { sys::slang_expr_assertion_instance_argument_count(self.raw) };
+        (0..count)
+            .filter_map(|index| {
+                // SAFETY: `index` is in range of the just-read count.
+                let port = wrap(unsafe {
+                    sys::slang_expr_assertion_instance_argument_port(self.raw, index)
+                })?;
+                // SAFETY: same as above.
+                let actual = wrap(unsafe {
+                    sys::slang_expr_assertion_instance_argument_actual(self.raw, index)
+                })?;
+                Some(AssertionInstanceArg { port, actual })
+            })
+            .collect()
+    }
+
+    /// For a `Call` expression bound to an iterator-method system call (e.g.
+    /// `find_first` used with a `with` clause), the iterator expression
+    /// specified with the call. `None` if this is not such a call.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int q[$]; int r[$];\n\
+    /// #     initial r = q.find_first(item) with (item > 0); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap(); // `r = q.find_first(...) with (...)`
+    /// let call = assign.right().unwrap();
+    /// assert!(call.iterator_expr().is_some());
+    /// assert_eq!(call.iterator_var().unwrap().name(), "item");
+    /// # Ok(()) }
+    /// ```
+    pub fn iterator_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node if this isn't an
+        // iterator-method system call.
+        wrap(unsafe { sys::slang_expr_call_iterator_expr(self.raw) })
+    }
+
+    /// For a `Call` expression bound to an iterator-method system call, the
+    /// implicit iterator variable (e.g. `item` in
+    /// `q.find_first(item) with (item > 0)`). `None` if this is not such a
+    /// call. See [`iterator_expr`](Self::iterator_expr).
+    pub fn iterator_var(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the expression is valid; a null node if this isn't an
+        // iterator-method system call.
+        wrap(unsafe { sys::slang_expr_call_iterator_var(self.raw) })
+    }
+
+    /// For a `Call` expression bound to a `randomize` system call, the
+    /// inline constraints specified with the call (e.g. the `x > 0` in
+    /// `obj.randomize() with { x > 0; }`), as a [`SemNode`]. `None` if this
+    /// is not such a call, or the call has no inline constraints.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("class C; rand int x; endclass\n\
+    /// #     module m; C obj; int ok;\n\
+    /// #     initial begin\n\
+    /// #         obj = new();\n\
+    /// #         ok = obj.randomize() with { x > 0; };\n\
+    /// #     end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// // `begin...end` wraps its content in one `List` statement.
+    /// let stmts = block.body().unwrap().statements()[0].statements();
+    /// let assign = stmts[1].expr().unwrap(); // `ok = obj.randomize() with {...}`
+    /// let call = assign.right().unwrap();
+    /// assert!(call.randomize_inline_constraints().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn randomize_inline_constraints(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the expression is valid; a null node if this isn't a
+        // randomize call with inline constraints.
+        wrap(unsafe { sys::slang_expr_call_randomize_inline_constraints(self.raw) })
+    }
+
+    /// The kind of extra info attached to a `Call` expression's system-call
+    /// info (see [`CallExtraKind`]): [`CallExtraKind::None`] for a
+    /// user-subroutine call, a non-call node, or a system call with no
+    /// iterator/randomize-specific data.
+    pub fn system_call_extra_kind(&self) -> CallExtraKind {
+        // SAFETY: the expression is valid.
+        CallExtraKind::from_raw(unsafe { sys::slang_expr_call_extra_info_kind(self.raw) })
+    }
+
+    /// The scope in which a `Call` expression's system call occurs, as its
+    /// own owning symbol. `None` for a user-subroutine call or a non-call
+    /// node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap(); // `$clog2(8)`
+    /// assert_eq!(call.system_call_scope().unwrap().name(), "m");
+    /// # Ok(()) }
+    /// ```
+    pub fn system_call_scope(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the expression is valid; a null node for a non-system-call.
+        wrap(unsafe { sys::slang_expr_call_system_scope(self.raw) })
+    }
+
+    /// The kind (task vs function) of a `Call` expression. `None` if this is
+    /// not a call.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::SubroutineKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; function automatic int f(int a); return a + 1; endfunction\n\
+    /// #     localparam int C = f(3); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("C").unwrap().initializer().unwrap(); // `f(3)`
+    /// assert_eq!(call.subroutine_kind(), Some(SubroutineKind::Function));
+    /// # Ok(()) }
+    /// ```
+    pub fn subroutine_kind(&self) -> Option<crate::SubroutineKind> {
+        (self.kind() == ExpressionKind::Call).then(|| {
+            // SAFETY: the expression is valid and is a Call.
+            let raw = unsafe { sys::slang_expr_call_subroutine_kind(self.raw) };
+            crate::SubroutineKind::from_raw(raw)
+                .unwrap_or_else(|| unreachable!("unknown SubroutineKind raw value {raw}"))
+        })
+    }
+
+    /// The name of the subroutine a `Call` expression invokes: the
+    /// user-defined function/task name, or the system task/function name
+    /// (e.g. `"$clog2"`). `None` for a non-call node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap(); // `$clog2(8)`
+    /// assert_eq!(call.call_subroutine_name().as_deref(), Some("$clog2"));
+    /// # Ok(()) }
+    /// ```
+    pub fn call_subroutine_name(&self) -> Option<String> {
+        (self.kind() == ExpressionKind::Call).then(|| {
+            // SAFETY: the expression is valid and is a Call; the returned
+            // string borrows stable storage owned by the compilation.
+            unsafe { ffi::borrowed_str(sys::slang_expr_call_subroutine_name(self.raw)) }
+        })
+    }
+
+    /// True if a `Call` expression is a system call (as opposed to a call to
+    /// a user-defined function/task). `None` for a non-call node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam integer W = $clog2(8); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let call = body.find("W").unwrap().initializer().unwrap();
+    /// assert_eq!(call.is_system_call(), Some(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_system_call(&self) -> Option<bool> {
+        (self.kind() == ExpressionKind::Call)
+            // SAFETY: the expression is valid and is a Call.
+            .then(|| unsafe { sys::slang_expr_call_is_system_call(self.raw) })
+    }
+
+    /// For a `Call` expression that is a class method call, the expression
+    /// for the implicit `this` (the object the method is called on). `None`
+    /// for a static/non-method call, or a non-call node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("class C; function int f(); return 1; endfunction endclass\n\
+    /// #     module m; C obj = new; localparam int unused_ = 0;\n\
+    /// #     int r; initial r = obj.f(); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let call = block.body().unwrap().expr().unwrap().right().unwrap(); // `obj.f()`
+    /// assert_eq!(call.call_this_class().unwrap().referenced_symbol().unwrap().name(), "obj");
+    /// # Ok(()) }
+    /// ```
+    pub fn call_this_class(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node for a static call, a
+        // non-call node, or a non-method call.
+        wrap(unsafe { sys::slang_expr_call_this_class(self.raw) })
+    }
+
+    /// The list of conditions controlling a `ConditionalOp` expression
+    /// (`c ? t : f`) — more than one only for a pattern-matching conditional
+    /// with `&&&`-chained conditions. Empty for any other kind.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic c; logic [7:0] a, b;\n\
+    /// #     wire [7:0] s = c ? a : b; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cond = body.find("s").unwrap().initializer().unwrap();
+    /// let conditions = cond.conditions();
+    /// assert_eq!(conditions.len(), 1);
+    /// assert_eq!(conditions[0].expr().kind(), ExpressionKind::NamedValue);
+    /// assert!(conditions[0].pattern().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn conditions(&self) -> Vec<ExprCondition<'d>> {
+        if self.kind() != ExpressionKind::ConditionalOp {
+            return Vec::new();
+        }
+        // SAFETY: the expression is valid and is a ConditionalOp.
+        let count = unsafe { sys::slang_expr_cond_condition_count(self.raw) };
+        (0..count)
+            .map(|index| ExprCondition {
+                expr_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// True if a `Conversion` expression is a `const'()` const-cast. `None`
+    /// if this is not a conversion.
+    pub fn conversion_is_const_cast(&self) -> Option<bool> {
+        (self.kind() == ExpressionKind::Conversion)
+            // SAFETY: the expression is valid and is a Conversion.
+            .then(|| unsafe { sys::slang_expr_conversion_is_const_cast(self.raw) })
+    }
+
+    /// True if a `Conversion` expression was implicitly inserted by the
+    /// compiler (as opposed to an explicit cast written in the source).
+    /// `None` if this is not a conversion.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] a; wire [15:0] w = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("w").unwrap().initializer().unwrap();
+    /// assert_eq!(init.kind(), ExpressionKind::Conversion);
+    /// assert_eq!(init.conversion_is_implicit(), Some(true));
+    /// assert_eq!(init.conversion_is_const_cast(), Some(false));
+    /// # Ok(()) }
+    /// ```
+    pub fn conversion_is_implicit(&self) -> Option<bool> {
+        (self.kind() == ExpressionKind::Conversion)
+            // SAFETY: the expression is valid and is a Conversion.
+            .then(|| unsafe { sys::slang_expr_conversion_is_implicit(self.raw) })
+    }
+
+    /// The source operand of a `CopyClass` expression (`new that_obj`).
+    /// `None` for a non-CopyClass node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("class C; int x; endclass\n\
+    /// #     module m; C a = new; C b; initial b = new a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// use sv_lang::kinds::SymbolKind;
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assign = block.body().unwrap().expr().unwrap(); // `b = new a`
+    /// let rhs = assign.right().unwrap();
+    /// assert_eq!(rhs.kind(), ExpressionKind::CopyClass);
+    /// assert_eq!(rhs.copy_class_source().unwrap().referenced_symbol().unwrap().name(), "a");
+    /// # Ok(()) }
+    /// ```
+    pub fn copy_class_source(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node for a non-CopyClass.
+        wrap(unsafe { sys::slang_expr_copy_class_source(self.raw) })
+    }
+
+    /// The left-hand operand of a `Dist` expression (`expr dist {...}`).
+    /// `None` for a non-Dist node.
+    pub fn dist_left(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; a null node for a non-Dist.
+        wrap(unsafe { sys::slang_expr_dist_left(self.raw) })
+    }
+
+    /// The value/weight items of a `Dist` expression's `dist {...}` list.
+    /// Empty for a non-Dist node.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{DistWeightKind, kinds::SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("class C; rand int x; endclass\n\
+    /// #     module m; C obj; int ok;\n\
+    /// #     initial begin\n\
+    /// #         obj = new();\n\
+    /// #         ok = obj.randomize() with { x dist { 0 := 1, [1:3] :/ 2 }; };\n\
+    /// #     end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// // `begin...end` wraps its content in one `List` statement.
+    /// let stmts = block.body().unwrap().statements()[0].statements();
+    /// let assign = stmts[1].expr().unwrap(); // `ok = obj.randomize() with {...}`
+    /// let call = assign.right().unwrap();
+    /// // The inline constraint is a `List` of one `ExpressionConstraint`, whose
+    /// // own child is the `x dist {...}` expression itself.
+    /// let inline = call.randomize_inline_constraints().unwrap();
+    /// let dist = inline.children()[0].children()[0].as_expression().unwrap();
+    /// let items = dist.dist_items();
+    /// assert_eq!(items.len(), 2);
+    /// let w0 = items[0].weight().unwrap();
+    /// assert_eq!(w0.kind, DistWeightKind::PerValue);
+    /// let w1 = items[1].weight().unwrap();
+    /// assert_eq!(w1.kind, DistWeightKind::PerRange);
+    /// assert_eq!(dist.dist_left().unwrap().referenced_symbol().unwrap().name(), "x");
+    /// # Ok(()) }
+    /// ```
+    pub fn dist_items(&self) -> Vec<DistItem<'d>> {
+        if self.kind() != ExpressionKind::Dist {
+            return Vec::new();
+        }
+        // SAFETY: the expression is valid and is a Dist.
+        let count = unsafe { sys::slang_expr_dist_item_count(self.raw) };
+        (0..count)
+            .map(|index| DistItem {
+                expr_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The default weight of a `Dist` expression (applied to any value not
+    /// covered by an explicit item), if one was specified. `None` if this is
+    /// not a Dist expression, or it has no default weight.
+    pub fn dist_default_weight(&self) -> Option<DistWeight<'d>> {
+        if self.kind() != ExpressionKind::Dist {
+            return None;
+        }
+        DistWeight::from_default(self.raw)
+    }
+
+    /// The width (in bits) this expression's value would need if the types
+    /// of all known constants within it were declared with only the bits
+    /// necessary to represent them (`slang::ast::Expression::
+    /// getEffectiveWidth`). `None` if the computation could not determine a
+    /// width (e.g. an erroneous sub-expression).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam int X = 3 + 4; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("X").unwrap().initializer().unwrap();
+    /// // `3` and `4` each need 3 bits; the sum's effective width matches.
+    /// assert_eq!(init.effective_width(), Some(3));
+    /// # Ok(()) }
+    /// ```
+    pub fn effective_width(&self) -> Option<u32> {
+        let mut out = 0u32;
+        // SAFETY: the expression is valid; out-param written only on success.
+        let ok = unsafe { sys::slang_expr_effective_width(self.raw, &mut out) };
+        ok.then_some(out)
+    }
+}
+
+/// One argument binding of an `AssertionInstance` expression (see
+/// [`Expression::assertion_arguments`]): the formal port and the actual value
+/// bound to it.
+#[derive(Clone, Copy, Debug)]
+pub struct AssertionInstanceArg<'d> {
+    /// The formal port symbol (an `AssertionPortSymbol`).
+    pub port: Symbol<'d>,
+    /// The bound actual argument. slang binds each actual as a plain
+    /// expression, a sequence/property expression, or a clocking event, so
+    /// this is exposed generically as a [`SemNode`] — inspect its
+    /// `domain()`/`kind_name()`, or narrow with [`SemNode::as_expression`],
+    /// to see which.
+    pub actual: SemNode<'d>,
+}
+
+/// The kind of extra data attached to a system call's bound info (see
+/// [`Expression::system_call_extra_kind`]). Mirrors the discriminant of
+/// slang's `CallExpression::SystemCallInfo::extraInfo` variant.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CallExtraKind {
+    /// No extra info: a user-subroutine call, a non-call node, or a system
+    /// call with no iterator/randomize-specific data.
+    None = 0,
+    /// The call carries [`Expression::iterator_expr`] /
+    /// [`Expression::iterator_var`] data (an iterator-method call, e.g.
+    /// `find_first`).
+    Iterator = 1,
+    /// The call carries [`Expression::randomize_inline_constraints`] data (a
+    /// `randomize` method call).
+    Randomize = 2,
+}
+
+impl CallExtraKind {
+    fn from_raw(raw: u32) -> Self {
+        match raw {
+            1 => Self::Iterator,
+            2 => Self::Randomize,
+            _ => Self::None,
+        }
+    }
+}
+
+/// One condition of an [`Expression::conditions`] list (`slang::ast::
+/// ConditionalExpression::Condition`): the controlling expression of a
+/// `c ? t : f` conditional operator, plus its optional pattern-match
+/// pattern.
+#[derive(Clone, Copy)]
+pub struct ExprCondition<'d> {
+    expr_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for ExprCondition<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for ExprCondition<'_> {}
+
+impl<'d> ExprCondition<'d> {
+    /// The condition expression.
+    pub fn expr(&self) -> Expression<'d> {
+        // SAFETY: `expr_raw` is a valid ConditionalOp expression and `index`
+        // was produced from its own condition count, so this is always in
+        // range.
+        let ast = unsafe { sys::slang_expr_cond_condition_expr(self.expr_raw, self.index) };
+        wrap(ast).expect("ExprCondition::expr: index was in range when constructed")
+    }
+
+    /// The optional pattern associated with the condition (e.g. `c matches
+    /// p`), or `None` if the condition is a plain expression.
+    pub fn pattern(&self) -> Option<Pattern<'d>> {
+        // SAFETY: as above.
+        let ast = unsafe { sys::slang_expr_cond_condition_pattern(self.expr_raw, self.index) };
+        wrap(ast)
+    }
+}
+
+impl core::fmt::Debug for ExprCondition<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ExprCondition({:?})", self.expr())
+    }
+}
+
+/// The kind of a distribution weight (`slang::ast::DistExpression::
+/// DistWeight::Kind`): whether it applies to each value individually, or is
+/// divided across a range.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DistWeightKind {
+    /// The weight applies to each value in the set (`:=`).
+    PerValue = 0,
+    /// The weight is divided across the range of values (`:/`).
+    PerRange = 1,
+}
+
+impl DistWeightKind {
+    fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::PerValue),
+            1 => Some(Self::PerRange),
+            _ => None,
+        }
+    }
+}
+
+/// A distribution weight (`slang::ast::DistExpression::DistWeight`): its
+/// [`DistWeightKind`] plus the weight expression. See
+/// [`DistItem::weight`]/[`Expression::dist_default_weight`].
+#[derive(Clone, Copy, Debug)]
+pub struct DistWeight<'d> {
+    /// Whether the weight applies per-value or is divided across a range.
+    pub kind: DistWeightKind,
+    /// The weight expression.
+    pub expr: Expression<'d>,
+}
+
+impl<'d> DistWeight<'d> {
+    fn from_item(expr_raw: sys::slang_ast, index: u32) -> Option<Self> {
+        // SAFETY: `expr_raw` is a valid Dist expression and `index` is in
+        // range of its own item count.
+        let kind = DistWeightKind::from_raw(unsafe {
+            sys::slang_expr_dist_item_weight_kind(expr_raw, index)
+        })?;
+        // SAFETY: as above.
+        let expr = wrap(unsafe { sys::slang_expr_dist_item_weight_expr(expr_raw, index) })?;
+        Some(DistWeight { kind, expr })
+    }
+
+    fn from_default(expr_raw: sys::slang_ast) -> Option<Self> {
+        // SAFETY: `expr_raw` is a valid Dist expression.
+        let kind = DistWeightKind::from_raw(unsafe {
+            sys::slang_expr_dist_default_weight_kind(expr_raw)
+        })?;
+        // SAFETY: as above.
+        let expr = wrap(unsafe { sys::slang_expr_dist_default_weight_expr(expr_raw) })?;
+        Some(DistWeight { kind, expr })
+    }
+}
+
+/// One item of a `Dist` expression's value/weight list (`slang::ast::
+/// DistExpression::DistItem`): a value (or range) expression, plus an
+/// optional [`DistWeight`]. See [`Expression::dist_items`].
+#[derive(Clone, Copy)]
+pub struct DistItem<'d> {
+    expr_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for DistItem<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for DistItem<'_> {}
+
+impl<'d> DistItem<'d> {
+    /// The value (or range) expression this item modifies.
+    pub fn value(&self) -> Expression<'d> {
+        // SAFETY: `expr_raw`/`index` as in [`ExprCondition::expr`].
+        let ast = unsafe { sys::slang_expr_dist_item_value(self.expr_raw, self.index) };
+        wrap(ast).expect("DistItem::value: index was in range when constructed")
+    }
+
+    /// The weight to apply to this item, if one was specified. (SystemVerilog
+    /// defaults an omitted item weight to 1, but that default is applied by
+    /// the surrounding distribution's own semantics, not carried here as an
+    /// explicit weight.)
+    pub fn weight(&self) -> Option<DistWeight<'d>> {
+        DistWeight::from_item(self.expr_raw, self.index)
+    }
+}
+
+impl core::fmt::Debug for DistItem<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DistItem")
+            .field("value", &self.value())
+            .finish()
+    }
+}
+
+/// One member setter (`member: value`) of a `StructuredAssignmentPattern`
+/// expression (`slang::ast::StructuredAssignmentPatternExpression::
+/// MemberSetter`). See [`Expression::structured_pattern_member_setters`].
+#[derive(Clone, Copy)]
+pub struct MemberSetter<'d> {
+    expr_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for MemberSetter<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for MemberSetter<'_> {}
+
+impl<'d> MemberSetter<'d> {
+    /// The member symbol this setter applies to.
+    pub fn member(&self) -> Symbol<'d> {
+        // SAFETY: `expr_raw` is a valid StructuredAssignmentPattern
+        // expression and `index` is in range of its own member-setter count.
+        let ast = unsafe {
+            sys::slang_expr_structured_pattern_member_setter_member(self.expr_raw, self.index)
+        };
+        wrap(ast).expect("MemberSetter::member: index was in range when constructed")
+    }
+
+    /// The value expression to set for this member.
+    pub fn expr(&self) -> Expression<'d> {
+        // SAFETY: as above.
+        let ast = unsafe {
+            sys::slang_expr_structured_pattern_member_setter_expr(self.expr_raw, self.index)
+        };
+        wrap(ast).expect("MemberSetter::expr: index was in range when constructed")
+    }
+}
+
+impl core::fmt::Debug for MemberSetter<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MemberSetter")
+            .field("member", &self.member())
+            .field("expr", &self.expr())
+            .finish()
+    }
+}
+
+/// One type setter (`type_name: value`) of a `StructuredAssignmentPattern`
+/// expression (`slang::ast::StructuredAssignmentPatternExpression::
+/// TypeSetter`). See [`Expression::structured_pattern_type_setters`].
+#[derive(Clone, Copy)]
+pub struct TypeSetter<'d> {
+    expr_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for TypeSetter<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for TypeSetter<'_> {}
+
+impl<'d> TypeSetter<'d> {
+    /// The type this setter matches against.
+    pub fn ty(&self) -> Type<'d> {
+        // SAFETY: `expr_raw` is a valid StructuredAssignmentPattern
+        // expression and `index` is in range of its own type-setter count.
+        let ast = unsafe {
+            sys::slang_expr_structured_pattern_type_setter_type(self.expr_raw, self.index)
+        };
+        wrap(ast).expect("TypeSetter::ty: index was in range when constructed")
+    }
+
+    /// The value expression to set for this type.
+    pub fn expr(&self) -> Expression<'d> {
+        // SAFETY: as above.
+        let ast = unsafe {
+            sys::slang_expr_structured_pattern_type_setter_expr(self.expr_raw, self.index)
+        };
+        wrap(ast).expect("TypeSetter::expr: index was in range when constructed")
+    }
+}
+
+impl core::fmt::Debug for TypeSetter<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TypeSetter")
+            .field("ty", &self.ty())
+            .field("expr", &self.expr())
+            .finish()
+    }
+}
+
+/// One index setter (`[n]: value`) of a `StructuredAssignmentPattern`
+/// expression (`slang::ast::StructuredAssignmentPatternExpression::
+/// IndexSetter`). See [`Expression::structured_pattern_index_setters`].
+#[derive(Clone, Copy)]
+pub struct IndexSetter<'d> {
+    expr_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for IndexSetter<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for IndexSetter<'_> {}
+
+impl<'d> IndexSetter<'d> {
+    /// The array-index expression this setter applies to.
+    pub fn index(&self) -> Expression<'d> {
+        // SAFETY: `expr_raw` is a valid StructuredAssignmentPattern
+        // expression and `index` (the cursor) is in range of its own
+        // index-setter count.
+        let ast = unsafe {
+            sys::slang_expr_structured_pattern_index_setter_index(self.expr_raw, self.index)
+        };
+        wrap(ast).expect("IndexSetter::index: index was in range when constructed")
+    }
+
+    /// The value expression to set for this index.
+    pub fn expr(&self) -> Expression<'d> {
+        // SAFETY: as above.
+        let ast = unsafe {
+            sys::slang_expr_structured_pattern_index_setter_expr(self.expr_raw, self.index)
+        };
+        wrap(ast).expect("IndexSetter::expr: index was in range when constructed")
+    }
+}
+
+impl core::fmt::Debug for IndexSetter<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("IndexSetter")
+            .field("index", &self.index())
+            .field("expr", &self.expr())
+            .finish()
+    }
+}
+
+/// One stream expression of a `StreamingConcatenation` expression's operand
+/// list (`slang::ast::StreamingConcatenationExpression::StreamExpression`).
+/// See [`Expression::streams`].
+#[derive(Clone, Copy)]
+pub struct StreamExpr<'d> {
+    expr_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for StreamExpr<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for StreamExpr<'_> {}
+
+impl<'d> StreamExpr<'d> {
+    /// The operand expression.
+    pub fn operand(&self) -> Expression<'d> {
+        // SAFETY: `expr_raw` is a valid StreamingConcatenation expression and
+        // `index` is in range of its own stream count.
+        let ast = unsafe { sys::slang_expr_streaming_stream_operand(self.expr_raw, self.index) };
+        wrap(ast).expect("StreamExpr::operand: index was in range when constructed")
+    }
+
+    /// The optional `with` clause expression selecting a range for the
+    /// operand (e.g. the `[a:b]` in `stream with [a:b]`). `None` if the
+    /// stream has no `with` clause.
+    pub fn with_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: as above.
+        let ast = unsafe { sys::slang_expr_streaming_stream_with_expr(self.expr_raw, self.index) };
+        wrap(ast)
+    }
+}
+
+impl core::fmt::Debug for StreamExpr<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StreamExpr")
+            .field("operand", &self.operand())
+            .field("with_expr", &self.with_expr())
+            .finish()
     }
 }
 
@@ -2722,8 +20344,10 @@ impl<'d> Statement<'d> {
     }
 
     /// The timing control of a `Timed` statement (an `@(...)`/`#`-delayed
-    /// statement), as a [`SemNode`] in the timing-control domain. `None` for any
-    /// other kind.
+    /// statement), or the optional delaying timing control of an
+    /// `EventTrigger` statement (`->`/`->>`), as a [`SemNode`] in the
+    /// timing-control domain. `None` if there is none (an `EventTrigger` with
+    /// no delay) or this is neither kind.
     ///
     /// # Examples
     /// ```
@@ -2742,15 +20366,1382 @@ impl<'d> Statement<'d> {
     /// # Ok(()) }
     /// ```
     pub fn timing(&self) -> Option<SemNode<'d>> {
-        // SAFETY: the statement is valid; a null node for a non-timed kind.
+        // SAFETY: the statement is valid; a null node for a kind with no
+        // timing control (or an EventTrigger with no delay).
         let ast = unsafe { sys::slang_stmt_timing(self.raw) };
         wrap(ast)
+    }
+
+    /// The kind of a `Block` statement (`begin`/`end` vs `fork`/`join`/
+    /// `join_any`/`join_none`). `None` if this is not a block.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// use sv_lang::StatementBlockKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; initial begin: b\n\
+    /// #     int i; i = 0; end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap();
+    /// assert_eq!(stmt.kind(), StatementKind::Block);
+    /// assert_eq!(stmt.block_kind(), Some(StatementBlockKind::Sequential));
+    /// # Ok(()) }
+    /// ```
+    pub fn block_kind(&self) -> Option<StatementBlockKind> {
+        (self.kind() == sv_lang_kinds::StatementKind::Block)
+            // SAFETY: the statement is valid.
+            .then(|| StatementBlockKind::from_raw(unsafe { sys::slang_stmt_block_kind(self.raw) }))
+            .flatten()
+    }
+
+    /// The [`StatementBlockSymbol`](Symbol) associated with a `Block`
+    /// statement (e.g. `begin: b ... end`'s `b`), or `None` if the block is
+    /// unnamed or this is not a block.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; initial begin: b\n\
+    /// #     int i; i = 0; end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let sym = block.body().unwrap().block_symbol().unwrap();
+    /// assert_eq!(sym.name(), "b");
+    /// # Ok(()) }
+    /// ```
+    pub fn block_symbol(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the statement is valid; a null node for an unnamed/non-block.
+        let ast = unsafe { sys::slang_stmt_block_symbol(self.raw) };
+        wrap(ast)
+    }
+
+    /// The unique/priority check applied to a `Conditional` or `Case`
+    /// statement's condition (`unique if`, `priority case`, ...). `None` for
+    /// any other kind.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// use sv_lang::UniquePriorityCheck;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic [1:0] s, output logic o); always_comb\n\
+    /// #     unique case (s) 0: o = 0; default: o = 1; endcase endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// assert_eq!(block.body().unwrap().check(), Some(UniquePriorityCheck::Unique));
+    /// # Ok(()) }
+    /// ```
+    pub fn check(&self) -> Option<UniquePriorityCheck> {
+        match self.kind() {
+            sv_lang_kinds::StatementKind::Conditional => {
+                // SAFETY: the statement is valid and is a Conditional.
+                let v = unsafe { sys::slang_stmt_conditional_check(self.raw) };
+                UniquePriorityCheck::from_raw(v)
+            }
+            sv_lang_kinds::StatementKind::Case => {
+                // SAFETY: the statement is valid and is a Case.
+                let v = unsafe { sys::slang_stmt_case_check(self.raw) };
+                UniquePriorityCheck::from_raw(v)
+            }
+            _ => None,
+        }
+    }
+
+    /// The list of conditions controlling a `Conditional` (`if`) statement —
+    /// more than one only for a pattern-matching `if` with `&&&`-chained
+    /// conditions. Empty for any other kind.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{ExpressionKind, SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic clk, rst, input logic [7:0] d, output logic [7:0] q);\n\
+    /// #     always_ff @(posedge clk) if (rst) q <= 0; else q <= d + 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let cond = block.body().unwrap().statements()[0];
+    /// let conditions = cond.conditions();
+    /// assert_eq!(conditions.len(), 1);
+    /// assert_eq!(conditions[0].expr().kind(), ExpressionKind::NamedValue);
+    /// assert!(conditions[0].pattern().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn conditions(&self) -> Vec<Condition<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::Conditional {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a Conditional.
+        let count = unsafe { sys::slang_stmt_conditional_condition_count(self.raw) };
+        (0..count)
+            .map(|index| Condition {
+                stmt_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The kind of case condition evaluated by a `Case` statement
+    /// (`case`/`casex`/`casez`/`inside case`). `None` if this is not a case.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// use sv_lang::CaseStatementCondition;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic [1:0] s, output logic o); always_comb\n\
+    /// #     casez (s) 2'b0?: o = 0; default: o = 1; endcase endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// assert_eq!(block.body().unwrap().case_condition(), Some(CaseStatementCondition::WildcardJustZ));
+    /// # Ok(()) }
+    /// ```
+    pub fn case_condition(&self) -> Option<CaseStatementCondition> {
+        if self.kind() != sv_lang_kinds::StatementKind::Case {
+            return None;
+        }
+        // SAFETY: the statement is valid and is a Case.
+        let v = unsafe { sys::slang_stmt_case_condition(self.raw) };
+        CaseStatementCondition::from_raw(v)
+    }
+
+    /// The default-case body of a `Case` statement, or `None` if there is no
+    /// `default` item or this is not a case.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic [1:0] s, output logic o); always_comb\n\
+    /// #     case (s) 0: o = 0; default: o = 1; endcase endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// assert!(block.body().unwrap().default_case().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn default_case(&self) -> Option<Statement<'d>> {
+        // SAFETY: the statement is valid; a null node when there is no default.
+        let ast = unsafe { sys::slang_stmt_case_default(self.raw) };
+        wrap(ast)
+    }
+
+    /// The item groups of a `Case` statement (each a list of matching
+    /// expressions plus the statement to run when one matches). Empty for any
+    /// other kind.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic [1:0] s, output logic o); always_comb\n\
+    /// #     case (s) 0, 1: o = 0; default: o = 1; endcase endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let items = block.body().unwrap().case_items();
+    /// assert_eq!(items.len(), 1);
+    /// assert_eq!(items[0].expressions().len(), 2);
+    /// # Ok(()) }
+    /// ```
+    pub fn case_items(&self) -> Vec<CaseItem<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::Case {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a Case.
+        let count = unsafe { sys::slang_stmt_case_item_count(self.raw) };
+        (0..count)
+            .map(|index| CaseItem {
+                stmt_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The kind of a `ConcurrentAssertion` statement (`assert`/`assume`/
+    /// `cover property`/`cover sequence`/`restrict`/`expect`). `None` if this
+    /// is not one.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// use sv_lang::AssertionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic clk, a);\n\
+    /// #     assert property (@(posedge clk) a); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assertion = block.body().unwrap();
+    /// assert_eq!(assertion.kind(), StatementKind::ConcurrentAssertion);
+    /// assert_eq!(assertion.assertion_kind(), Some(AssertionKind::Assert));
+    /// # Ok(()) }
+    /// ```
+    pub fn assertion_kind(&self) -> Option<AssertionKind> {
+        (self.kind() == sv_lang_kinds::StatementKind::ConcurrentAssertion)
+            // SAFETY: the statement is valid.
+            .then(|| AssertionKind::from_raw(unsafe { sys::slang_stmt_assertion_kind(self.raw) }))
+            .flatten()
+    }
+
+    /// The pass-action statement (`ifTrue`) of a `ConcurrentAssertion`
+    /// statement (the statement to run when the assertion holds), or `None`
+    /// if there is none or this is not an assertion.
+    pub fn assertion_if_true(&self) -> Option<Statement<'d>> {
+        // SAFETY: the statement is valid; a null node when there is none.
+        let ast = unsafe { sys::slang_stmt_assertion_if_true(self.raw) };
+        wrap(ast)
+    }
+
+    /// The fail-action statement (`ifFalse`, e.g. an `else`) of a
+    /// `ConcurrentAssertion` statement, or `None` if there is none or this is
+    /// not an assertion.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic clk, a, output logic err);\n\
+    /// #     assert property (@(posedge clk) a) else err <= 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assertion = block.body().unwrap();
+    /// assert!(assertion.assertion_if_true().is_none());
+    /// assert!(assertion.assertion_if_false().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn assertion_if_false(&self) -> Option<Statement<'d>> {
+        // SAFETY: the statement is valid; a null node when there is none.
+        let ast = unsafe { sys::slang_stmt_assertion_if_false(self.raw) };
+        wrap(ast)
+    }
+
+    /// For an `EventTrigger` statement (`->`/`->>`), whether it is
+    /// non-blocking (`->>`). `None` if this is not an event trigger.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic clk); event e;\n\
+    /// #     always_ff @(posedge clk) ->> e; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let trigger = block.body().unwrap().body().unwrap();
+    /// assert_eq!(trigger.kind(), StatementKind::EventTrigger);
+    /// assert_eq!(trigger.is_nonblocking_trigger(), Some(true));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_nonblocking_trigger(&self) -> Option<bool> {
+        (self.kind() == sv_lang_kinds::StatementKind::EventTrigger)
+            // SAFETY: the statement is valid.
+            .then(|| unsafe { sys::slang_stmt_event_trigger_is_nonblocking(self.raw) })
+    }
+
+    /// The variable initializer expressions of a `ForLoop` statement (e.g.
+    /// `for (i = 0, j = 1; ...)`), mutually exclusive with
+    /// [`for_loop_vars`](Self::for_loop_vars) — a `for` loop has either
+    /// initializer expressions or declared loop variables, never both. Empty
+    /// if this is not a `ForLoop`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int i; initial for (i = 0; i < 4; i++) begin end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let for_loop = block.body().unwrap();
+    /// assert_eq!(for_loop.kind(), StatementKind::ForLoop);
+    /// assert_eq!(for_loop.for_loop_initializers().len(), 1);
+    /// assert!(for_loop.for_loop_vars().is_empty());
+    /// # Ok(()) }
+    /// ```
+    pub fn for_loop_initializers(&self) -> Vec<Expression<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::ForLoop {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a ForLoop.
+        let count = unsafe { sys::slang_stmt_for_loop_initializer_count(self.raw) };
+        (0..count)
+            .filter_map(|index| {
+                // SAFETY: `index` is in range of the just-read count.
+                wrap(unsafe { sys::slang_stmt_for_loop_initializer(self.raw, index) })
+            })
+            .collect()
+    }
+
+    /// The loop variables declared by a `ForLoop` statement (e.g.
+    /// `for (int i = 0; ...)`), mutually exclusive with
+    /// [`for_loop_initializers`](Self::for_loop_initializers). Empty if this
+    /// is not a `ForLoop`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; initial for (int i = 0; i < 4; i++) begin end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// // An inline-declared loop variable needs its own scope, so slang wraps
+    /// // the loop in an implicit block containing [declaration, for-loop].
+    /// let wrapper = block.body().unwrap();
+    /// assert_eq!(wrapper.kind(), StatementKind::Block);
+    /// let list = wrapper.statements()[0];
+    /// let for_loop = list.statements()[1];
+    /// assert_eq!(for_loop.kind(), StatementKind::ForLoop);
+    /// let vars = for_loop.for_loop_vars();
+    /// assert_eq!(vars.len(), 1);
+    /// assert_eq!(vars[0].name(), "i");
+    /// assert!(for_loop.for_loop_initializers().is_empty());
+    /// # Ok(()) }
+    /// ```
+    pub fn for_loop_vars(&self) -> Vec<Symbol<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::ForLoop {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a ForLoop.
+        let count = unsafe { sys::slang_stmt_for_loop_var_count(self.raw) };
+        (0..count)
+            // SAFETY: `index` is in range of the just-read count.
+            .filter_map(|index| wrap(unsafe { sys::slang_stmt_for_loop_var(self.raw, index) }))
+            .collect()
+    }
+
+    /// The per-iteration step expressions of a `ForLoop` statement (e.g. the
+    /// `i++` in `for (...; ...; i++)`). Empty if this is not a `ForLoop`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int i; initial for (i = 0; i < 4; i++) begin end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let for_loop = block.body().unwrap();
+    /// assert_eq!(for_loop.kind(), StatementKind::ForLoop);
+    /// assert_eq!(for_loop.for_loop_steps().len(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn for_loop_steps(&self) -> Vec<Expression<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::ForLoop {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a ForLoop.
+        let count = unsafe { sys::slang_stmt_for_loop_step_count(self.raw) };
+        (0..count)
+            // SAFETY: `index` is in range of the just-read count.
+            .filter_map(|index| wrap(unsafe { sys::slang_stmt_for_loop_step(self.raw, index) }))
+            .collect()
+    }
+
+    /// The iterated dimensions of a `Foreach` loop statement (one per
+    /// `[...]` in `foreach (a[i, j])`). Empty if this is not a `ForeachLoop`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int a[4]; initial foreach (a[i]) begin end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// // `foreach`'s loop variable needs its own scope, so slang wraps the
+    /// // loop in an implicit single-statement block.
+    /// let wrapper = block.body().unwrap();
+    /// assert_eq!(wrapper.kind(), StatementKind::Block);
+    /// let foreach = wrapper.statements()[0];
+    /// assert_eq!(foreach.kind(), StatementKind::ForeachLoop);
+    /// let dims = foreach.foreach_loop_dims();
+    /// assert_eq!(dims.len(), 1);
+    /// assert_eq!(dims[0].loop_var().unwrap().name(), "i");
+    /// let range = dims[0].range().unwrap();
+    /// assert_eq!((range.lower(), range.upper()), (0, 3));
+    /// # Ok(()) }
+    /// ```
+    pub fn foreach_loop_dims(&self) -> Vec<LoopDim<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::ForeachLoop {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a ForeachLoop.
+        let count = unsafe { sys::slang_stmt_foreach_loop_dim_count(self.raw) };
+        (0..count)
+            .map(|index| LoopDim {
+                stmt_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The kind of an `ImmediateAssertion` statement (`assert`/`assume`/
+    /// `cover`). `None` if this is not one.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// use sv_lang::AssertionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); initial assert (a); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assertion = block.body().unwrap();
+    /// assert_eq!(assertion.kind(), StatementKind::ImmediateAssertion);
+    /// assert_eq!(assertion.immediate_assertion_kind(), Some(AssertionKind::Assert));
+    /// # Ok(()) }
+    /// ```
+    pub fn immediate_assertion_kind(&self) -> Option<AssertionKind> {
+        (self.kind() == sv_lang_kinds::StatementKind::ImmediateAssertion)
+            .then(|| {
+                // SAFETY: the statement is valid.
+                let raw = unsafe { sys::slang_stmt_immediate_assertion_kind(self.raw) };
+                AssertionKind::from_raw(raw)
+            })
+            .flatten()
+    }
+
+    /// The pass-action statement (`ifTrue`) of an `ImmediateAssertion`
+    /// statement, or `None` if there is none or this is not an immediate
+    /// assertion.
+    pub fn immediate_assertion_if_true(&self) -> Option<Statement<'d>> {
+        // SAFETY: the statement is valid; a null node when there is none.
+        let ast = unsafe { sys::slang_stmt_immediate_assertion_if_true(self.raw) };
+        wrap(ast)
+    }
+
+    /// The fail-action statement (`ifFalse`, e.g. an `else`) of an
+    /// `ImmediateAssertion` statement, or `None` if there is none or this is
+    /// not an immediate assertion.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a, output logic err);\n\
+    /// #     initial assert (a) else err = 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assertion = block.body().unwrap();
+    /// assert!(assertion.immediate_assertion_if_true().is_none());
+    /// assert!(assertion.immediate_assertion_if_false().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn immediate_assertion_if_false(&self) -> Option<Statement<'d>> {
+        // SAFETY: the statement is valid; a null node when there is none.
+        let ast = unsafe { sys::slang_stmt_immediate_assertion_if_false(self.raw) };
+        wrap(ast)
+    }
+
+    /// True if an `ImmediateAssertion` statement is a "deferred" immediate
+    /// assertion (`assert #0(...)` or `assert final(...)`, as opposed to a
+    /// plain immediate `assert(...)`). `None` if this is not an immediate
+    /// assertion.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); initial assert #0 (a); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let assertion = block.body().unwrap();
+    /// assert_eq!(assertion.is_deferred_assertion(), Some(true));
+    /// assert_eq!(assertion.is_final_assertion(), Some(false));
+    /// # Ok(()) }
+    /// ```
+    pub fn is_deferred_assertion(&self) -> Option<bool> {
+        (self.kind() == sv_lang_kinds::StatementKind::ImmediateAssertion)
+            // SAFETY: the statement is valid.
+            .then(|| unsafe { sys::slang_stmt_immediate_assertion_is_deferred(self.raw) })
+    }
+
+    /// True if a deferred `ImmediateAssertion` statement is declared `final`
+    /// (`assert final(...)` rather than `assert #0(...)`). `None` if this is
+    /// not an immediate assertion.
+    pub fn is_final_assertion(&self) -> Option<bool> {
+        (self.kind() == sv_lang_kinds::StatementKind::ImmediateAssertion)
+            // SAFETY: the statement is valid.
+            .then(|| unsafe { sys::slang_stmt_immediate_assertion_is_final(self.raw) })
+    }
+
+    /// The unique/priority check applied to a `PatternCase` statement's
+    /// condition. `None` if this is not a `PatternCase`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// use sv_lang::UniquePriorityCheck;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input int v, output int o);\n\
+    /// #     initial priority case (v) matches\n\
+    /// #       .d &&& d > 0: o = d;\n\
+    /// #       default: o = 0;\n\
+    /// #     endcase endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let case = block.body().unwrap();
+    /// assert_eq!(case.kind(), StatementKind::PatternCase);
+    /// assert_eq!(case.pattern_case_check(), Some(UniquePriorityCheck::Priority));
+    /// # Ok(()) }
+    /// ```
+    pub fn pattern_case_check(&self) -> Option<UniquePriorityCheck> {
+        (self.kind() == sv_lang_kinds::StatementKind::PatternCase)
+            .then(|| {
+                // SAFETY: the statement is valid.
+                let raw = unsafe { sys::slang_stmt_pattern_case_check(self.raw) };
+                UniquePriorityCheck::from_raw(raw)
+            })
+            .flatten()
+    }
+
+    /// The item groups of a `PatternCase` statement (one per `pattern:
+    /// statement` arm). Empty if this is not a `PatternCase`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input int v, output int o);\n\
+    /// #     initial case (v) matches\n\
+    /// #       .d &&& d > 0: o = d;\n\
+    /// #       default: o = 0;\n\
+    /// #     endcase endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let case = block.body().unwrap();
+    /// assert_eq!(case.kind(), StatementKind::PatternCase);
+    /// let items = case.pattern_case_items();
+    /// assert_eq!(items.len(), 1);
+    /// assert!(items[0].filter().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn pattern_case_items(&self) -> Vec<PatternCaseItem<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::PatternCase {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a PatternCase.
+        let count = unsafe { sys::slang_stmt_pattern_case_item_count(self.raw) };
+        (0..count)
+            .map(|index| PatternCaseItem {
+                stmt_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The kind of case condition evaluated by a `PatternCase` statement's
+    /// controlling expression (`case ... matches` vs `casex`/`casez`-style
+    /// wildcard matching). `None` if this is not a `PatternCase`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// use sv_lang::CaseStatementCondition;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input int v, output int o); initial case (v) matches\n\
+    /// #     .d: o = d;\n\
+    /// #     default: o = 0;\n\
+    /// #   endcase endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let case = block.body().unwrap();
+    /// assert_eq!(case.kind(), StatementKind::PatternCase);
+    /// assert_eq!(case.pattern_case_condition(), Some(CaseStatementCondition::Normal));
+    /// # Ok(()) }
+    /// ```
+    pub fn pattern_case_condition(&self) -> Option<CaseStatementCondition> {
+        (self.kind() == sv_lang_kinds::StatementKind::PatternCase)
+            // SAFETY: the statement is valid.
+            .then(|| unsafe { sys::slang_stmt_pattern_case_condition(self.raw) })
+            .and_then(CaseStatementCondition::from_raw)
+    }
+
+    /// The default-case body of a `PatternCase` statement, or `None` if there
+    /// is no `default` item or this is not a pattern case.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input int v, output int o); initial case (v) matches\n\
+    /// #     .d: o = d;\n\
+    /// #     default: o = 0;\n\
+    /// #   endcase endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// assert!(block.body().unwrap().pattern_case_default().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn pattern_case_default(&self) -> Option<Statement<'d>> {
+        // SAFETY: the statement is valid; a null node when there is no default.
+        let ast = unsafe { sys::slang_stmt_pattern_case_default(self.raw) };
+        wrap(ast)
+    }
+
+    /// The ordered event expressions of a `wait_order` (`WaitOrder`)
+    /// statement. Empty if this is not a `WaitOrder`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; event a, b;\n\
+    /// #     initial wait_order (a, b) $display(\"t\"); else $display(\"f\");\n\
+    /// #   endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap();
+    /// assert_eq!(stmt.kind(), StatementKind::WaitOrder);
+    /// assert_eq!(stmt.wait_order_events().len(), 2);
+    /// # Ok(()) }
+    /// ```
+    pub fn wait_order_events(&self) -> Vec<Expression<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::WaitOrder {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a WaitOrder.
+        let count = unsafe { sys::slang_stmt_wait_order_event_count(self.raw) };
+        (0..count)
+            .filter_map(|index| {
+                // SAFETY: `index` is in range of the just-read count.
+                wrap(unsafe { sys::slang_stmt_wait_order_event(self.raw, index) })
+            })
+            .collect()
+    }
+
+    /// The statement to run if every event of a `WaitOrder` statement
+    /// triggered in order, or `None` if there is none (a bare
+    /// `wait_order(...);`) or this is not a `WaitOrder`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; event a, b;\n\
+    /// #     initial wait_order (a, b) $display(\"t\"); else $display(\"f\");\n\
+    /// #   endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap();
+    /// assert!(stmt.wait_order_if_true().is_some());
+    /// assert!(stmt.wait_order_if_false().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn wait_order_if_true(&self) -> Option<Statement<'d>> {
+        // SAFETY: the statement is valid; a null node when there is none.
+        let ast = unsafe { sys::slang_stmt_wait_order_if_true(self.raw) };
+        wrap(ast)
+    }
+
+    /// The statement to run if any event of a `WaitOrder` statement did not
+    /// trigger in order (an `else` clause), or `None` if there is none or
+    /// this is not a `WaitOrder`.
+    pub fn wait_order_if_false(&self) -> Option<Statement<'d>> {
+        // SAFETY: the statement is valid; a null node when there is none.
+        let ast = unsafe { sys::slang_stmt_wait_order_if_false(self.raw) };
+        wrap(ast)
+    }
+
+    /// True if a `ProceduralAssign` statement is a `force` statement, and
+    /// false if it is a plain procedural `assign` statement or this is not a
+    /// `ProceduralAssign`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic x; initial force x = 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap();
+    /// assert_eq!(stmt.kind(), StatementKind::ProceduralAssign);
+    /// assert!(stmt.procedural_assign_is_force());
+    /// # Ok(()) }
+    /// ```
+    pub fn procedural_assign_is_force(&self) -> bool {
+        // SAFETY: the statement is valid; false for a non-procedural-assign node.
+        unsafe { sys::slang_stmt_procedural_assign_is_force(self.raw) }
+    }
+
+    /// True if a `ProceduralDeassign` statement is a `release` statement, and
+    /// false if it is a plain `deassign` statement or this is not a
+    /// `ProceduralDeassign`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, StatementKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic x; initial release x; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap();
+    /// assert_eq!(stmt.kind(), StatementKind::ProceduralDeassign);
+    /// assert!(stmt.procedural_deassign_is_release());
+    /// # Ok(()) }
+    /// ```
+    pub fn procedural_deassign_is_release(&self) -> bool {
+        // SAFETY: the statement is valid; false for a non-procedural-deassign node.
+        unsafe { sys::slang_stmt_procedural_deassign_is_release(self.raw) }
+    }
+
+    /// The items of a `randcase` (`RandCase`) statement (each a matching
+    /// weight expression plus the statement to run when it is picked). Empty
+    /// if this is not a `RandCase`.
+    pub fn randcase_items(&self) -> Vec<RandCaseItem<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::RandCase {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a RandCase.
+        let count = unsafe { sys::slang_stmt_randcase_item_count(self.raw) };
+        (0..count)
+            .map(|index| RandCaseItem {
+                stmt_raw: self.raw,
+                index,
+                _design: PhantomData,
+            })
+            .collect()
+    }
+
+    /// The first production symbol (a `RandSeqProduction`) of a
+    /// `randsequence` (`RandSequence`) statement, or `None` if the sequence
+    /// is empty or this is not a `RandSequence`.
+    pub fn randsequence_first_production(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the statement is valid; a null node when there is none.
+        let ast = unsafe { sys::slang_stmt_randsequence_first_production(self.raw) };
+        wrap(ast)
+    }
+
+    /// The checker instance symbols of a procedural checker-instantiation
+    /// (`ProceduralChecker`) statement. Empty if this is not a
+    /// `ProceduralChecker`.
+    pub fn procedural_checker_instances(&self) -> Vec<Symbol<'d>> {
+        if self.kind() != sv_lang_kinds::StatementKind::ProceduralChecker {
+            return Vec::new();
+        }
+        // SAFETY: the statement is valid and is a ProceduralChecker.
+        let count = unsafe { sys::slang_stmt_procedural_checker_instance_count(self.raw) };
+        (0..count)
+            .filter_map(|index| {
+                // SAFETY: `index` is in range of the just-read count.
+                wrap(unsafe { sys::slang_stmt_procedural_checker_instance(self.raw, index) })
+            })
+            .collect()
+    }
+
+    /// True if the statement is invalid (had errors) — mirrors
+    /// `slang::ast::Statement::bad()`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(output logic o); initial o = 1; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// use sv_lang::kinds::SymbolKind;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// assert!(!block.body().unwrap().is_bad());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_bad(&self) -> bool {
+        // SAFETY: the statement is valid.
+        unsafe { sys::slang_stmt_is_bad(self.raw) }
     }
 }
 
 impl core::fmt::Debug for Statement<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Statement({:?})", self.kind())
+    }
+}
+
+/// A pattern handle borrowed from a [`Design`] (e.g. the pattern of a
+/// pattern-matching `if`, or a `case` pattern-match arm). `Copy` and
+/// pointer-sized.
+#[derive(Clone, Copy)]
+pub struct Pattern<'d> {
+    raw: sys::slang_ast,
+    _design: PhantomData<&'d Design>,
+}
+
+impl<'d> Pattern<'d> {
+    /// The pattern's semantic kind.
+    pub fn kind(&self) -> sv_lang_kinds::PatternKind {
+        sv_lang_kinds::PatternKind::from_raw(self.raw.kind as u16)
+            .unwrap_or(sv_lang_kinds::PatternKind::Invalid)
+    }
+}
+
+impl core::fmt::Debug for Pattern<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Pattern({:?})", self.kind())
+    }
+}
+
+/// One condition of a [`Statement::conditions`] list (`slang::ast::
+/// ConditionalStatement::Condition`): the controlling expression of a
+/// `Conditional` (`if`) statement, plus its optional pattern-match pattern.
+#[derive(Clone, Copy)]
+pub struct Condition<'d> {
+    stmt_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for Condition<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for Condition<'_> {}
+
+impl<'d> Condition<'d> {
+    /// The condition expression.
+    pub fn expr(&self) -> Expression<'d> {
+        // SAFETY: `stmt_raw` is a valid Conditional statement and `index` was
+        // produced from its own condition count, so this is always in range.
+        let ast = unsafe { sys::slang_stmt_conditional_condition_expr(self.stmt_raw, self.index) };
+        wrap(ast).expect("Condition::expr: index was in range when constructed")
+    }
+
+    /// The optional pattern associated with the condition (e.g. `if (v matches
+    /// p)`), or `None` if the condition is a plain expression.
+    pub fn pattern(&self) -> Option<Pattern<'d>> {
+        // SAFETY: as above.
+        let ast =
+            unsafe { sys::slang_stmt_conditional_condition_pattern(self.stmt_raw, self.index) };
+        wrap(ast)
+    }
+}
+
+impl core::fmt::Debug for Condition<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Condition({:?})", self.expr())
+    }
+}
+
+/// One item group of a [`Statement::case_items`] list (`slang::ast::
+/// CaseStatement::ItemGroup`): the expressions that select this group, plus
+/// the statement to run when one of them matches.
+#[derive(Clone, Copy)]
+pub struct CaseItem<'d> {
+    stmt_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for CaseItem<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for CaseItem<'_> {}
+
+impl<'d> CaseItem<'d> {
+    /// The expressions that select this item group.
+    pub fn expressions(&self) -> Vec<Expression<'d>> {
+        let stmt_raw = self.stmt_raw;
+        let index = self.index;
+        // SAFETY: `stmt_raw` is a valid Case statement and `index` was
+        // produced from its own item count, so this is always in range.
+        let count = unsafe { sys::slang_stmt_case_item_expr_count(stmt_raw, index) };
+        (0..count)
+            .filter_map(|j| {
+                // SAFETY: `j` is in range of the just-read count.
+                wrap(unsafe { sys::slang_stmt_case_item_expr(stmt_raw, index, j) })
+            })
+            .collect()
+    }
+
+    /// The statement to run when one of [`expressions`](Self::expressions)
+    /// matches.
+    pub fn stmt(&self) -> Statement<'d> {
+        // SAFETY: as above.
+        let ast = unsafe { sys::slang_stmt_case_item_stmt(self.stmt_raw, self.index) };
+        wrap(ast).expect("CaseItem::stmt: index was in range when constructed")
+    }
+}
+
+impl core::fmt::Debug for CaseItem<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "CaseItem({} exprs)", self.expressions().len())
+    }
+}
+
+/// A statically-known iteration range of array bit/element indices (see
+/// [`LoopDim::range`]). A plain value, not an AST node; mirrors slang's
+/// `ConstantRange`. `left`/`right` are not necessarily ascending — a
+/// descending range (e.g. `[7:0]`) has `left > right`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ConstantRange {
+    /// The left (declared-first) bound.
+    pub left: i32,
+    /// The right (declared-second) bound.
+    pub right: i32,
+}
+
+impl ConstantRange {
+    fn from_raw(r: sys::slang_constant_range) -> ConstantRange {
+        ConstantRange {
+            left: r.left,
+            right: r.right,
+        }
+    }
+
+    /// The lower of `left`/`right`.
+    pub fn lower(&self) -> i32 {
+        self.left.min(self.right)
+    }
+
+    /// The upper of `left`/`right`.
+    pub fn upper(&self) -> i32 {
+        self.left.max(self.right)
+    }
+
+    /// The number of elements/bits spanned by the range.
+    pub fn width(&self) -> u32 {
+        (self.upper() - self.lower() + 1) as u32
+    }
+
+    fn to_raw(self) -> sys::slang_constant_range {
+        sys::slang_constant_range {
+            left: self.left,
+            right: self.right,
+        }
+    }
+
+    /// True if the range is "descending" (msb >= lsb, e.g. `[7:0]`); false
+    /// for an "ascending" range (e.g. `[0:7]`).
+    ///
+    /// ```
+    /// # use sv_lang::ConstantRange;
+    /// let r = ConstantRange { left: 7, right: 0 };
+    /// assert!(r.is_descending());
+    /// ```
+    pub fn is_descending(&self) -> bool {
+        // SAFETY: plain value, no invariants.
+        unsafe { sys::slang_constant_range_is_descending(self.to_raw()) }
+    }
+
+    /// The range with its bit ordering reversed (`left`/`right` swapped).
+    ///
+    /// ```
+    /// # use sv_lang::ConstantRange;
+    /// let r = ConstantRange { left: 7, right: 0 };
+    /// assert_eq!(r.reverse(), ConstantRange { left: 0, right: 7 });
+    /// ```
+    pub fn reverse(&self) -> ConstantRange {
+        // SAFETY: plain value, no invariants.
+        ConstantRange::from_raw(unsafe { sys::slang_constant_range_reverse(self.to_raw()) })
+    }
+
+    /// Selects `select` as a subrange of `self`, correctly handling both
+    /// forms of range ordering. `select` must not be wider than `self`
+    /// (slang asserts this internally).
+    ///
+    /// ```
+    /// # use sv_lang::ConstantRange;
+    /// let r = ConstantRange { left: 7, right: 0 };
+    /// let sub = r.subrange(ConstantRange { left: 3, right: 2 });
+    /// assert_eq!(sub, ConstantRange { left: 2, right: 3 });
+    /// ```
+    pub fn subrange(&self, select: ConstantRange) -> ConstantRange {
+        // SAFETY: plain values, no invariants (a too-wide `select` triggers
+        // slang's own assertion, caught by SLANG_C_ACCESS on the C side).
+        ConstantRange::from_raw(unsafe {
+            sys::slang_constant_range_subrange(self.to_raw(), select.to_raw())
+        })
+    }
+
+    /// True if `index` falls within this range.
+    ///
+    /// ```
+    /// # use sv_lang::ConstantRange;
+    /// let r = ConstantRange { left: 7, right: 0 };
+    /// assert!(r.contains_point(3));
+    /// assert!(!r.contains_point(8));
+    /// ```
+    pub fn contains_point(&self, index: i32) -> bool {
+        // SAFETY: plain value, no invariants.
+        unsafe { sys::slang_constant_range_contains_point(self.to_raw(), index) }
+    }
+
+    /// True if this range and `other` overlap (including one being wholly
+    /// contained in the other).
+    pub fn overlaps(&self, other: ConstantRange) -> bool {
+        // SAFETY: plain values, no invariants.
+        unsafe { sys::slang_constant_range_overlaps(self.to_raw(), other.to_raw()) }
+    }
+
+    /// Translates `index` to be relative to this range. For example, if the
+    /// range is `[7:2]` and `index` is 3, the result is 1; if the range is
+    /// `[2:7]` and `index` is 3, the result is 4.
+    ///
+    /// ```
+    /// # use sv_lang::ConstantRange;
+    /// let r = ConstantRange { left: 7, right: 2 };
+    /// assert_eq!(r.translate_index(3), 1);
+    /// ```
+    pub fn translate_index(&self, index: i32) -> i32 {
+        // SAFETY: plain value, no invariants.
+        unsafe { sys::slang_constant_range_translate_index(self.to_raw(), index) }
+    }
+
+    /// Builds a range from a left value indexed up or down by `width`, as
+    /// the SystemVerilog `+:`/`-:` range-select operators do (`descending`
+    /// is the result's declared bit order, `indexed_up` selects `+:` vs
+    /// `-:`). Returns `None` on 32-bit overflow of the computed bound.
+    ///
+    /// ```
+    /// # use sv_lang::ConstantRange;
+    /// let r = ConstantRange::get_indexed_range(4, 4, true, true).unwrap();
+    /// assert_eq!(r, ConstantRange { left: 7, right: 4 });
+    /// ```
+    pub fn get_indexed_range(
+        l: i32,
+        width: i32,
+        descending: bool,
+        indexed_up: bool,
+    ) -> Option<ConstantRange> {
+        let mut out = sys::slang_constant_range::default();
+        // SAFETY: `out` is a valid out-pointer for the duration of the call.
+        let ok = unsafe {
+            sys::slang_constant_range_get_indexed_range(l, width, descending, indexed_up, &mut out)
+        };
+        ok.then(|| ConstantRange::from_raw(out))
+    }
+}
+
+/// One iterated dimension of a [`Statement::foreach_loop_dims`] `Foreach`
+/// loop statement (one per `[...]` in `foreach (a[i, j])`). `Copy`.
+#[derive(Clone, Copy)]
+pub struct LoopDim<'d> {
+    stmt_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for LoopDim<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for LoopDim<'_> {}
+
+impl<'d> LoopDim<'d> {
+    /// The loop-variable symbol iterating this dimension (an
+    /// `IteratorSymbol`), or `None` if the dimension is skipped (e.g. the
+    /// elided index in `foreach (a[,j])`).
+    pub fn loop_var(&self) -> Option<Symbol<'d>> {
+        // SAFETY: `stmt_raw` is a valid ForeachLoop statement and `index` was
+        // produced from its own dimension count, so this is always in range.
+        wrap(unsafe { sys::slang_stmt_foreach_loop_dim_var(self.stmt_raw, self.index) })
+    }
+
+    /// The statically-known range of this dimension, or `None` if the
+    /// dimension is dynamically sized (e.g. iterating a dynamic array,
+    /// queue, or associative array).
+    pub fn range(&self) -> Option<ConstantRange> {
+        let mut out = sys::slang_constant_range::default();
+        // SAFETY: as above; `out` is a valid out-pointer for the duration of
+        // the call.
+        let has_range =
+            unsafe { sys::slang_stmt_foreach_loop_dim_range(self.stmt_raw, self.index, &mut out) };
+        has_range.then(|| ConstantRange::from_raw(out))
+    }
+}
+
+impl core::fmt::Debug for LoopDim<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LoopDim")
+            .field("loop_var", &self.loop_var())
+            .field("range", &self.range())
+            .finish()
+    }
+}
+
+/// One item group of a [`Statement::pattern_case_items`] `PatternCase`
+/// statement (one per `pattern [&&& filter]: statement` arm). `Copy`.
+#[derive(Clone, Copy)]
+pub struct PatternCaseItem<'d> {
+    stmt_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for PatternCaseItem<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for PatternCaseItem<'_> {}
+
+impl<'d> PatternCaseItem<'d> {
+    /// The pattern that controls whether this group matches.
+    pub fn pattern(&self) -> Pattern<'d> {
+        // SAFETY: `stmt_raw` is a valid PatternCase statement and `index` was
+        // produced from its own item count, so this is always in range and
+        // slang guarantees `pattern` is non-null (`not_null`).
+        let ast = unsafe { sys::slang_stmt_pattern_case_item_pattern(self.stmt_raw, self.index) };
+        wrap(ast).expect("PatternCaseItem::pattern: slang guarantees a non-null pattern")
+    }
+
+    /// The optional `&&&`-filter condition of this group, or `None` if there
+    /// is none.
+    pub fn filter(&self) -> Option<Expression<'d>> {
+        // SAFETY: as above.
+        let ast = unsafe { sys::slang_stmt_pattern_case_item_filter(self.stmt_raw, self.index) };
+        wrap(ast)
+    }
+
+    /// The statement to run when this group matches.
+    pub fn stmt(&self) -> Statement<'d> {
+        // SAFETY: as above; slang guarantees `stmt` is non-null (`not_null`).
+        let ast = unsafe { sys::slang_stmt_pattern_case_item_stmt(self.stmt_raw, self.index) };
+        wrap(ast).expect("PatternCaseItem::stmt: slang guarantees a non-null statement")
+    }
+}
+
+impl core::fmt::Debug for PatternCaseItem<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PatternCaseItem")
+            .field("filter", &self.filter().is_some())
+            .finish()
+    }
+}
+
+/// One item of a [`Statement::randcase_items`] `RandCase` statement (one per
+/// `weight: statement` arm). `Copy`.
+#[derive(Clone, Copy)]
+pub struct RandCaseItem<'d> {
+    stmt_raw: sys::slang_ast,
+    index: u32,
+    _design: PhantomData<&'d Design>,
+}
+
+// SAFETY: equivalent to `&'d Design` — a read cursor into the frozen arena.
+unsafe impl Send for RandCaseItem<'_> {}
+// SAFETY: as above — reads never mutate the frozen arena.
+unsafe impl Sync for RandCaseItem<'_> {}
+
+impl<'d> RandCaseItem<'d> {
+    /// The matching-weight expression of this item.
+    pub fn expr(&self) -> Expression<'d> {
+        // SAFETY: `stmt_raw` is a valid RandCase statement and `index` was
+        // produced from its own item count, so this is always in range and
+        // slang guarantees `expr` is non-null (`not_null`).
+        let ast = unsafe { sys::slang_stmt_randcase_item_expr(self.stmt_raw, self.index) };
+        wrap(ast).expect("RandCaseItem::expr: slang guarantees a non-null expression")
+    }
+
+    /// The statement to run when this item is picked.
+    pub fn stmt(&self) -> Statement<'d> {
+        // SAFETY: as above; slang guarantees `stmt` is non-null (`not_null`).
+        let ast = unsafe { sys::slang_stmt_randcase_item_stmt(self.stmt_raw, self.index) };
+        wrap(ast).expect("RandCaseItem::stmt: slang guarantees a non-null statement")
+    }
+}
+
+impl core::fmt::Debug for RandCaseItem<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RandCaseItem")
+            .field("expr", &self.expr())
+            .finish()
+    }
+}
+
+/// The kind of a [`Statement::block_kind`] `Block` statement. Ordinals match
+/// slang's `StatementBlockKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[allow(missing_docs)]
+pub enum StatementBlockKind {
+    Sequential,
+    JoinAll,
+    JoinAny,
+    JoinNone,
+}
+
+impl StatementBlockKind {
+    /// The kind for a raw slang ordinal, or `None` if unknown.
+    pub fn from_raw(v: u32) -> Option<StatementBlockKind> {
+        (v < 4).then(|| {
+            // SAFETY: StatementBlockKind is #[repr(u32)] with contiguous
+            // discriminants 0..4, and v is checked to be in range.
+            unsafe { core::mem::transmute::<u32, StatementBlockKind>(v) }
+        })
+    }
+}
+
+/// The unique/priority check applied to a [`Statement::check`] `Conditional`
+/// or `Case` statement's condition. Ordinals match slang's
+/// `UniquePriorityCheck`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[allow(missing_docs)]
+pub enum UniquePriorityCheck {
+    None,
+    Unique,
+    Unique0,
+    Priority,
+}
+
+impl UniquePriorityCheck {
+    /// The check for a raw slang ordinal, or `None` if unknown.
+    pub fn from_raw(v: u32) -> Option<UniquePriorityCheck> {
+        (v < 4).then(|| {
+            // SAFETY: UniquePriorityCheck is #[repr(u32)] with contiguous
+            // discriminants 0..4, and v is checked to be in range.
+            unsafe { core::mem::transmute::<u32, UniquePriorityCheck>(v) }
+        })
+    }
+}
+
+/// The kind of case condition evaluated by a [`Statement::case_condition`]
+/// `Case` statement. Ordinals match slang's `CaseStatementCondition`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[allow(missing_docs)]
+pub enum CaseStatementCondition {
+    Normal,
+    WildcardXOrZ,
+    WildcardJustZ,
+    Inside,
+}
+
+impl CaseStatementCondition {
+    /// The condition kind for a raw slang ordinal, or `None` if unknown.
+    pub fn from_raw(v: u32) -> Option<CaseStatementCondition> {
+        (v < 4).then(|| {
+            // SAFETY: CaseStatementCondition is #[repr(u32)] with contiguous
+            // discriminants 0..4, and v is checked to be in range.
+            unsafe { core::mem::transmute::<u32, CaseStatementCondition>(v) }
+        })
+    }
+}
+
+/// The kind of a [`Statement::assertion_kind`] `ConcurrentAssertion`
+/// statement. Ordinals match slang's `AssertionKind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[allow(missing_docs)]
+pub enum AssertionKind {
+    Assert,
+    Assume,
+    CoverProperty,
+    CoverSequence,
+    Restrict,
+    Expect,
+}
+
+impl AssertionKind {
+    /// The kind for a raw slang ordinal, or `None` if unknown.
+    pub fn from_raw(v: u32) -> Option<AssertionKind> {
+        (v < 6).then(|| {
+            // SAFETY: AssertionKind is #[repr(u32)] with contiguous
+            // discriminants 0..6, and v is checked to be in range.
+            unsafe { core::mem::transmute::<u32, AssertionKind>(v) }
+        })
+    }
+}
+
+/// The outcome of evaluating a statement (see
+/// [`EvalSession::eval_stmt`]). Ordinals match slang's
+/// `Statement::EvalResult`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum StatementEvalResult {
+    /// Evaluation totally failed and processing should give up.
+    Fail,
+    /// Evaluation succeeded.
+    Success,
+    /// A `return` statement was invoked.
+    Return,
+    /// A `break` statement was invoked.
+    Break,
+    /// A `continue` statement was invoked.
+    Continue,
+    /// A `disable` statement was invoked.
+    Disable,
+}
+
+impl StatementEvalResult {
+    /// The result for a raw slang ordinal, or `None` if unknown.
+    pub fn from_raw(v: u32) -> Option<StatementEvalResult> {
+        (v < 6).then(|| {
+            // SAFETY: StatementEvalResult is #[repr(u32)] with contiguous
+            // discriminants 0..6, and v is checked to be in range.
+            unsafe { core::mem::transmute::<u32, StatementEvalResult>(v) }
+        })
     }
 }
 
@@ -2975,6 +21966,60 @@ pub enum DriverKind {
     Other,
 }
 
+/// The kind of construct a [`ValueDriver`] originated from
+/// (`slang::analysis::DriverSource`).
+///
+/// # Examples
+/// ```
+/// use sv_lang::DriverSource;
+/// let source = DriverSource::AlwaysComb;
+/// assert!(source.is_single_driver_procedure());
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriverSource {
+    /// An `initial` block.
+    Initial,
+    /// A `final` block.
+    Final,
+    /// A plain `always` block.
+    Always,
+    /// An `always_comb` block.
+    AlwaysComb,
+    /// An `always_latch` block.
+    AlwaysLatch,
+    /// An `always_ff` block.
+    AlwaysFF,
+    /// A task or function.
+    Subroutine,
+    /// Any other construct (e.g. a continuous assignment).
+    Other,
+}
+
+impl DriverSource {
+    /// True for the single-driver procedural kinds (`always_comb`,
+    /// `always_latch`, `always_ff`) that the language restricts to one driver
+    /// per bit.
+    pub fn is_single_driver_procedure(self) -> bool {
+        matches!(
+            self,
+            DriverSource::AlwaysComb | DriverSource::AlwaysLatch | DriverSource::AlwaysFF
+        )
+    }
+
+    fn from_raw(raw: sys::slang_driver_source) -> DriverSource {
+        match raw {
+            sys::SLANG_DRIVER_SOURCE_INITIAL => DriverSource::Initial,
+            sys::SLANG_DRIVER_SOURCE_FINAL => DriverSource::Final,
+            sys::SLANG_DRIVER_SOURCE_ALWAYS => DriverSource::Always,
+            sys::SLANG_DRIVER_SOURCE_ALWAYS_COMB => DriverSource::AlwaysComb,
+            sys::SLANG_DRIVER_SOURCE_ALWAYS_LATCH => DriverSource::AlwaysLatch,
+            sys::SLANG_DRIVER_SOURCE_ALWAYS_FF => DriverSource::AlwaysFF,
+            sys::SLANG_DRIVER_SOURCE_SUBROUTINE => DriverSource::Subroutine,
+            _ => DriverSource::Other,
+        }
+    }
+}
+
 /// One driver of a value: an assignment or connection that writes it.
 #[derive(Clone, Copy)]
 pub struct Driver<'d> {
@@ -3095,15 +22140,20 @@ pub(crate) fn expression_opt_from_raw<'d>(ast: sys::slang_ast) -> Option<Express
     wrap(ast).filter(|_| ast.domain == sys::SLANG_AST_EXPRESSION)
 }
 
+/// Cross-crate wrapper for a statement node (used by `dataflow`'s
+/// on_case_begin/on_conditional_begin/on_loop_begin hooks), guarded on the
+/// statement domain.
+pub(crate) fn statement_opt_from_raw<'d>(ast: sys::slang_ast) -> Option<Statement<'d>> {
+    wrap(ast).filter(|_| ast.domain == sys::SLANG_AST_STATEMENT)
+}
+
 /// One procedure analyzed by slang (an `always`/`initial`/`final` block, a
 /// continuous assignment, or a subroutine), as inspected through an
 /// [`Analysis`].
 #[derive(Clone, Copy)]
 pub struct AnalyzedProcedure<'d> {
     symbol: Symbol<'d>,
-    analysis: sys::slang_analysis,
-    scope: sys::slang_ast,
-    index: u32,
+    handle: sys::slang_analyzed_procedure,
 }
 
 impl<'d> AnalyzedProcedure<'d> {
@@ -3125,6 +22175,44 @@ impl<'d> AnalyzedProcedure<'d> {
     /// ```
     pub fn symbol(&self) -> Symbol<'d> {
         self.symbol
+    }
+
+    /// The procedure that contains this one, if any
+    /// (`slang::analysis::AnalyzedProcedure::parentProcedure`).
+    ///
+    /// This is only ever `Some` for a procedural checker instance — a
+    /// `checker` instantiated inside another procedure — where it names the
+    /// enclosing procedure. `None` for every ordinary
+    /// `always`/`initial`/`final` block, continuous assignment, or
+    /// subroutine.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a, output logic y); always_comb y = ~a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// // An ordinary always_comb has no parent procedure.
+    /// assert!(proc.parent().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn parent(&self) -> Option<AnalyzedProcedure<'d>> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_analyzed_procedure_parent(self.handle) };
+        (!raw.ptr.is_null()).then(|| {
+            // SAFETY: a non-null result names a real AnalyzedProcedure whose
+            // `analyzedSymbol` is always a valid symbol.
+            let symbol_raw = unsafe { sys::slang_analyzed_procedure_symbol(raw) };
+            AnalyzedProcedure {
+                symbol: Symbol::from_raw(symbol_raw),
+                handle: raw,
+            }
+        })
     }
 
     /// Whether slang inferred a clock for this procedure.
@@ -3151,8 +22239,239 @@ impl<'d> AnalyzedProcedure<'d> {
     /// # Ok(()) }
     /// ```
     pub fn has_inferred_clock(&self) -> bool {
-        // SAFETY: the analysis and scope are valid; index in range.
-        unsafe { sys::slang_analysis_procedure_has_clock(self.analysis, self.scope, self.index) }
+        // Delegates to the handle-based accessor (sound for every construction
+        // path, including one with no scope/index — see `AnalyzedAssertion::
+        // procedure`) rather than `slang_analysis_procedure_has_clock`, which
+        // needs a real scope/index.
+        self.inferred_clock().is_some()
+    }
+
+    /// The inferred clocking block for this procedure, if slang could infer
+    /// one (`slang::analysis::AnalyzedProcedure::getInferredClock`).
+    ///
+    /// Clock inference is only performed for a procedure that contains at
+    /// least one concurrent assertion — see the note on
+    /// [`has_inferred_clock`](Self::has_inferred_clock).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic clk, a, b; \
+    /// #      always_ff @(posedge clk) begin \
+    /// #        assert property (@(posedge clk) a |-> b); \
+    /// #      end endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// assert!(proc.inferred_clock().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn inferred_clock(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_analyzed_procedure_inferred_clock(self.handle) };
+        wrap::<SemNode>(raw)
+    }
+
+    /// All drivers (assignments) recorded directly on this procedure
+    /// (`slang::analysis::AnalyzedProcedure::getDrivers`) — narrower than
+    /// [`Analysis::drivers`], which finds every driver of a *value* across the
+    /// whole design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a, output logic y); always_comb y = ~a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// assert_eq!(proc.drivers().count(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn drivers(&self) -> impl Iterator<Item = Driver<'d>> + 'd {
+        let handle = self.handle;
+        // SAFETY: the handle belongs to a live analysis.
+        let count = unsafe { sys::slang_analyzed_procedure_driver_count(handle) };
+        (0..count).filter_map(move |i| {
+            let mut info = empty_driver_info();
+            // SAFETY: out-param provided; index in range.
+            let ok = unsafe { sys::slang_analyzed_procedure_driver_at(handle, i, &mut info) };
+            ok.then_some(Driver {
+                info,
+                _design: PhantomData,
+            })
+        })
+    }
+
+    /// All subroutine call expressions found in this procedure
+    /// (`slang::analysis::AnalyzedProcedure::getCallExpressions`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; function automatic int f(int x); return x + 1; endfunction \
+    /// #      logic [31:0] y; initial y = f(1); endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// assert_eq!(proc.call_expressions().count(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn call_expressions(&self) -> impl Iterator<Item = Expression<'d>> + 'd {
+        let handle = self.handle;
+        // SAFETY: the handle belongs to a live analysis.
+        let count = unsafe { sys::slang_analyzed_procedure_call_expression_count(handle) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: index in range.
+            let raw = unsafe { sys::slang_analyzed_procedure_call_expression_at(handle, i) };
+            wrap::<Expression>(raw)
+        })
+    }
+
+    /// All timing control statements found directly in this procedure
+    /// (`slang::analysis::AnalyzedProcedure::getTimingControls`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic clk, x, y; always_ff @(posedge clk) x <= y; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// assert_eq!(proc.timing_controls().count(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn timing_controls(&self) -> impl Iterator<Item = Statement<'d>> + 'd {
+        let handle = self.handle;
+        // SAFETY: the handle belongs to a live analysis.
+        let count = unsafe { sys::slang_analyzed_procedure_timing_control_count(handle) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: index in range.
+            let raw = unsafe { sys::slang_analyzed_procedure_timing_control_at(handle, i) };
+            wrap::<Statement>(raw)
+        })
+    }
+
+    /// Every (symbol, bit-range) entry read anywhere in this procedure
+    /// (`slang::analysis::AnalyzedProcedure::getReadSet`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a, output logic y); always_comb y = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// let reads: Vec<_> = proc.read_set().map(|r| r.symbol().name().to_string()).collect();
+    /// assert_eq!(reads, ["a"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn read_set(&self) -> impl Iterator<Item = ReadRange<'d>> + 'd {
+        let handle = self.handle;
+        // SAFETY: the handle belongs to a live analysis.
+        let count = unsafe { sys::slang_analyzed_procedure_read_set_count(handle) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: index in range.
+            let raw = unsafe { sys::slang_analyzed_procedure_read_set_at(handle, i) };
+            (!raw.ptr.is_null()).then_some(ReadRange {
+                raw,
+                _analysis: PhantomData,
+            })
+        })
+    }
+
+    /// The per-region read sets for each `@*` timing control found in this
+    /// procedure (`slang::analysis::AnalyzedProcedure::getImplicitEventReadSets`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{kinds::SymbolKind, AnalysisFlags};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input logic a, input logic b, output logic y); \
+    /// #      initial forever @* y = a & b; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis
+    ///     .procedures(body)
+    ///     .find(|p| p.symbol().kind() == SymbolKind::ProceduralBlock)
+    ///     .unwrap();
+    /// let sets: Vec<_> = proc.implicit_event_read_sets().collect();
+    /// assert_eq!(sets.len(), 1);
+    /// let mut names: Vec<_> = sets[0].reads().map(|r| r.symbol().name().to_string()).collect();
+    /// names.sort();
+    /// assert_eq!(names, ["a", "b"]);
+    /// # Ok(()) }
+    /// ```
+    pub fn implicit_event_read_sets(&self) -> impl Iterator<Item = ImplicitEventReadSet<'d>> + 'd {
+        let handle = self.handle;
+        // SAFETY: the handle belongs to a live analysis.
+        let count = unsafe { sys::slang_analyzed_procedure_implicit_event_read_set_count(handle) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: index in range.
+            let raw =
+                unsafe { sys::slang_analyzed_procedure_implicit_event_read_set_at(handle, i) };
+            (!raw.ptr.is_null()).then_some(ImplicitEventReadSet {
+                raw,
+                _analysis: PhantomData,
+            })
+        })
+    }
+
+    /// This procedure's effective sensitivity list
+    /// (`slang::analysis::AnalyzedProcedure::getSensitivityList`): the set of
+    /// signals that, when they change, cause the procedure to re-evaluate.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{AnalysisFlags, SensitivityKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a, output logic y); always_comb y = ~a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// assert_eq!(proc.sensitivity_list().kind(), SensitivityKind::Implicit);
+    /// # Ok(()) }
+    /// ```
+    pub fn sensitivity_list(&self) -> SensitivityList<'d> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_analyzed_procedure_sensitivity_list(self.handle) };
+        SensitivityList {
+            raw,
+            _analysis: PhantomData,
+        }
     }
 }
 
@@ -3455,20 +22774,61 @@ impl<'d> Analysis<'d> {
     /// assert_eq!(analysis.procedures(body).count(), 1);
     /// # Ok(()) }
     /// ```
-    pub fn procedures(
-        &self,
-        scope: Symbol<'d>,
-    ) -> impl Iterator<Item = AnalyzedProcedure<'d>> + '_ {
+    pub fn procedures<'a>(
+        &'a self,
+        scope: Symbol<'a>,
+    ) -> impl Iterator<Item = AnalyzedProcedure<'a>> + 'a {
         // SAFETY: scope belongs to the analyzed design.
         let count = unsafe { sys::slang_analysis_scope_procedure_count(self.raw, scope.raw) };
         (0..count).filter_map(move |i| {
             // SAFETY: index in range.
             let ast = unsafe { sys::slang_analysis_scope_procedure(self.raw, scope.raw, i) };
+            // SAFETY: index in range.
+            let handle =
+                unsafe { sys::slang_analysis_scope_procedure_handle(self.raw, scope.raw, i) };
             (!ast.ptr.is_null()).then_some(AnalyzedProcedure {
                 symbol: Symbol::from_raw(ast),
-                analysis: self.raw,
-                scope: scope.raw,
-                index: i,
+                handle,
+            })
+        })
+    }
+
+    /// The analyzed concurrent assertions and procedural checker
+    /// instantiations found within `containing_symbol`
+    /// (`slang::analysis::AnalysisManager::getAnalyzedAssertions`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic clk, a, b; \
+    /// #      always_ff @(posedge clk) begin \
+    /// #        assert property (@(posedge clk) a |-> b); \
+    /// #      end endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// assert_eq!(analysis.assertions(proc.symbol()).count(), 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn assertions<'a>(
+        &'a self,
+        containing_symbol: Symbol<'a>,
+    ) -> impl Iterator<Item = AnalyzedAssertion<'a>> + 'a {
+        // SAFETY: containing_symbol belongs to the analyzed design.
+        let count = unsafe { sys::slang_analysis_assertion_count(self.raw, containing_symbol.raw) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: index in range.
+            let raw =
+                unsafe { sys::slang_analysis_assertion_at(self.raw, containing_symbol.raw, i) };
+            (!raw.ptr.is_null()).then_some(AnalyzedAssertion {
+                handle: raw,
+                _analysis: PhantomData,
             })
         })
     }
@@ -3502,6 +22862,44 @@ impl<'d> Analysis<'d> {
             })
         })
     }
+
+    /// The drivers of a value symbol, as live [`ValueDriver`] handles rather
+    /// than the flattened snapshot [`drivers`](Self::drivers) returns. Unlike
+    /// [`Driver`], a `ValueDriver` also exposes the raw flag bitmask, the
+    /// driven symbol, the driven bit range, and any override source range
+    /// (`slang::analysis::ValueDriver`). Empty if `value` is not a value
+    /// symbol.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); logic z; assign z = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let z = body.find("z").unwrap();
+    /// let driver = analysis.driver_handles(z).next().unwrap();
+    /// assert_eq!(driver.symbol(), z);
+    /// # Ok(()) }
+    /// ```
+    pub fn driver_handles<'a>(
+        &'a self,
+        value: Symbol<'a>,
+    ) -> impl Iterator<Item = ValueDriver<'a>> + 'a {
+        // SAFETY: value belongs to the analyzed design.
+        let count = unsafe { sys::slang_analysis_driver_count(self.raw, value.raw) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: index in range.
+            let handle = unsafe { sys::slang_analysis_driver_handle(self.raw, value.raw, i) };
+            (!handle.ptr.is_null()).then_some(ValueDriver {
+                handle,
+                _analysis: PhantomData,
+            })
+        })
+    }
 }
 
 fn empty_driver_info() -> sys::slang_driver_info {
@@ -3515,6 +22913,751 @@ fn empty_driver_info() -> sys::slang_driver_info {
             kind: 0,
             domain: 0,
         },
+    }
+}
+
+/// A source location: a lexer buffer id (distinguishing files and macro
+/// expansions) plus a byte offset within it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SourceLoc {
+    /// The buffer this location is in.
+    pub buffer: u32,
+    /// The byte offset within the buffer.
+    pub offset: u64,
+}
+
+impl From<sys::slang_loc> for SourceLoc {
+    fn from(l: sys::slang_loc) -> Self {
+        SourceLoc {
+            buffer: l.buffer,
+            offset: l.offset,
+        }
+    }
+}
+
+/// A `[start, end)` span of source text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SourceSpan {
+    /// The first location in the span.
+    pub start: SourceLoc,
+    /// One past the last location in the span.
+    pub end: SourceLoc,
+}
+
+impl From<sys::slang_range> for SourceSpan {
+    fn from(r: sys::slang_range) -> Self {
+        SourceSpan {
+            start: r.start.into(),
+            end: r.end.into(),
+        }
+    }
+}
+
+/// The raw flag bitmask of a [`ValueDriver`] (`slang::analysis::DriverFlags`),
+/// combined with `|`. Unlike the curated subset [`Driver`] exposes
+/// (`is_input_port`, `is_clock_var`, ...), this is every underlying bit.
+///
+/// # Examples
+/// ```
+/// use sv_lang::RawDriverFlags;
+/// let flags = RawDriverFlags::INPUT_PORT | RawDriverFlags::CLOCK_VAR;
+/// assert!(flags.contains(RawDriverFlags::INPUT_PORT));
+/// assert!(!flags.contains(RawDriverFlags::VIA_INDIRECT_PORT));
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RawDriverFlags(u32);
+
+impl RawDriverFlags {
+    /// No flags.
+    pub const NONE: RawDriverFlags = RawDriverFlags(0);
+    /// The assignment is for an input port (the assignment to the internal
+    /// symbol from the port itself).
+    pub const INPUT_PORT: RawDriverFlags = RawDriverFlags(sys::SLANG_DRIVER_FLAG_INPUT_PORT);
+    /// The assignment is for an output port (the assignment from the port
+    /// connection).
+    pub const OUTPUT_PORT: RawDriverFlags = RawDriverFlags(sys::SLANG_DRIVER_FLAG_OUTPUT_PORT);
+    /// The assignment is from a clocking-block signal.
+    pub const CLOCK_VAR: RawDriverFlags = RawDriverFlags(sys::SLANG_DRIVER_FLAG_CLOCK_VAR);
+    /// The driver is for a net or variable initializer.
+    pub const INITIALIZER: RawDriverFlags = RawDriverFlags(sys::SLANG_DRIVER_FLAG_INITIALIZER);
+    /// The driver is from a side effect of applying a cached instance body.
+    pub const FROM_SIDE_EFFECT: RawDriverFlags =
+        RawDriverFlags(sys::SLANG_DRIVER_FLAG_FROM_SIDE_EFFECT);
+    /// The driver has an override range stored with it (see
+    /// [`ValueDriver::override_range`]).
+    pub const HAS_OVERRIDE_RANGE: RawDriverFlags =
+        RawDriverFlags(sys::SLANG_DRIVER_FLAG_HAS_OVERRIDE_RANGE);
+    /// The driver connects through an indirect port, such as a modport or ref
+    /// port.
+    pub const VIA_INDIRECT_PORT: RawDriverFlags =
+        RawDriverFlags(sys::SLANG_DRIVER_FLAG_VIA_INDIRECT_PORT);
+
+    /// The raw bitmask.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// True if all of `other`'s flags are set.
+    pub const fn contains(self, other: RawDriverFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl core::ops::BitOr for RawDriverFlags {
+    type Output = RawDriverFlags;
+    fn bitor(self, rhs: RawDriverFlags) -> RawDriverFlags {
+        RawDriverFlags(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for RawDriverFlags {
+    fn bitor_assign(&mut self, rhs: RawDriverFlags) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// A single driver of a value symbol (an assignment or connection that writes
+/// it), as a live handle into the analysis (`slang::analysis::ValueDriver`).
+///
+/// Unlike [`Driver`] (the flattened snapshot [`Analysis::drivers`] returns),
+/// this is obtained from [`Analysis::driver_handles`] and additionally exposes
+/// the raw flag bitmask, the driven symbol, the driven bit range, and any
+/// override source range.
+#[derive(Clone, Copy)]
+pub struct ValueDriver<'d> {
+    handle: sys::slang_value_driver,
+    _analysis: PhantomData<&'d Analysis<'d>>,
+}
+
+impl<'d> ValueDriver<'d> {
+    /// The raw flag bitmask (`slang::analysis::ValueDriver::flags`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{AnalysisFlags, RawDriverFlags};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); logic z; assign z = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let net = body.find("a").unwrap();
+    /// let driver = analysis.driver_handles(net).next().unwrap();
+    /// assert!(driver.flags().contains(RawDriverFlags::INPUT_PORT));
+    /// # Ok(()) }
+    /// ```
+    pub fn flags(&self) -> RawDriverFlags {
+        // SAFETY: the handle belongs to a live analysis.
+        RawDriverFlags(unsafe { sys::slang_value_driver_flags(self.handle) })
+    }
+
+    /// The symbol assigned to by this driver
+    /// (`slang::analysis::ValueDriver::getSymbol`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); logic z; assign z = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let z = body.find("z").unwrap();
+    /// let driver = analysis.driver_handles(z).next().unwrap();
+    /// assert_eq!(driver.symbol(), z);
+    /// # Ok(()) }
+    /// ```
+    pub fn symbol(&self) -> Symbol<'d> {
+        // SAFETY: the handle belongs to a live analysis; ValueDriver::
+        // getSymbol is documented to always be non-null.
+        let raw = unsafe { sys::slang_value_driver_symbol(self.handle) };
+        Symbol::from_raw(raw)
+    }
+
+    /// The bit range assigned to by this driver
+    /// (`slang::analysis::ValueDriver::getBounds`), as `(low, high)`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); logic z; assign z = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let z = body.find("z").unwrap();
+    /// let driver = analysis.driver_handles(z).next().unwrap();
+    /// assert_eq!(driver.bounds(), (0, 0));
+    /// # Ok(()) }
+    /// ```
+    pub fn bounds(&self) -> (u64, u64) {
+        let mut lo = 0u64;
+        let mut hi = 0u64;
+        // SAFETY: the handle belongs to a live analysis; out-params provided.
+        unsafe { sys::slang_value_driver_bounds(self.handle, &mut lo, &mut hi) };
+        (lo, hi)
+    }
+
+    /// The source range describing this driver as written in the source
+    /// (`slang::analysis::ValueDriver::getSourceRange`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); logic z; assign z = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let z = body.find("z").unwrap();
+    /// let driver = analysis.driver_handles(z).next().unwrap();
+    /// assert!(driver.source_range().end.offset > driver.source_range().start.offset);
+    /// # Ok(()) }
+    /// ```
+    pub fn source_range(&self) -> SourceSpan {
+        // SAFETY: the handle belongs to a live analysis.
+        unsafe { sys::slang_value_driver_source_range(self.handle) }.into()
+    }
+
+    /// An optional extra source range indicating the driver actually came
+    /// from some other, indirected location, such as a modport port expansion
+    /// (`slang::analysis::ValueDriver::getOverrideRange`). `None` for an
+    /// ordinary driver.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); logic z; assign z = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let z = body.find("z").unwrap();
+    /// let driver = analysis.driver_handles(z).next().unwrap();
+    /// assert!(driver.override_range().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn override_range(&self) -> Option<SourceSpan> {
+        let mut out = sys::slang_range::default();
+        // SAFETY: the handle belongs to a live analysis; out-param provided.
+        let ok = unsafe { sys::slang_value_driver_override_range(self.handle, &mut out) };
+        ok.then(|| out.into())
+    }
+
+    /// True if the driver is for a unidirectional port, i.e. an input or
+    /// output port as opposed to `inout` or `ref`
+    /// (`slang::analysis::ValueDriver::isUnidirectionalPort`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); logic z; assign z = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let a = body.find("a").unwrap();
+    /// let driver = analysis.driver_handles(a).next().unwrap();
+    /// assert!(driver.is_unidirectional_port());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_unidirectional_port(&self) -> bool {
+        // SAFETY: the handle belongs to a live analysis.
+        unsafe { sys::slang_value_driver_is_unidirectional_port(self.handle) }
+    }
+
+    /// True if this driver lives inside a single-driver procedure, such as
+    /// `always_comb`, `always_latch`, or `always_ff`
+    /// (`slang::analysis::ValueDriver::isInSingleDriverProcedure`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input logic a); logic z; always_comb z = a; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let z = body.find("z").unwrap();
+    /// let driver = analysis.driver_handles(z).next().unwrap();
+    /// assert!(driver.is_in_single_driver_procedure());
+    /// # Ok(()) }
+    /// ```
+    pub fn is_in_single_driver_procedure(&self) -> bool {
+        // SAFETY: the handle belongs to a live analysis.
+        unsafe { sys::slang_value_driver_is_in_single_driver_procedure(self.handle) }
+    }
+
+    /// The kind of construct this driver came from
+    /// (`slang::analysis::ValueDriver::source`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{AnalysisFlags, DriverSource};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m(input logic a); logic z; always_comb z = a; endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let z = body.find("z").unwrap();
+    /// let driver = analysis.driver_handles(z).next().unwrap();
+    /// assert_eq!(driver.source(), DriverSource::AlwaysComb);
+    /// # Ok(()) }
+    /// ```
+    pub fn source(&self) -> DriverSource {
+        // SAFETY: the handle belongs to a live analysis.
+        DriverSource::from_raw(unsafe { sys::slang_value_driver_source(self.handle) })
+    }
+
+    /// The target value and sub-path being driven
+    /// (`slang::analysis::ValueDriver::path`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); logic z; assign z = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let z = body.find("z").unwrap();
+    /// let driver = analysis.driver_handles(z).next().unwrap();
+    /// assert_eq!(driver.path().root_symbol(), Some(driver.symbol()));
+    /// # Ok(()) }
+    /// ```
+    pub fn path(&self) -> ValuePath<'d> {
+        // SAFETY: the handle belongs to a live analysis; ValueDriver::path is
+        // documented to always have a non-null root symbol and lsp.
+        let raw = unsafe { sys::slang_value_driver_path(self.handle) };
+        ValuePath {
+            handle: raw,
+            _analysis: PhantomData,
+        }
+    }
+}
+
+impl core::fmt::Debug for ValueDriver<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (lo, hi) = self.bounds();
+        write!(
+            f,
+            "ValueDriver({:?}, [{lo}:{hi}], flags={:?})",
+            self.symbol().name(),
+            self.flags()
+        )
+    }
+}
+
+/// The target value and sub-path driven by a [`ValueDriver`]
+/// (`slang::ast::ValuePath`): field accesses, array element selects, and the
+/// like leading from a root value symbol.
+#[derive(Clone, Copy)]
+pub struct ValuePath<'d> {
+    handle: sys::slang_value_path,
+    _analysis: PhantomData<&'d Analysis<'d>>,
+}
+
+impl<'d> ValuePath<'d> {
+    /// The value symbol at the root of the path, if there is one
+    /// (`slang::ast::ValuePath::rootSymbol`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic a); logic z; assign z = a; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let z = body.find("z").unwrap();
+    /// let driver = analysis.driver_handles(z).next().unwrap();
+    /// assert_eq!(driver.path().root_symbol(), Some(z));
+    /// # Ok(()) }
+    /// ```
+    pub fn root_symbol(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_value_path_root_symbol(self.handle) };
+        (!raw.ptr.is_null()).then(|| Symbol::from_raw(raw))
+    }
+}
+
+/// One analyzed concurrent assertion or procedural checker instantiation
+/// (`slang::analysis::AnalyzedAssertion`), obtained from [`Analysis::assertions`].
+#[derive(Clone, Copy)]
+pub struct AnalyzedAssertion<'d> {
+    handle: sys::slang_analyzed_assertion,
+    _analysis: PhantomData<&'d Analysis<'d>>,
+}
+
+impl<'d> AnalyzedAssertion<'d> {
+    /// The symbol that contains this assertion
+    /// (`slang::analysis::AnalyzedAssertion::containingSymbol`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic clk, a, b; \
+    /// #      always_ff @(posedge clk) begin \
+    /// #        assert property (@(posedge clk) a |-> b); \
+    /// #      end endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// let assertion = analysis.assertions(proc.symbol()).next().unwrap();
+    /// assert_eq!(assertion.containing_symbol(), proc.symbol());
+    /// # Ok(()) }
+    /// ```
+    pub fn containing_symbol(&self) -> Symbol<'d> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_analyzed_assertion_containing_symbol(self.handle) };
+        Symbol::from_raw(raw)
+    }
+
+    /// The procedure that contains this assertion, if any
+    /// (`slang::analysis::AnalyzedAssertion::procedure`). `None` for an
+    /// assertion with no containing procedure (e.g. one bound standalone as a
+    /// module-level property instantiation).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic clk, a, b; \
+    /// #      always_ff @(posedge clk) begin \
+    /// #        assert property (@(posedge clk) a |-> b); \
+    /// #      end endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// let assertion = analysis.assertions(proc.symbol()).next().unwrap();
+    /// assert_eq!(assertion.procedure().unwrap().symbol(), proc.symbol());
+    /// # Ok(()) }
+    /// ```
+    pub fn procedure(&self) -> Option<AnalyzedProcedure<'d>> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_analyzed_assertion_procedure(self.handle) };
+        if raw.ptr.is_null() {
+            return None;
+        }
+        // SAFETY: `raw` is a non-null handle just returned above.
+        let symbol_raw = unsafe { sys::slang_analyzed_procedure_symbol(raw) };
+        wrap::<Symbol>(symbol_raw).map(|symbol| AnalyzedProcedure {
+            symbol,
+            handle: raw,
+        })
+    }
+
+    /// The AST node that describes this assertion
+    /// (`slang::analysis::AnalyzedAssertion::astNode`): either a concurrent
+    /// assertion statement or an assertion instance expression bound
+    /// standalone (e.g. from a procedural checker). Use
+    /// [`SemNode::as_statement`] / [`SemNode::as_expression`] to narrow it.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic clk, a, b; \
+    /// #      always_ff @(posedge clk) begin \
+    /// #        assert property (@(posedge clk) a |-> b); \
+    /// #      end endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// let assertion = analysis.assertions(proc.symbol()).next().unwrap();
+    /// assert!(assertion.ast_node().as_statement().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn ast_node(&self) -> SemNode<'d> {
+        // SAFETY: the handle belongs to a live analysis; astNode is always set.
+        let raw = unsafe { sys::slang_analyzed_assertion_ast_node(self.handle) };
+        SemNode::from_raw(raw)
+    }
+
+    /// The root of this assertion's expression tree
+    /// (`slang::analysis::AnalyzedAssertion::getRoot`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic clk, a, b; \
+    /// #      always_ff @(posedge clk) begin \
+    /// #        assert property (@(posedge clk) a |-> b); \
+    /// #      end endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// let assertion = analysis.assertions(proc.symbol()).next().unwrap();
+    /// let root = assertion.root();
+    /// // The root is an assertion-expression node — neither a statement nor
+    /// // a plain expression.
+    /// assert!(root.as_statement().is_none() && root.as_expression().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn root(&self) -> SemNode<'d> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_analyzed_assertion_root(self.handle) };
+        SemNode::from_raw(raw)
+    }
+
+    /// The semantic leading clock of this assertion
+    /// (`slang::analysis::AnalyzedAssertion::getSemanticLeadingClock`).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic clk, a, b; \
+    /// #      always_ff @(posedge clk) begin \
+    /// #        assert property (@(posedge clk) a |-> b); \
+    /// #      end endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// let assertion = analysis.assertions(proc.symbol()).next().unwrap();
+    /// assert!(assertion.semantic_leading_clock().is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn semantic_leading_clock(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_analyzed_assertion_semantic_leading_clock(self.handle) };
+        wrap::<SemNode>(raw)
+    }
+
+    /// The clock that applies to `expr`, a sub-expression of
+    /// [`root`](Self::root) belonging to this assertion's tree
+    /// (`slang::analysis::AnalyzedAssertion::getClock`). Returns `None` if
+    /// `expr` is multi-clocked (its subexpressions must be examined
+    /// individually) or is not part of this assertion.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::AnalysisFlags;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m; logic clk, a, b; \
+    /// #      always_ff @(posedge clk) begin \
+    /// #        assert property (@(posedge clk) a |-> b); \
+    /// #      end endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let analysis = design.analyze(AnalysisFlags::NONE, 1)?;
+    /// let proc = analysis.procedures(body).next().unwrap();
+    /// let assertion = analysis.assertions(proc.symbol()).next().unwrap();
+    /// assert!(assertion.clock(assertion.root()).is_some());
+    /// # Ok(()) }
+    /// ```
+    pub fn clock(&self, expr: SemNode<'d>) -> Option<SemNode<'d>> {
+        // SAFETY: the handle belongs to a live analysis; `expr.raw` is a valid
+        // node (possibly of the wrong domain, which the C side checks).
+        let raw = unsafe { sys::slang_analyzed_assertion_clock(self.handle, expr.raw) };
+        wrap::<SemNode>(raw)
+    }
+}
+
+impl core::fmt::Debug for AnalyzedAssertion<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "AnalyzedAssertion(in {:?})",
+            self.containing_symbol().name()
+        )
+    }
+}
+
+/// One (symbol, bit-range) entry in an analyzed procedure's read set
+/// (`slang::analysis::ReadRange`).
+#[derive(Clone, Copy)]
+pub struct ReadRange<'d> {
+    raw: sys::slang_read_range,
+    _analysis: PhantomData<&'d Analysis<'d>>,
+}
+
+impl<'d> ReadRange<'d> {
+    /// The symbol being read (`slang::analysis::ReadRange::symbol`).
+    pub fn symbol(&self) -> Symbol<'d> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_read_range_symbol(self.raw) };
+        Symbol::from_raw(raw)
+    }
+
+    /// The bit range being read (`slang::analysis::ReadRange::bitRange`), as
+    /// `(low, high)` (both inclusive).
+    pub fn bit_range(&self) -> (u64, u64) {
+        let mut lo = 0u64;
+        let mut hi = 0u64;
+        // SAFETY: the handle belongs to a live analysis; out-params provided.
+        unsafe { sys::slang_read_range_bit_range(self.raw, &mut lo, &mut hi) };
+        (lo, hi)
+    }
+}
+
+impl core::fmt::Debug for ReadRange<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (lo, hi) = self.bit_range();
+        write!(f, "ReadRange({:?}, [{lo}:{hi}])", self.symbol().name())
+    }
+}
+
+/// The set of symbols read within a single `@*` timing region of an analyzed
+/// procedure (`slang::analysis::AnalyzedProcedure::ImplicitEventReadSet`),
+/// obtained from [`AnalyzedProcedure::implicit_event_read_sets`].
+#[derive(Clone, Copy)]
+pub struct ImplicitEventReadSet<'d> {
+    raw: sys::slang_implicit_event_read_set,
+    _analysis: PhantomData<&'d Analysis<'d>>,
+}
+
+impl<'d> ImplicitEventReadSet<'d> {
+    /// The `@*`-timed statement this read set belongs to
+    /// (`slang::analysis::AnalyzedProcedure::ImplicitEventReadSet::statement`).
+    pub fn statement(&self) -> Statement<'d> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_implicit_event_read_set_statement(self.raw) };
+        Statement::from_raw(raw)
+    }
+
+    /// The (symbol, bit-range) entries read in this `@*` region.
+    pub fn reads(&self) -> impl Iterator<Item = ReadRange<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the handle belongs to a live analysis.
+        let count = unsafe { sys::slang_implicit_event_read_set_read_count(raw) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: index in range.
+            let r = unsafe { sys::slang_implicit_event_read_set_read_at(raw, i) };
+            (!r.ptr.is_null()).then_some(ReadRange {
+                raw: r,
+                _analysis: PhantomData,
+            })
+        })
+    }
+}
+
+impl core::fmt::Debug for ImplicitEventReadSet<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ImplicitEventReadSet({} reads)", self.reads().count())
+    }
+}
+
+/// The kind of a procedure's effective sensitivity list
+/// (`slang::analysis::SensitivityList::Kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SensitivityKind {
+    /// No event-based sensitivity: the procedure runs unconditionally (e.g.
+    /// `initial`/`final`) or has no event timing control.
+    None,
+    /// Explicit sensitivity list specified in source (e.g.
+    /// `always_ff @(posedge clk)` or `always @(a or b)`).
+    Explicit,
+    /// Implicit sensitivity list derived from the signals read by the
+    /// procedure (e.g. `always_comb`, `always_latch`, or `always @*`).
+    Implicit,
+    /// Multiple event controls, or event controls not at the start of the
+    /// block (nested inside complex flow control, fork/join, etc).
+    Dynamic,
+}
+
+/// An analyzed procedure's effective sensitivity list
+/// (`slang::analysis::SensitivityList`), obtained from
+/// [`AnalyzedProcedure::sensitivity_list`].
+#[derive(Clone, Copy)]
+pub struct SensitivityList<'d> {
+    raw: sys::slang_sensitivity_list,
+    _analysis: PhantomData<&'d Analysis<'d>>,
+}
+
+impl<'d> SensitivityList<'d> {
+    /// The kind of this sensitivity list.
+    pub fn kind(&self) -> SensitivityKind {
+        // SAFETY: the handle belongs to a live analysis.
+        match unsafe { sys::slang_sensitivity_list_kind(self.raw) } {
+            sys::SLANG_SENSITIVITY_EXPLICIT => SensitivityKind::Explicit,
+            sys::SLANG_SENSITIVITY_IMPLICIT => SensitivityKind::Implicit,
+            sys::SLANG_SENSITIVITY_DYNAMIC => SensitivityKind::Dynamic,
+            _ => SensitivityKind::None,
+        }
+    }
+
+    /// For [`SensitivityKind::Explicit`]: the timing control containing the
+    /// explicit sensitivity. `None` otherwise.
+    pub fn timing_control(&self) -> Option<SemNode<'d>> {
+        // SAFETY: the handle belongs to a live analysis.
+        let raw = unsafe { sys::slang_sensitivity_list_timing_control(self.raw) };
+        wrap::<SemNode>(raw)
+    }
+
+    /// The (symbol, bit-range) entries forming this sensitivity list.
+    pub fn reads(&self) -> impl Iterator<Item = ReadRange<'d>> + 'd {
+        let raw = self.raw;
+        // SAFETY: the handle belongs to a live analysis.
+        let count = unsafe { sys::slang_sensitivity_list_read_count(raw) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: index in range.
+            let r = unsafe { sys::slang_sensitivity_list_read_at(raw, i) };
+            (!r.ptr.is_null()).then_some(ReadRange {
+                raw: r,
+                _analysis: PhantomData,
+            })
+        })
+    }
+}
+
+impl core::fmt::Debug for SensitivityList<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "SensitivityList({:?})", self.kind())
     }
 }
 

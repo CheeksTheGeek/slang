@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 /// The audited baseline. Update this ONLY together with a review of the new
 /// `mutable` fields and, if needed, SAFETY.md.
-const BASELINE_MUTABLE: usize = 139;
+const BASELINE_MUTABLE: usize = 140;
 
 #[test]
 fn mutable_field_count_is_audited() {

@@ -379,6 +379,11 @@ impl<'t> Node<'t> {
         Node::wrap(raw)
     }
 
+    /// The raw handle, for passing to a C accessor that takes a `slang_node`.
+    pub(crate) fn raw(&self) -> sys::slang_node {
+        self.raw
+    }
+
     /// The node's syntax kind.
     ///
     /// ```

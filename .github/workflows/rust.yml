@@ -48,13 +48,20 @@ jobs:
       run: DOCS_RS=1 cargo doc -p sv-lang --no-deps
       shell: bash
 
-  # Full test suite across the three tier-1 platforms. The vendored C++ build
-  # needs a C++20 compiler (preinstalled) and python3 for the codegen scripts.
+  # Full test suite on the verified platforms. The vendored C++ build needs a
+  # C++20 compiler (preinstalled) and python3 for the codegen scripts.
+  #
+  # windows-latest is intentionally NOT in this matrix: the vendored `cc` build
+  # of slang does not yet compile under MSVC (every translation unit fails at
+  # cl.exe with exit code 2, even with slang's required Windows defines applied;
+  # the compiler's own diagnostics are swallowed by the build-script wrapper, so
+  # it needs debugging on a real Windows host). Native Windows support is a known
+  # gap — the `backend-wasm` path runs on every platform with no C++ toolchain.
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

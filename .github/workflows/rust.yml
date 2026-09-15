@@ -140,7 +140,9 @@ jobs:
         # actually detected.
         out=$(TSAN_OPTIONS=exitcode=0 cargo +nightly test $args sealed_only_races -- --nocapture 2>&1)
         echo "$out"
-        echo "$out" | grep -q "data race" || {
+        # here-string, not `echo | grep -q`: grep -q closes the pipe early, so
+        # echo takes SIGPIPE and pipefail would fail the (otherwise successful) check.
+        grep -q "data race" <<<"$out" || {
           echo "::error::expected the un-totalized path to race under TSan (gate is vacuous)"; exit 1; }
       shell: bash
     - name: Miri on the mock backend

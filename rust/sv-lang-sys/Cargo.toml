@@ -1,6 +1,6 @@
 [package]
 name = "sv-lang-sys"
-version = "0.1.0+slang.11.0"
+version = "0.1.1+slang.11.0"
 description = "Raw FFI bindings to slang-c, the stable C API of the slang SystemVerilog compiler frontend"
 readme = "README.md"
 keywords = ["systemverilog", "verilog", "parser", "compiler", "ffi"]

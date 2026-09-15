@@ -351,6 +351,22 @@ fn compile(
             .flag("/bigobj")
             .flag("/utf-8")
             .flag("/permissive-");
+        // The Windows-specific defines slang's CMakeLists marks as "required by
+        // all targets to build and run correctly" (CMakeLists.txt:184-189).
+        // Without them the vendored MSVC build fails to compile (secure-CRT and
+        // <windows.h> conformance under /permissive-).
+        for (k, v) in [
+            ("WIN32", None),
+            ("_WINDOWS", None),
+            ("NTDDI_VERSION", Some("0x06010000")),
+            ("_WIN32_WINNT", Some("0x0601")),
+            ("_SCL_SECURE_NO_WARNINGS", None),
+            ("_CRT_SECURE_NO_WARNINGS", None),
+            ("_CRT_SECURE_NO_DEPRECATE", None),
+            ("_CRT_NONSTDC_NO_WARNINGS", None),
+        ] {
+            build.define(k, v);
+        }
     } else {
         build.flag("-fexceptions");
         if target.contains("wasi") {

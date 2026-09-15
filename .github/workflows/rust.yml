@@ -110,14 +110,18 @@ jobs:
         fetch-depth: 0
     - name: Install nightly
       run: |
-        rustup toolchain install nightly --component miri rust-src
+        rustup toolchain install nightly --component miri --component rust-src
         rustup default nightly
       shell: bash
     - name: TSan negative gate
       env:
         SV_LANG_TSAN: '1'
         RUSTFLAGS: '-Zsanitizer=thread'
-      run: cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p sv-lang --test tsan_race -- --nocapture
+        # The C++ TSan runtime must match Rust's LLVM sanitizer — build the
+        # vendored slang with clang, not the runner's default gcc.
+        CC: clang
+        CXX: clang++
+      run: cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p sv-lang --features __unsound_test_only --test tsan_race -- --nocapture
       shell: bash
     - name: Miri on the mock backend
       run: cargo +nightly miri test -p sv-lang-mock

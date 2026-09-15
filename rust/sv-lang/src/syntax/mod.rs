@@ -19,6 +19,8 @@ mod generated {
     pub mod nodes_5;
     pub mod nodes_6;
     pub mod nodes_7;
+    #[cfg(test)]
+    pub mod touch;
     pub mod visitor;
 }
 
@@ -1335,5 +1337,83 @@ mod mirror {
         // SAFETY: see module docs.
         let s = unsafe { sink(user) };
         guard(s, |b| b.finish_node());
+    }
+}
+
+#[cfg(test)]
+mod accessor_robustness {
+    use crate::Session;
+    use crate::syntax::generated::touch::touch_all_members;
+
+    // A design that exercises a broad slice of the syntax kinds: ports, params,
+    // typedef/enum/struct, procedural blocks with if/case/for, continuous
+    // assignment, an instance, a function, a class with a constraint, a
+    // concurrent assertion, and a generate block.
+    const RICH: &str = "\
+package p; localparam int W = 8; typedef enum logic [1:0] { A, B, C } e_t; endpackage
+interface bus_if(input logic clk); logic req, gnt; modport m(input req, output gnt); endinterface
+module m #(parameter int N = 4) (input logic clk, input logic rst, input logic [W-1:0] d,
+    output logic [W-1:0] q, bus_if bif);
+  import p::*;
+  typedef struct packed { logic [3:0] hi; logic [3:0] lo; } pair_t;
+  pair_t pr; e_t st; logic [W-1:0] next;
+  always_ff @(posedge clk or negedge rst) begin
+    if (!rst) q <= '0;
+    else begin
+      case (st)
+        A: q <= d;
+        B: for (int i = 0; i < N; i++) q <= q + 1'b1;
+        default: q <= next;
+      endcase
+    end
+  end
+  assign next = q ^ d;
+  function automatic logic [W-1:0] inv(input logic [W-1:0] x); return ~x; endfunction
+  generate for (genvar g = 0; g < N; g++) begin : gen assign bif.gnt = bif.req; end endgenerate
+  assert property (@(posedge clk) rst |-> (q == q));
+endmodule
+class C; rand int x; constraint c { x > 0; x < 10; } endclass
+";
+
+    fn touch_tree(src: &str) {
+        let session = Session::new();
+        if let Ok(tree) = session.parse(src) {
+            let root = tree.root();
+            touch_all_members(root);
+            for n in root.descendants() {
+                touch_all_members(n);
+            }
+        }
+    }
+
+    #[test]
+    fn typed_accessors_survive_truncation() {
+        // Every prefix of the rich design is an error-recovery tree; calling
+        // every typed accessor on every node of each must not panic. This is the
+        // fuzz over the ~260 required-member `.expect()` sites the generic walk
+        // never touches.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {})); // keep output quiet unless we assert
+        let mut first_panic: Option<usize> = None;
+        for (i, _) in RICH.char_indices() {
+            let prefix = &RICH[..i];
+            if std::panic::catch_unwind(|| touch_tree(prefix)).is_err() {
+                first_panic = Some(i);
+                break;
+            }
+        }
+        // Also the full, valid design.
+        let full_ok = std::panic::catch_unwind(|| touch_tree(RICH)).is_ok();
+        std::panic::set_hook(hook);
+        assert!(
+            first_panic.is_none(),
+            "a typed accessor panicked on the error-recovery tree of prefix len {}:\n{:?}",
+            first_panic.unwrap(),
+            &RICH[..first_panic.unwrap()]
+        );
+        assert!(
+            full_ok,
+            "a typed accessor panicked on the full valid design"
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1018 functions generated, 44 skipped (callbacks / struct out-params).
+//! is written on top. 1015 functions generated, 48 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -983,57 +983,6 @@ impl Slang {
         }
         self.free(__sret);
         Ok(__w)
-    }
-    /// Raw marshalling for `slang_node_visit`.
-    pub fn raw_slang_node_visit(
-        &mut self,
-        node: &[u8],
-        visitor: u32,
-        user: u32,
-    ) -> Result<(), Error> {
-        let __p_node = self.malloc(16)?;
-        self.write(__p_node, &node[..16])?;
-        let __err = self.malloc(252)?;
-        self.zero(__err, 252)?;
-        let __r = self.call(
-            "slang_node_visit",
-            &[
-                Val::I32(__p_node as i32),
-                Val::I32(visitor as i32),
-                Val::I32(user as i32),
-                Val::I32(__err as i32),
-            ],
-        );
-        self.free(__p_node);
-        let __chk = self.check_err(__err);
-        self.free(__err);
-        __r?;
-        __chk?;
-        Ok(())
-    }
-    /// Raw marshalling for `slang_syntax_tree_walk`.
-    pub fn raw_slang_syntax_tree_walk(
-        &mut self,
-        tree: u32,
-        sink: u32,
-        user: u32,
-    ) -> Result<(), Error> {
-        let __err = self.malloc(252)?;
-        self.zero(__err, 252)?;
-        let __r = self.call(
-            "slang_syntax_tree_walk",
-            &[
-                Val::I32(tree as i32),
-                Val::I32(sink as i32),
-                Val::I32(user as i32),
-                Val::I32(__err as i32),
-            ],
-        );
-        let __chk = self.check_err(__err);
-        self.free(__err);
-        __r?;
-        __chk?;
-        Ok(())
     }
     /// Raw marshalling for `slang_diagnostics_destroy`.
     pub fn raw_slang_diagnostics_destroy(&mut self, diags: u32) -> Result<(), Error> {
@@ -2797,33 +2746,6 @@ impl Slang {
         }
         self.free(__sret);
         Ok(__w)
-    }
-    /// Raw marshalling for `slang_ast_visit`.
-    pub fn raw_slang_ast_visit(
-        &mut self,
-        root: &[u8],
-        visitor: u32,
-        user: u32,
-    ) -> Result<(), Error> {
-        let __p_root = self.malloc(16)?;
-        self.write(__p_root, &root[..16])?;
-        let __err = self.malloc(252)?;
-        self.zero(__err, 252)?;
-        let __r = self.call(
-            "slang_ast_visit",
-            &[
-                Val::I32(__p_root as i32),
-                Val::I32(visitor as i32),
-                Val::I32(user as i32),
-                Val::I32(__err as i32),
-            ],
-        );
-        self.free(__p_root);
-        let __chk = self.check_err(__err);
-        self.free(__err);
-        __r?;
-        __chk?;
-        Ok(())
     }
     /// Raw marshalling for `slang_symbol_name`.
     pub fn raw_slang_symbol_name(&mut self, symbol: &[u8]) -> Result<String, Error> {
@@ -9296,6 +9218,18 @@ impl Slang {
         self.free(__sret);
         Ok(__w)
     }
+    /// Raw marshalling for `slang_timing_control_edge`.
+    pub fn raw_slang_timing_control_edge(&mut self, node: &[u8]) -> Result<u32, Error> {
+        let __p_node = self.malloc(16)?;
+        self.write(__p_node, &node[..16])?;
+        let __r = self.call("slang_timing_control_edge", &[Val::I32(__p_node as i32)]);
+        self.free(__p_node);
+        let __v = __r?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
     /// Raw marshalling for `slang_stmt_block_kind`.
     pub fn raw_slang_stmt_block_kind(&mut self, node: &[u8]) -> Result<u32, Error> {
         let __p_node = self.malloc(16)?;
@@ -13952,38 +13886,6 @@ impl Slang {
             _ => 0,
         })
     }
-    /// Raw marshalling for `slang_dfa_run`.
-    pub fn raw_slang_dfa_run(
-        &mut self,
-        comp: u32,
-        procedure: &[u8],
-        lattice: u32,
-        user: u32,
-    ) -> Result<u32, Error> {
-        let __p_procedure = self.malloc(16)?;
-        self.write(__p_procedure, &procedure[..16])?;
-        let __err = self.malloc(252)?;
-        self.zero(__err, 252)?;
-        let __r = self.call(
-            "slang_dfa_run",
-            &[
-                Val::I32(comp as i32),
-                Val::I32(__p_procedure as i32),
-                Val::I32(lattice as i32),
-                Val::I32(user as i32),
-                Val::I32(__err as i32),
-            ],
-        );
-        self.free(__p_procedure);
-        let __chk = self.check_err(__err);
-        self.free(__err);
-        let __v = __r?;
-        __chk?;
-        Ok(match __v.first() {
-            Some(Val::I32(n)) => *n as u32,
-            _ => 0,
-        })
-    }
     /// Raw marshalling for `slang_dfa_ctx_state`.
     pub fn raw_slang_dfa_ctx_state(&mut self, ctx: u32) -> Result<u32, Error> {
         let __r = self.call("slang_dfa_ctx_state", &[Val::I32(ctx as i32)]);
@@ -17612,6 +17514,8 @@ impl Slang {
  *   slang_node_child: has a struct out-param
  *   slang_node_member_span: has a struct out-param
  *   slang_token_trivia: has a struct out-param
+ *   slang_node_visit: takes a callback (via type alias / vtable)
+ *   slang_syntax_tree_walk: takes a callback (via type alias / vtable)
  *   slang_diagnostics_at: has a struct out-param
  *   slang_diagnostics_note: has a struct out-param
  *   slang_diagnostics_range: has a struct out-param
@@ -17621,6 +17525,7 @@ impl Slang {
  *   slang_time_scale_value_from_literal: has a struct out-param
  *   slang_time_scale_value_from_string: has a struct out-param
  *   slang_compilation_try_parse_name: has a struct out-param
+ *   slang_ast_visit: takes a callback (via type alias / vtable)
  *   slang_scope_get_time_scale: has a struct out-param
  *   slang_declared_type_resolved_dimensions: has a struct out-param
  *   slang_definition_time_scale: has a struct out-param
@@ -17650,6 +17555,7 @@ impl Slang {
  *   slang_analysis_driver: has a struct out-param
  *   slang_value_driver_override_range: has a struct out-param
  *   slang_analyzed_procedure_driver_at: has a struct out-param
+ *   slang_dfa_run: takes a callback (via type alias / vtable)
  *   slang_extern_impl_next: takes a callback
  *   slang_extern_impl_impl: takes a callback
  *   slang_symbol_package_time_scale: has a struct out-param

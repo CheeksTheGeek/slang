@@ -95,12 +95,24 @@ All of it runs over the same `slang_*` C ABI the native
 [`sv-lang`](https://crates.io/crates/sv-lang) crate links directly — the
 `wasm/build.sh` reactor exports every function, and the crate marshals them
 through a small, uniform helper layer (indirect struct args, sret returns, guest
-allocation, and the callback trampoline).
+allocation, and the DFA callback trampoline).
 
-The **entire C surface is already reachable** through the generated `raw_*`
-bridge — `xtask gen_wasm_bridge` emits a marshalling wrapper for every function
-in the C ABI (only callbacks and struct out-parameters are hand-written), so the
-raw layer never lags the native backend. The ergonomic high-level `Slang` methods
-cover the common path and grow as needed on top of that bridge; a generic
-host-lattice API (beyond the built-in reaching-writes lattice) is the main
-remaining ergonomic extension.
+**Scope, honestly.** The generated `raw_*` bridge (`cargo xtask codegen` →
+`src/generated/bridge.rs`) covers ~1015 of the C functions — every one whose
+signature the uniform layer can marshal. **~48 are not in the bridge** and are
+reachable only where a hand-written path exists: the callback-taking functions
+(`slang_node_visit`, `slang_ast_visit`, `slang_syntax_tree_walk` need guest
+trampolines and are **not** bridged; only the DFA lattice has one), and the
+functions with struct out-parameters or `f64`/`f32`/`c_int` signatures — which
+include the **entire constant-value / `SVInt` / expression-eval family**, the
+per-diagnostic accessors, and the driver-option family.
+
+The ergonomic high-level `Slang` API is a **focused subset**, not full parity
+with native: it covers parse, a semantic elaboration walk (modules, symbols,
+types, statement/expression kinds and children), and the custom dataflow
+lattice. **Not yet exposed ergonomically** (and, per the above, not reachable
+via `raw_*` either where the C function is unbridged): diagnostics
+rendering/inspection, constant values and evaluation, the analysis/driver-tracking
+surface, scoped/path name lookup, the full CST mirror (tokens/trivia/typed
+nodes/visitor), the CLI driver, and script sessions. These are the main
+remaining extensions; the native backend is the complete surface today.

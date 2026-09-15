@@ -4028,6 +4028,19 @@ slang_ast slang_stmt_timing(slang_ast node) {
     });
 }
 
+slang_edge_kind slang_timing_control_edge(slang_ast node) {
+    // The `edge` field is set at SignalEventControl construction (TimingControl.h)
+    // — a pure read, no lazy memo. Returns SLANG_EDGE_NONE for any other kind.
+    SLANG_C_ACCESS(SLANG_EDGE_NONE, {
+        if (node.domain != SLANG_AST_TIMING_CONTROL || !node.ptr)
+            return SLANG_EDGE_NONE;
+        auto* tc = static_cast<const TimingControl*>(node.ptr);
+        if (tc->kind != TimingControlKind::SignalEvent)
+            return SLANG_EDGE_NONE;
+        return (slang_edge_kind)tc->as<SignalEventControl>().edge;
+    });
+}
+
 // ---- Block / conditional / case / assertion / event-trigger breadth --------
 //
 // Every field read below is set directly at Statement construction (see

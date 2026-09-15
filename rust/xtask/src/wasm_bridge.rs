@@ -141,6 +141,19 @@ fn classify_fn(f: &syn::ForeignItemFn) -> Result<Fun, String> {
         if ts.contains("extern") || ts.contains("Option<unsafe") || ts.contains("fn(") {
             return Err("takes a callback".into());
         }
+        // Callbacks are also carried by named type aliases / structs-of-fn-ptrs
+        // (slang_node_visitor, slang_ast_visitor) and by pointers to a sink /
+        // lattice vtable (slang_syntax_sink, slang_dfa_lattice). The uniform raw
+        // layer cannot synthesize a guest function pointer for these, so they
+        // would generate as non-functional stubs (callback lowered to a bare
+        // u32). Skip them here; the working ones (e.g. the DFA lattice) are
+        // provided by hand-written guest trampolines in lib.rs / dfa_shim.c.
+        if ts.contains("visitor")
+            || ts.contains("slang_syntax_sink")
+            || ts.contains("slang_dfa_lattice")
+        {
+            return Err("takes a callback (via type alias / vtable)".into());
+        }
         let arg_name = match &*pt.pat {
             syn::Pat::Ident(pi) => pi.ident.to_string(),
             _ => {

@@ -95,6 +95,22 @@ impl<'t> SequenceDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SequenceDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.name();
+        let _ = self.port_list();
+        let _ = self.semi();
+        let _ = self.variables();
+        let _ = self.seq_expr();
+        let _ = self.optional_semi();
+        let _ = self.end();
+        let _ = self.end_block_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::CheckerDeclarationSyntax`].
 ///
 /// Kinds: CheckerDeclaration.
@@ -169,6 +185,20 @@ impl<'t> CheckerDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> CheckerDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.name();
+        let _ = self.port_list();
+        let _ = self.semi();
+        let _ = self.members();
+        let _ = self.end();
+        let _ = self.end_block_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::CheckerDataDeclarationSyntax`].
 ///
 /// Kinds: CheckerDataDeclaration.
@@ -217,6 +247,15 @@ impl<'t> CheckerDataDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> CheckerDataDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.rand();
+        let _ = self.data();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::CompilationUnitSyntax`].
 ///
 /// Kinds: CompilationUnit.
@@ -257,6 +296,14 @@ impl<'t> CompilationUnitSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> CompilationUnitSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.members();
+        let _ = self.end_of_file();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::LibraryMapSyntax`].
 ///
 /// Kinds: LibraryMap.
@@ -294,6 +341,14 @@ impl<'t> LibraryMapSyntax<'t> {
     /// Member `endOfFile` (child 1).
     pub fn end_of_file(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> LibraryMapSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.members();
+        let _ = self.end_of_file();
     }
 }
 
@@ -555,6 +610,13 @@ impl<'t> SimpleDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SimpleDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::IncludeDirectiveSyntax`].
 ///
 /// Kinds: IncludeDirective.
@@ -592,6 +654,14 @@ impl<'t> IncludeDirectiveSyntax<'t> {
     /// Member `fileName` (child 1).
     pub fn file_name(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> IncludeDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.file_name();
     }
 }
 
@@ -720,6 +790,13 @@ impl<'t> NamedConditionalDirectiveExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> NamedConditionalDirectiveExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UnaryConditionalDirectiveExpressionSyntax`].
 ///
 /// Kinds: UnaryConditionalDirectiveExpression.
@@ -760,6 +837,14 @@ impl<'t> UnaryConditionalDirectiveExpressionSyntax<'t> {
             .member_node(1)
             .and_then(<ConditionalDirectiveExpressionSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> UnaryConditionalDirectiveExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.op();
+        let _ = self.operand();
     }
 }
 
@@ -814,6 +899,15 @@ impl<'t> BinaryConditionalDirectiveExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> BinaryConditionalDirectiveExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.left();
+        let _ = self.op();
+        let _ = self.right();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ParenthesizedConditionalDirectiveExpressionSyntax`].
 ///
 /// Kinds: ParenthesizedConditionalDirectiveExpression.
@@ -860,6 +954,15 @@ impl<'t> ParenthesizedConditionalDirectiveExpressionSyntax<'t> {
     /// Member `closeParen` (child 2).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ParenthesizedConditionalDirectiveExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.operand();
+        let _ = self.close_paren();
     }
 }
 
@@ -911,6 +1014,15 @@ impl<'t> ConditionalBranchDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ConditionalBranchDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.expr();
+        let _ = self.disabled_tokens();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UnconditionalBranchDirectiveSyntax`].
 ///
 /// Kinds: ElseDirective, EndIfDirective.
@@ -951,6 +1063,14 @@ impl<'t> UnconditionalBranchDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> UnconditionalBranchDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.disabled_tokens();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::MacroArgumentDefaultSyntax`].
 ///
 /// Kinds: MacroArgumentDefault.
@@ -988,6 +1108,14 @@ impl<'t> MacroArgumentDefaultSyntax<'t> {
     /// Member `tokens` (child 1).
     pub fn tokens(&self) -> TokenList<'t> {
         self.node.member_token_list(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> MacroArgumentDefaultSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.equals();
+        let _ = self.tokens();
     }
 }
 
@@ -1033,6 +1161,14 @@ impl<'t> MacroFormalArgumentSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> MacroFormalArgumentSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.default_value();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::MacroFormalArgumentListSyntax`].
 ///
 /// Kinds: MacroFormalArgumentList.
@@ -1075,6 +1211,15 @@ impl<'t> MacroFormalArgumentListSyntax<'t> {
     /// Member `closeParen` (child 2).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> MacroFormalArgumentListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.args();
+        let _ = self.close_paren();
     }
 }
 
@@ -1130,6 +1275,16 @@ impl<'t> DefineDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DefineDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.name();
+        let _ = self.formal_arguments();
+        let _ = self.body();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::MacroActualArgumentSyntax`].
 ///
 /// Kinds: MacroActualArgument.
@@ -1162,6 +1317,13 @@ impl<'t> MacroActualArgumentSyntax<'t> {
     /// Member `tokens` (child 0).
     pub fn tokens(&self) -> TokenList<'t> {
         self.node.member_token_list(0)
+    }
+}
+
+#[cfg(test)]
+impl<'t> MacroActualArgumentSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.tokens();
     }
 }
 
@@ -1210,6 +1372,15 @@ impl<'t> MacroActualArgumentListSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> MacroActualArgumentListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.args();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::MacroUsageSyntax`].
 ///
 /// Kinds: MacroUsage.
@@ -1249,6 +1420,14 @@ impl<'t> MacroUsageSyntax<'t> {
         self.node
             .member_node(1)
             .and_then(<MacroActualArgumentListSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> MacroUsageSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.args();
     }
 }
 
@@ -1302,6 +1481,16 @@ impl<'t> TimeScaleDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> TimeScaleDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.time_unit();
+        let _ = self.slash();
+        let _ = self.time_precision();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DefaultNetTypeDirectiveSyntax`].
 ///
 /// Kinds: DefaultNetTypeDirective.
@@ -1339,6 +1528,14 @@ impl<'t> DefaultNetTypeDirectiveSyntax<'t> {
     /// Member `netType` (child 1).
     pub fn net_type(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> DefaultNetTypeDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.net_type();
     }
 }
 
@@ -1382,6 +1579,14 @@ impl<'t> UnconnectedDriveDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> UnconnectedDriveDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.strength();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DefaultDecayTimeDirectiveSyntax`].
 ///
 /// Kinds: DefaultDecayTimeDirective.
@@ -1422,6 +1627,14 @@ impl<'t> DefaultDecayTimeDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DefaultDecayTimeDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.time();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DefaultTriregStrengthDirectiveSyntax`].
 ///
 /// Kinds: DefaultTriregStrengthDirective.
@@ -1459,6 +1672,14 @@ impl<'t> DefaultTriregStrengthDirectiveSyntax<'t> {
     /// Member `strength` (child 1).
     pub fn strength(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> DefaultTriregStrengthDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.strength();
     }
 }
 
@@ -1512,6 +1733,16 @@ impl<'t> LineDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> LineDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.line_number();
+        let _ = self.file_name();
+        let _ = self.level();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UndefDirectiveSyntax`].
 ///
 /// Kinds: UndefDirective.
@@ -1552,6 +1783,14 @@ impl<'t> UndefDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> UndefDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::BeginKeywordsDirectiveSyntax`].
 ///
 /// Kinds: BeginKeywordsDirective.
@@ -1589,6 +1828,14 @@ impl<'t> BeginKeywordsDirectiveSyntax<'t> {
     /// Member `versionSpecifier` (child 1).
     pub fn version_specifier(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> BeginKeywordsDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.version_specifier();
     }
 }
 
@@ -1707,6 +1954,13 @@ impl<'t> SimplePragmaExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SimplePragmaExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.value();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::NameValuePragmaExpressionSyntax`].
 ///
 /// Kinds: NameValuePragmaExpression.
@@ -1755,6 +2009,15 @@ impl<'t> NameValuePragmaExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> NameValuePragmaExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.equals();
+        let _ = self.value();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::NumberPragmaExpressionSyntax`].
 ///
 /// Kinds: NumberPragmaExpression.
@@ -1797,6 +2060,15 @@ impl<'t> NumberPragmaExpressionSyntax<'t> {
     /// Member `value` (child 2).
     pub fn value(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> NumberPragmaExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.size();
+        let _ = self.base();
+        let _ = self.value();
     }
 }
 
@@ -1845,6 +2117,15 @@ impl<'t> ParenPragmaExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ParenPragmaExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.values();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::PragmaDirectiveSyntax`].
 ///
 /// Kinds: PragmaDirective.
@@ -1890,6 +2171,15 @@ impl<'t> PragmaDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> PragmaDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.directive();
+        let _ = self.name();
+        let _ = self.args();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ConfigCellIdentifierSyntax`].
 ///
 /// Kinds: ConfigCellIdentifier.
@@ -1932,6 +2222,15 @@ impl<'t> ConfigCellIdentifierSyntax<'t> {
     /// Member `cell` (child 2).
     pub fn cell(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ConfigCellIdentifierSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.library();
+        let _ = self.dot();
+        let _ = self.cell();
     }
 }
 
@@ -2028,6 +2327,14 @@ impl<'t> ConfigLiblistSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ConfigLiblistSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.liblist();
+        let _ = self.libraries();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ConfigUseClauseSyntax`].
 ///
 /// Kinds: ConfigUseClause.
@@ -2084,6 +2391,17 @@ impl<'t> ConfigUseClauseSyntax<'t> {
     /// Member `config` (child 4).
     pub fn config(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ConfigUseClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.r#use();
+        let _ = self.name();
+        let _ = self.param_assignments();
+        let _ = self.colon();
+        let _ = self.config();
     }
 }
 
@@ -2202,6 +2520,15 @@ impl<'t> DefaultConfigRuleSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DefaultConfigRuleSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.default_keyword();
+        let _ = self.liblist();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ConfigInstanceIdentifierSyntax`].
 ///
 /// Kinds: ConfigInstanceIdentifier.
@@ -2239,6 +2566,14 @@ impl<'t> ConfigInstanceIdentifierSyntax<'t> {
     /// Member `name` (child 1).
     pub fn name(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ConfigInstanceIdentifierSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.dot();
+        let _ = self.name();
     }
 }
 
@@ -2300,6 +2635,17 @@ impl<'t> InstanceConfigRuleSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> InstanceConfigRuleSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.instance();
+        let _ = self.top_module();
+        let _ = self.instance_names();
+        let _ = self.rule_clause();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::CellConfigRuleSyntax`].
 ///
 /// Kinds: CellConfigRule.
@@ -2353,6 +2699,16 @@ impl<'t> CellConfigRuleSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> CellConfigRuleSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.cell();
+        let _ = self.name();
+        let _ = self.rule_clause();
+        let _ = self.semi();
     }
 }
 
@@ -2443,6 +2799,23 @@ impl<'t> ConfigDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ConfigDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.config();
+        let _ = self.name();
+        let _ = self.semi1();
+        let _ = self.localparams();
+        let _ = self.design();
+        let _ = self.top_cells();
+        let _ = self.semi2();
+        let _ = self.rules();
+        let _ = self.endconfig();
+        let _ = self.block_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::FilePathSpecSyntax`].
 ///
 /// Kinds: FilePathSpec.
@@ -2475,6 +2848,13 @@ impl<'t> FilePathSpecSyntax<'t> {
     /// Member `path` (child 0).
     pub fn path(&self) -> Option<Token<'t>> {
         self.node.member_token(0)
+    }
+}
+
+#[cfg(test)]
+impl<'t> FilePathSpecSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.path();
     }
 }
 
@@ -2520,6 +2900,15 @@ impl<'t> LibraryIncDirClauseSyntax<'t> {
     /// Member `filePaths` (child 2).
     pub fn file_paths(&self) -> SeparatedList<'t, FilePathSpecSyntax<'t>> {
         self.node.member_separated_list(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> LibraryIncDirClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.minus();
+        let _ = self.incdir();
+        let _ = self.file_paths();
     }
 }
 
@@ -2585,6 +2974,18 @@ impl<'t> LibraryDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> LibraryDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.library();
+        let _ = self.name();
+        let _ = self.file_paths();
+        let _ = self.inc_dir_clause();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::LibraryIncludeStatementSyntax`].
 ///
 /// Kinds: LibraryIncludeStatement.
@@ -2635,5 +3036,15 @@ impl<'t> LibraryIncludeStatementSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> LibraryIncludeStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.include();
+        let _ = self.file_path();
+        let _ = self.semi();
     }
 }

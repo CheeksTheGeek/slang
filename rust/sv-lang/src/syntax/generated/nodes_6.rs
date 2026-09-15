@@ -113,6 +113,15 @@ impl<'t> BinaryBlockEventExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> BinaryBlockEventExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.left();
+        let _ = self.or_keyword();
+        let _ = self.right();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::PrimaryBlockEventExpressionSyntax`].
 ///
 /// Kinds: PrimaryBlockEventExpression.
@@ -153,6 +162,14 @@ impl<'t> PrimaryBlockEventExpressionSyntax<'t> {
             .member_node(1)
             .and_then(<NameSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> PrimaryBlockEventExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.name();
     }
 }
 
@@ -206,6 +223,16 @@ impl<'t> BlockCoverageEventSyntax<'t> {
     /// Member `closeParen` (child 3).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> BlockCoverageEventSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.atat();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
     }
 }
 
@@ -293,6 +320,22 @@ impl<'t> CovergroupDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> CovergroupDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.covergroup();
+        let _ = self.extends();
+        let _ = self.name();
+        let _ = self.port_list();
+        let _ = self.event();
+        let _ = self.semi();
+        let _ = self.members();
+        let _ = self.endgroup();
+        let _ = self.end_block_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::CoverageOptionSyntax`].
 ///
 /// Kinds: CoverageOption.
@@ -338,6 +381,15 @@ impl<'t> CoverageOptionSyntax<'t> {
     /// Member `semi` (child 2).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> CoverageOptionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.expr();
+        let _ = self.semi();
     }
 }
 
@@ -391,6 +443,16 @@ impl<'t> CoverageIffClauseSyntax<'t> {
     /// Member `closeParen` (child 3).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> CoverageIffClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.iff();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
     }
 }
 
@@ -481,6 +543,22 @@ impl<'t> CoverpointSyntax<'t> {
     /// Member `emptySemi` (child 9).
     pub fn empty_semi(&self) -> Option<Token<'t>> {
         self.node.member_token(9)
+    }
+}
+
+#[cfg(test)]
+impl<'t> CoverpointSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.r#type();
+        let _ = self.label();
+        let _ = self.coverpoint();
+        let _ = self.expr();
+        let _ = self.iff();
+        let _ = self.open_brace();
+        let _ = self.members();
+        let _ = self.close_brace();
+        let _ = self.empty_semi();
     }
 }
 
@@ -617,6 +695,14 @@ impl<'t> DefaultCoverageBinInitializerSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DefaultCoverageBinInitializerSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.default_keyword();
+        let _ = self.sequence_keyword();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::WithClauseSyntax`].
 ///
 /// Kinds: WithClause.
@@ -670,6 +756,16 @@ impl<'t> WithClauseSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> WithClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.with();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ExpressionCoverageBinInitializerSyntax`].
 ///
 /// Kinds: ExpressionCoverageBinInitializer.
@@ -705,6 +801,13 @@ impl<'t> ExpressionCoverageBinInitializerSyntax<'t> {
             .member_node(0)
             .and_then(<ExpressionSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ExpressionCoverageBinInitializerSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
     }
 }
 
@@ -753,6 +856,14 @@ impl<'t> RangeCoverageBinInitializerSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> RangeCoverageBinInitializerSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.ranges();
+        let _ = self.with_clause();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::IdWithExprCoverageBinInitializerSyntax`].
 ///
 /// Kinds: IdWithExprCoverageBinInitializer.
@@ -793,6 +904,14 @@ impl<'t> IdWithExprCoverageBinInitializerSyntax<'t> {
             .member_node(1)
             .and_then(<WithClauseSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> IdWithExprCoverageBinInitializerSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.id();
+        let _ = self.with_clause();
     }
 }
 
@@ -848,6 +967,16 @@ impl<'t> TransRepeatRangeSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> TransRepeatRangeSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_bracket();
+        let _ = self.specifier();
+        let _ = self.selector();
+        let _ = self.close_bracket();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::TransRangeSyntax`].
 ///
 /// Kinds: TransRange.
@@ -887,6 +1016,14 @@ impl<'t> TransRangeSyntax<'t> {
         self.node
             .member_node(1)
             .and_then(<TransRepeatRangeSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> TransRangeSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.items();
+        let _ = self.repeat();
     }
 }
 
@@ -935,6 +1072,15 @@ impl<'t> TransSetSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> TransSetSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.ranges();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::TransListCoverageBinInitializerSyntax`].
 ///
 /// Kinds: TransListCoverageBinInitializer.
@@ -967,6 +1113,13 @@ impl<'t> TransListCoverageBinInitializerSyntax<'t> {
     /// Member `sets` (child 0).
     pub fn sets(&self) -> SeparatedList<'t, TransSetSyntax<'t>> {
         self.node.member_separated_list(0)
+    }
+}
+
+#[cfg(test)]
+impl<'t> TransListCoverageBinInitializerSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.sets();
     }
 }
 
@@ -1014,6 +1167,15 @@ impl<'t> CoverageBinsArraySizeSyntax<'t> {
     /// Member `closeBracket` (child 2).
     pub fn close_bracket(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> CoverageBinsArraySizeSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_bracket();
+        let _ = self.expr();
+        let _ = self.close_bracket();
     }
 }
 
@@ -1099,6 +1261,21 @@ impl<'t> CoverageBinsSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> CoverageBinsSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.wildcard();
+        let _ = self.keyword();
+        let _ = self.name();
+        let _ = self.size();
+        let _ = self.equals();
+        let _ = self.initializer();
+        let _ = self.iff();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::CoverCrossSyntax`].
 ///
 /// Kinds: CoverCross.
@@ -1175,6 +1352,21 @@ impl<'t> CoverCrossSyntax<'t> {
     /// Member `emptySemi` (child 8).
     pub fn empty_semi(&self) -> Option<Token<'t>> {
         self.node.member_token(8)
+    }
+}
+
+#[cfg(test)]
+impl<'t> CoverCrossSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.label();
+        let _ = self.cross();
+        let _ = self.items();
+        let _ = self.iff();
+        let _ = self.open_brace();
+        let _ = self.members();
+        let _ = self.close_brace();
+        let _ = self.empty_semi();
     }
 }
 
@@ -1327,6 +1519,14 @@ impl<'t> IntersectClauseSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> IntersectClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.intersect();
+        let _ = self.ranges();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::BinsSelectConditionExprSyntax`].
 ///
 /// Kinds: BinsSelectConditionExpr.
@@ -1387,6 +1587,17 @@ impl<'t> BinsSelectConditionExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> BinsSelectConditionExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.binsof();
+        let _ = self.open_paren();
+        let _ = self.name();
+        let _ = self.close_paren();
+        let _ = self.intersects();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UnaryBinsSelectExprSyntax`].
 ///
 /// Kinds: UnaryBinsSelectExpr.
@@ -1427,6 +1638,14 @@ impl<'t> UnaryBinsSelectExprSyntax<'t> {
             .member_node(1)
             .and_then(<BinsSelectConditionExprSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> UnaryBinsSelectExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.op();
+        let _ = self.expr();
     }
 }
 
@@ -1481,6 +1700,15 @@ impl<'t> BinaryBinsSelectExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> BinaryBinsSelectExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.left();
+        let _ = self.op();
+        let _ = self.right();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ParenthesizedBinsSelectExprSyntax`].
 ///
 /// Kinds: ParenthesizedBinsSelectExpr.
@@ -1529,6 +1757,15 @@ impl<'t> ParenthesizedBinsSelectExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ParenthesizedBinsSelectExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::SimpleBinsSelectExprSyntax`].
 ///
 /// Kinds: SimpleBinsSelectExpr.
@@ -1571,6 +1808,14 @@ impl<'t> SimpleBinsSelectExprSyntax<'t> {
         self.node
             .member_node(1)
             .and_then(<MatchesClauseSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> SimpleBinsSelectExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
+        let _ = self.matches_clause();
     }
 }
 
@@ -1639,6 +1884,18 @@ impl<'t> BinSelectWithFilterExprSyntax<'t> {
         self.node
             .member_node(5)
             .and_then(<MatchesClauseSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> BinSelectWithFilterExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
+        let _ = self.with();
+        let _ = self.open_paren();
+        let _ = self.filter();
+        let _ = self.close_paren();
+        let _ = self.matches_clause();
     }
 }
 
@@ -1712,6 +1969,19 @@ impl<'t> BinsSelectionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> BinsSelectionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.name();
+        let _ = self.equals();
+        let _ = self.expr();
+        let _ = self.iff();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::SequenceRepetitionSyntax`].
 ///
 /// Kinds: SequenceRepetition.
@@ -1764,6 +2034,16 @@ impl<'t> SequenceRepetitionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SequenceRepetitionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_bracket();
+        let _ = self.op();
+        let _ = self.selector();
+        let _ = self.close_bracket();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::SimpleSequenceExprSyntax`].
 ///
 /// Kinds: SimpleSequenceExpr.
@@ -1809,6 +2089,14 @@ impl<'t> SimpleSequenceExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SimpleSequenceExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
+        let _ = self.repetition();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::SequenceMatchListSyntax`].
 ///
 /// Kinds: SequenceMatchList.
@@ -1846,6 +2134,14 @@ impl<'t> SequenceMatchListSyntax<'t> {
     /// Member `items` (child 1).
     pub fn items(&self) -> SeparatedList<'t, PropertyExprSyntax<'t>> {
         self.node.member_separated_list(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> SequenceMatchListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.comma();
+        let _ = self.items();
     }
 }
 
@@ -1911,6 +2207,17 @@ impl<'t> ParenthesizedSequenceExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ParenthesizedSequenceExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.match_list();
+        let _ = self.close_paren();
+        let _ = self.repetition();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::BinarySequenceExprSyntax`].
 ///
 /// Kinds: AndSequenceExpr, IntersectSequenceExpr, OrSequenceExpr, ThroughoutSequenceExpr, WithinSequenceExpr.
@@ -1959,6 +2266,15 @@ impl<'t> BinarySequenceExprSyntax<'t> {
             .member_node(2)
             .and_then(<SequenceExprSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> BinarySequenceExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.left();
+        let _ = self.op();
+        let _ = self.right();
     }
 }
 
@@ -2022,6 +2338,17 @@ impl<'t> FirstMatchSequenceExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> FirstMatchSequenceExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.first_match();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.match_list();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ClockingSequenceExprSyntax`].
 ///
 /// Kinds: ClockingSequenceExpr.
@@ -2065,6 +2392,14 @@ impl<'t> ClockingSequenceExprSyntax<'t> {
             .member_node(1)
             .and_then(<SequenceExprSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ClockingSequenceExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.event();
+        let _ = self.expr();
     }
 }
 
@@ -2140,6 +2475,19 @@ impl<'t> DelayedSequenceElementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DelayedSequenceElementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.double_hash();
+        let _ = self.delay_val();
+        let _ = self.open_bracket();
+        let _ = self.op();
+        let _ = self.range();
+        let _ = self.close_bracket();
+        let _ = self.expr();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DelayedSequenceExprSyntax`].
 ///
 /// Kinds: DelayedSequenceExpr.
@@ -2182,6 +2530,14 @@ impl<'t> DelayedSequenceExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DelayedSequenceExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.first();
+        let _ = self.elements();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::SimplePropertyExprSyntax`].
 ///
 /// Kinds: SimplePropertyExpr.
@@ -2217,6 +2573,13 @@ impl<'t> SimplePropertyExprSyntax<'t> {
             .member_node(0)
             .and_then(<SequenceExprSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> SimplePropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
     }
 }
 
@@ -2275,6 +2638,16 @@ impl<'t> ParenthesizedPropertyExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ParenthesizedPropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.match_list();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::StrongWeakPropertyExprSyntax`].
 ///
 /// Kinds: StrongWeakPropertyExpr.
@@ -2328,6 +2701,16 @@ impl<'t> StrongWeakPropertyExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> StrongWeakPropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UnaryPropertyExprSyntax`].
 ///
 /// Kinds: UnaryPropertyExpr.
@@ -2368,6 +2751,14 @@ impl<'t> UnaryPropertyExprSyntax<'t> {
             .member_node(1)
             .and_then(<PropertyExprSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> UnaryPropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.op();
+        let _ = self.expr();
     }
 }
 
@@ -2431,6 +2822,17 @@ impl<'t> UnarySelectPropertyExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> UnarySelectPropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.op();
+        let _ = self.open_bracket();
+        let _ = self.selector();
+        let _ = self.close_bracket();
+        let _ = self.expr();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::BinaryPropertyExprSyntax`].
 ///
 /// Kinds: AndPropertyExpr, FollowedByPropertyExpr, IffPropertyExpr, ImplicationPropertyExpr, ImpliesPropertyExpr, OrPropertyExpr, SUntilPropertyExpr, SUntilWithPropertyExpr, UntilPropertyExpr, UntilWithPropertyExpr.
@@ -2482,6 +2884,15 @@ impl<'t> BinaryPropertyExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> BinaryPropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.left();
+        let _ = self.op();
+        let _ = self.right();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ClockingPropertyExprSyntax`].
 ///
 /// Kinds: ClockingPropertyExpr.
@@ -2524,6 +2935,14 @@ impl<'t> ClockingPropertyExprSyntax<'t> {
         self.node
             .member_node(1)
             .and_then(<PropertyExprSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ClockingPropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.event();
+        let _ = self.expr();
     }
 }
 
@@ -2588,6 +3007,17 @@ impl<'t> AcceptOnPropertyExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> AcceptOnPropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.open_paren();
+        let _ = self.condition();
+        let _ = self.close_paren();
+        let _ = self.expr();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ElsePropertyClauseSyntax`].
 ///
 /// Kinds: ElsePropertyClause.
@@ -2628,6 +3058,14 @@ impl<'t> ElsePropertyClauseSyntax<'t> {
             .member_node(1)
             .and_then(<PropertyExprSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ElsePropertyClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.else_keyword();
+        let _ = self.expr();
     }
 }
 
@@ -2696,6 +3134,18 @@ impl<'t> ConditionalPropertyExprSyntax<'t> {
         self.node
             .member_node(5)
             .and_then(<ElsePropertyClauseSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ConditionalPropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.if_keyword();
+        let _ = self.open_paren();
+        let _ = self.condition();
+        let _ = self.close_paren();
+        let _ = self.expr();
+        let _ = self.else_clause();
     }
 }
 
@@ -2806,6 +3256,16 @@ impl<'t> DefaultPropertyCaseItemSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DefaultPropertyCaseItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.default_keyword();
+        let _ = self.colon();
+        let _ = self.expr();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::StandardPropertyCaseItemSyntax`].
 ///
 /// Kinds: StandardPropertyCaseItem.
@@ -2856,6 +3316,16 @@ impl<'t> StandardPropertyCaseItemSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> StandardPropertyCaseItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expressions();
+        let _ = self.colon();
+        let _ = self.expr();
+        let _ = self.semi();
     }
 }
 
@@ -2922,6 +3392,18 @@ impl<'t> CasePropertyExprSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> CasePropertyExprSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.case_keyword();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+        let _ = self.items();
+        let _ = self.endcase();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::LocalVariableDeclarationSyntax`].
 ///
 /// Kinds: LocalVariableDeclaration.
@@ -2977,6 +3459,17 @@ impl<'t> LocalVariableDeclarationSyntax<'t> {
     /// Member `semi` (child 4).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> LocalVariableDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.var();
+        let _ = self.r#type();
+        let _ = self.declarators();
+        let _ = self.semi();
     }
 }
 
@@ -3064,5 +3557,21 @@ impl<'t> PropertyDeclarationSyntax<'t> {
         self.node
             .member_node(9)
             .and_then(<NamedBlockClauseSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> PropertyDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.name();
+        let _ = self.port_list();
+        let _ = self.semi();
+        let _ = self.variables();
+        let _ = self.property_spec();
+        let _ = self.optional_semi();
+        let _ = self.end();
+        let _ = self.end_block_name();
     }
 }

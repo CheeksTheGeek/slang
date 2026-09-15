@@ -180,6 +180,79 @@ fn curated_corpus_round_trips() {
     eprintln!("curated corpus: {ok} real-world files round-tripped");
 }
 
+/// The curated real-world slice, ELABORATED (not just parsed): add every
+/// curated file to one compilation, freeze it into a `Design`, and walk the
+/// resulting symbol tree calling accessors. Exercises the semantic layer —
+/// elaboration, symbol/type resolution, the accessor surface — on genuine RTL,
+/// which the round-trip tests never do. Elaboration *diagnostics* are tolerated
+/// (the slice lacks its original include dirs / +defines), but compiling and
+/// walking must not crash, and a non-trivial design must come out.
+#[test]
+fn curated_corpus_elaborates() {
+    use sv_lang::{Compilation, Symbol};
+
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corpus");
+    if !dir.is_dir() {
+        eprintln!("no curated corpus; skipping");
+        return;
+    }
+    let session = Session::new();
+    let mut comp = Compilation::new(&session).expect("new compilation");
+    let mut added = 0usize;
+    for p in source_files(&dir) {
+        let Ok(src) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        // Skip files that don't parse standalone (includes/fragments); the rest
+        // form a real multi-file compilation.
+        if let Ok(tree) = session.parse_named(&src, p.to_str().unwrap_or("corpus"), "")
+            && comp.add(&tree).is_ok()
+        {
+            added += 1;
+        }
+    }
+    assert!(
+        added > 20,
+        "expected to add many curated files, added {added}"
+    );
+
+    let design = comp
+        .compile()
+        .expect("freeze the curated corpus into a Design");
+
+    // Walk the elaborated design, calling accessors on every reachable symbol
+    // (bounded depth so recursive structures terminate). Must not panic.
+    fn walk(sym: Symbol<'_>, depth: usize, seen: &mut usize) {
+        *seen += 1;
+        let _ = sym.kind();
+        let _ = sym.name();
+        let _ = sym.hierarchical_path();
+        if depth == 0 {
+            return;
+        }
+        for m in sym.members() {
+            walk(m, depth - 1, seen);
+        }
+    }
+
+    let mut seen = 0usize;
+    let mut tops = 0usize;
+    for top in design.top_instances() {
+        tops += 1;
+        if let Some(body) = top.instance_body() {
+            walk(body, 8, &mut seen);
+        }
+    }
+    let defs = design.definitions().count();
+    assert!(
+        tops > 0 || defs > 0,
+        "the curated corpus elaborated to no top instances and no definitions"
+    );
+    eprintln!(
+        "curated corpus elaborated: {added} files, {tops} tops, {defs} defs, {seen} symbols walked"
+    );
+}
+
 #[test]
 fn external_corpus_round_trips() {
     let Some(root) = std::env::var_os("SV_LANG_CORPUS").map(PathBuf::from) else {

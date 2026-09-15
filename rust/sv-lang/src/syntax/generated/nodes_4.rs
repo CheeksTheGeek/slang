@@ -79,6 +79,19 @@ impl<'t> GenerateBlockSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> GenerateBlockSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.label();
+        let _ = self.begin();
+        let _ = self.begin_name();
+        let _ = self.members();
+        let _ = self.end();
+        let _ = self.end_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DividerClauseSyntax`].
 ///
 /// Kinds: DividerClause.
@@ -116,6 +129,14 @@ impl<'t> DividerClauseSyntax<'t> {
     /// Member `value` (child 1).
     pub fn value(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> DividerClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.divide();
+        let _ = self.value();
     }
 }
 
@@ -173,6 +194,17 @@ impl<'t> TimeUnitsDeclarationSyntax<'t> {
     /// Member `semi` (child 4).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> TimeUnitsDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.time();
+        let _ = self.divider();
+        let _ = self.semi();
     }
 }
 
@@ -296,6 +328,14 @@ impl<'t> EmptyPortConnectionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> EmptyPortConnectionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.placeholder();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::OrderedPortConnectionSyntax`].
 ///
 /// Kinds: OrderedPortConnection.
@@ -336,6 +376,14 @@ impl<'t> OrderedPortConnectionSyntax<'t> {
             .member_node(1)
             .and_then(<PropertyExprSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> OrderedPortConnectionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.expr();
     }
 }
 
@@ -401,6 +449,18 @@ impl<'t> NamedPortConnectionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> NamedPortConnectionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.dot();
+        let _ = self.name();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::WildcardPortConnectionSyntax`].
 ///
 /// Kinds: WildcardPortConnection.
@@ -446,6 +506,15 @@ impl<'t> WildcardPortConnectionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> WildcardPortConnectionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.dot();
+        let _ = self.star();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::InstanceNameSyntax`].
 ///
 /// Kinds: InstanceName.
@@ -483,6 +552,14 @@ impl<'t> InstanceNameSyntax<'t> {
     /// Member `dimensions` (child 1).
     pub fn dimensions(&self) -> SyntaxList<'t, VariableDimensionSyntax<'t>> {
         self.node.member_list(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> InstanceNameSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.dimensions();
     }
 }
 
@@ -535,6 +612,16 @@ impl<'t> HierarchicalInstanceSyntax<'t> {
     /// Member `closeParen` (child 3).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> HierarchicalInstanceSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.decl();
+        let _ = self.open_paren();
+        let _ = self.connections();
+        let _ = self.close_paren();
     }
 }
 
@@ -592,6 +679,17 @@ impl<'t> HierarchyInstantiationSyntax<'t> {
     /// Member `semi` (child 4).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> HierarchyInstantiationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.r#type();
+        let _ = self.parameters();
+        let _ = self.instances();
+        let _ = self.semi();
     }
 }
 
@@ -659,6 +757,18 @@ impl<'t> PrimitiveInstantiationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> PrimitiveInstantiationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.r#type();
+        let _ = self.strength();
+        let _ = self.delay();
+        let _ = self.instances();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::CheckerInstantiationSyntax`].
 ///
 /// Kinds: CheckerInstantiation.
@@ -719,6 +829,17 @@ impl<'t> CheckerInstantiationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> CheckerInstantiationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.r#type();
+        let _ = self.parameters();
+        let _ = self.instances();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::CheckerInstanceStatementSyntax`].
 ///
 /// Kinds: CheckerInstanceStatement.
@@ -769,6 +890,15 @@ impl<'t> CheckerInstanceStatementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> CheckerInstanceStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.instance();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::BindTargetListSyntax`].
 ///
 /// Kinds: BindTargetList.
@@ -806,6 +936,14 @@ impl<'t> BindTargetListSyntax<'t> {
     /// Member `targets` (child 1).
     pub fn targets(&self) -> SeparatedList<'t, NameSyntax<'t>> {
         self.node.member_separated_list(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> BindTargetListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.colon();
+        let _ = self.targets();
     }
 }
 
@@ -872,6 +1010,17 @@ impl<'t> BindDirectiveSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> BindDirectiveSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.bind();
+        let _ = self.target();
+        let _ = self.target_instances();
+        let _ = self.instantiation();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ClassSpecifierSyntax`].
 ///
 /// Kinds: ClassSpecifier.
@@ -909,6 +1058,14 @@ impl<'t> ClassSpecifierSyntax<'t> {
     /// Member `keyword` (child 1).
     pub fn keyword(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ClassSpecifierSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.colon();
+        let _ = self.keyword();
     }
 }
 
@@ -980,6 +1137,18 @@ impl<'t> FunctionPrototypeSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> FunctionPrototypeSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.specifiers();
+        let _ = self.lifetime();
+        let _ = self.return_type();
+        let _ = self.name();
+        let _ = self.port_list();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::FunctionDeclarationSyntax`].
 ///
 /// Kinds: FunctionDeclaration, TaskDeclaration.
@@ -1045,6 +1214,18 @@ impl<'t> FunctionDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> FunctionDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.prototype();
+        let _ = self.semi();
+        let _ = self.items();
+        let _ = self.end();
+        let _ = self.end_block_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::EqualsAssertionArgClauseSyntax`].
 ///
 /// Kinds: EqualsAssertionArgClause.
@@ -1085,6 +1266,14 @@ impl<'t> EqualsAssertionArgClauseSyntax<'t> {
             .member_node(1)
             .and_then(<PropertyExprSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> EqualsAssertionArgClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.equals();
+        let _ = self.expr();
     }
 }
 
@@ -1158,6 +1347,19 @@ impl<'t> AssertionItemPortSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> AssertionItemPortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.local();
+        let _ = self.direction();
+        let _ = self.r#type();
+        let _ = self.name();
+        let _ = self.dimensions();
+        let _ = self.default_value();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::AssertionItemPortListSyntax`].
 ///
 /// Kinds: AssertionItemPortList.
@@ -1200,6 +1402,15 @@ impl<'t> AssertionItemPortListSyntax<'t> {
     /// Member `closeParen` (child 2).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> AssertionItemPortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.ports();
+        let _ = self.close_paren();
     }
 }
 
@@ -1273,6 +1484,19 @@ impl<'t> LetDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> LetDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.r#let();
+        let _ = self.identifier();
+        let _ = self.port_list();
+        let _ = self.equals();
+        let _ = self.expr();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DefaultExtendsClauseArgSyntax`].
 ///
 /// Kinds: DefaultExtendsClauseArg.
@@ -1315,6 +1539,15 @@ impl<'t> DefaultExtendsClauseArgSyntax<'t> {
     /// Member `closeParen` (child 2).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> DefaultExtendsClauseArgSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.default_keyword();
+        let _ = self.close_paren();
     }
 }
 
@@ -1375,6 +1608,16 @@ impl<'t> ExtendsClauseSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ExtendsClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.base_name();
+        let _ = self.arguments();
+        let _ = self.defaulted_arg();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ImplementsClauseSyntax`].
 ///
 /// Kinds: ImplementsClause.
@@ -1412,6 +1655,14 @@ impl<'t> ImplementsClauseSyntax<'t> {
     /// Member `interfaces` (child 1).
     pub fn interfaces(&self) -> SeparatedList<'t, NameSyntax<'t>> {
         self.node.member_separated_list(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ImplementsClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.interfaces();
     }
 }
 
@@ -1515,6 +1766,24 @@ impl<'t> ClassDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ClassDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.virtual_or_interface();
+        let _ = self.class_keyword();
+        let _ = self.final_specifier();
+        let _ = self.name();
+        let _ = self.parameters();
+        let _ = self.extends_clause();
+        let _ = self.implements_clause();
+        let _ = self.semi();
+        let _ = self.items();
+        let _ = self.end_class();
+        let _ = self.end_block_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ClassPropertyDeclarationSyntax`].
 ///
 /// Kinds: ClassPropertyDeclaration.
@@ -1563,6 +1832,15 @@ impl<'t> ClassPropertyDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ClassPropertyDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.qualifiers();
+        let _ = self.declaration();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ClassMethodDeclarationSyntax`].
 ///
 /// Kinds: ClassMethodDeclaration.
@@ -1608,6 +1886,15 @@ impl<'t> ClassMethodDeclarationSyntax<'t> {
             .member_node(2)
             .and_then(<FunctionDeclarationSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ClassMethodDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.qualifiers();
+        let _ = self.declaration();
     }
 }
 
@@ -1661,6 +1948,16 @@ impl<'t> ClassMethodPrototypeSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ClassMethodPrototypeSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.qualifiers();
+        let _ = self.prototype();
+        let _ = self.semi();
     }
 }
 
@@ -1728,6 +2025,18 @@ impl<'t> ContinuousAssignSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ContinuousAssignSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.assign();
+        let _ = self.strength();
+        let _ = self.delay();
+        let _ = self.assignments();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DefParamAssignmentSyntax`].
 ///
 /// Kinds: DefParamAssignment.
@@ -1771,6 +2080,14 @@ impl<'t> DefParamAssignmentSyntax<'t> {
             .member_node(1)
             .and_then(<EqualsValueClauseSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> DefParamAssignmentSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.setter();
     }
 }
 
@@ -1824,6 +2141,16 @@ impl<'t> DefParamSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DefParamSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.defparam();
+        let _ = self.assignments();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ModportClockingPortSyntax`].
 ///
 /// Kinds: ModportClockingPort.
@@ -1866,6 +2193,15 @@ impl<'t> ModportClockingPortSyntax<'t> {
     /// Member `name` (child 2).
     pub fn name(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ModportClockingPortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.clocking();
+        let _ = self.name();
     }
 }
 
@@ -1971,6 +2307,13 @@ impl<'t> ModportNamedPortSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ModportNamedPortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ModportExplicitPortSyntax`].
 ///
 /// Kinds: ModportExplicitPort.
@@ -2028,6 +2371,17 @@ impl<'t> ModportExplicitPortSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ModportExplicitPortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.dot();
+        let _ = self.name();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ModportSimplePortListSyntax`].
 ///
 /// Kinds: ModportSimplePortList.
@@ -2073,6 +2427,15 @@ impl<'t> ModportSimplePortListSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ModportSimplePortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.direction();
+        let _ = self.ports();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ModportSubroutinePortSyntax`].
 ///
 /// Kinds: ModportSubroutinePort.
@@ -2108,6 +2471,13 @@ impl<'t> ModportSubroutinePortSyntax<'t> {
             .member_node(0)
             .and_then(<FunctionPrototypeSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ModportSubroutinePortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.prototype();
     }
 }
 
@@ -2156,6 +2526,15 @@ impl<'t> ModportSubroutinePortListSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ModportSubroutinePortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.import_export();
+        let _ = self.ports();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ModportItemSyntax`].
 ///
 /// Kinds: ModportItem.
@@ -2196,6 +2575,14 @@ impl<'t> ModportItemSyntax<'t> {
             .member_node(1)
             .and_then(<AnsiPortListSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ModportItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.ports();
     }
 }
 
@@ -2249,6 +2636,16 @@ impl<'t> ModportDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ModportDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.items();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ClockingSkewSyntax`].
 ///
 /// Kinds: ClockingSkew.
@@ -2288,6 +2685,14 @@ impl<'t> ClockingSkewSyntax<'t> {
         self.node
             .member_node(1)
             .and_then(<TimingControlSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ClockingSkewSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.edge();
+        let _ = self.delay();
     }
 }
 
@@ -2345,6 +2750,16 @@ impl<'t> ClockingDirectionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ClockingDirectionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.input();
+        let _ = self.input_skew();
+        let _ = self.output();
+        let _ = self.output_skew();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DefaultSkewItemSyntax`].
 ///
 /// Kinds: DefaultSkewItem.
@@ -2398,6 +2813,16 @@ impl<'t> DefaultSkewItemSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DefaultSkewItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.direction();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ClockingItemSyntax`].
 ///
 /// Kinds: ClockingItem.
@@ -2448,6 +2873,16 @@ impl<'t> ClockingItemSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ClockingItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.direction();
+        let _ = self.decls();
+        let _ = self.semi();
     }
 }
 
@@ -2536,6 +2971,22 @@ impl<'t> ClockingDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ClockingDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.global_or_default();
+        let _ = self.clocking();
+        let _ = self.block_name();
+        let _ = self.at();
+        let _ = self.event();
+        let _ = self.semi();
+        let _ = self.items();
+        let _ = self.end_clocking();
+        let _ = self.end_block_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DefaultClockingReferenceSyntax`].
 ///
 /// Kinds: DefaultClockingReference.
@@ -2588,6 +3039,17 @@ impl<'t> DefaultClockingReferenceSyntax<'t> {
     /// Member `semi` (child 4).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> DefaultClockingReferenceSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.default_keyword();
+        let _ = self.clocking();
+        let _ = self.name();
+        let _ = self.semi();
     }
 }
 
@@ -2651,6 +3113,18 @@ impl<'t> DefaultDisableDeclarationSyntax<'t> {
     /// Member `semi` (child 5).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(5)
+    }
+}
+
+#[cfg(test)]
+impl<'t> DefaultDisableDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.default_keyword();
+        let _ = self.disable_keyword();
+        let _ = self.iff_keyword();
+        let _ = self.expr();
+        let _ = self.semi();
     }
 }
 
@@ -2727,6 +3201,20 @@ impl<'t> DPIImportSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DPIImportSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.spec_string();
+        let _ = self.property();
+        let _ = self.c_identifier();
+        let _ = self.equals();
+        let _ = self.method();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DPIExportSyntax`].
 ///
 /// Kinds: DPIExport.
@@ -2797,6 +3285,20 @@ impl<'t> DPIExportSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DPIExportSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.spec_string();
+        let _ = self.c_identifier();
+        let _ = self.equals();
+        let _ = self.function_or_task();
+        let _ = self.name();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ElabSystemTaskSyntax`].
 ///
 /// Kinds: ElabSystemTask.
@@ -2846,6 +3348,16 @@ impl<'t> ElabSystemTaskSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ElabSystemTaskSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.name();
+        let _ = self.arguments();
+        let _ = self.semi();
     }
 }
 
@@ -2960,6 +3472,17 @@ impl<'t> UdpOutputPortDeclSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> UdpOutputPortDeclSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.reg();
+        let _ = self.name();
+        let _ = self.initializer();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UdpInputPortDeclSyntax`].
 ///
 /// Kinds: UdpInputPortDecl.
@@ -3002,5 +3525,14 @@ impl<'t> UdpInputPortDeclSyntax<'t> {
     /// Member `names` (child 2).
     pub fn names(&self) -> SeparatedList<'t, IdentifierNameSyntax<'t>> {
         self.node.member_separated_list(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> UdpInputPortDeclSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.names();
     }
 }

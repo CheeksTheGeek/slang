@@ -4511,6 +4511,11 @@ SLANG_C_API slang_ast slang_stmt_expr(slang_ast node);
 /// (an EventTrigger with no delay) or `node` is neither kind.
 SLANG_C_API slang_ast slang_stmt_timing(slang_ast node);
 
+/// The edge of a signal-event timing control (`node` a TIMING_CONTROL of kind
+/// SignalEvent) — SLANG_EDGE_POSEDGE/NEGEDGE/BOTHEDGES, or SLANG_EDGE_NONE for a
+/// level-sensitive event and for any other node/kind. history: since 1.3.
+SLANG_C_API slang_edge_kind slang_timing_control_edge(slang_ast node);
+
 /* Block / conditional / case / concurrent-assertion / event-trigger statement
  * breadth. All are pure reads on a frozen compilation: every field they read
  * is set directly at Statement construction, never lazily computed. history:

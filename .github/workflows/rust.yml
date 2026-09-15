@@ -3,7 +3,7 @@ name: Rust Bindings CI
 on:
   workflow_dispatch:
   push:
-    branches: [ master ]
+    branches: [ master, rust-bindings ]
     paths:
       - 'rust/**'
       - 'source/capi/**'
@@ -12,7 +12,7 @@ on:
       - 'scripts/*.txt'
       - '.github/workflows/rust.yml'
   pull_request:
-    branches: [ master ]
+    branches: [ master, rust-bindings ]
     paths:
       - 'rust/**'
       - 'source/capi/**'
@@ -72,6 +72,11 @@ jobs:
       run: |
         cargo package -p sv-lang-kinds --allow-dirty --no-verify
         cargo package -p sv-lang-syntax --allow-dirty --no-verify
+        # sv-lang-sys ships a vendored C++ tree (gitignored); regenerate it so
+        # the packaged crate is what crates.io/docs.rs actually build.
+        cargo xtask vendor
+        cargo package -p sv-lang-sys --allow-dirty --no-verify
+        cargo package -p sv-lang --allow-dirty --no-verify
       shell: bash
 
   # The C++ Catch2 tests for the C API the bindings depend on.
@@ -99,7 +104,6 @@ jobs:
   # mock backend (validates the handle/lifetime algebra the FFI hides from miri).
   nightly:
     runs-on: ubuntu-latest
-    continue-on-error: true   # informational for the first 6 months
     steps:
     - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       with:
@@ -119,16 +123,23 @@ jobs:
       run: cargo +nightly miri test -p sv-lang-mock
       shell: bash
 
-  # API-compatibility gate (informational until the first published baseline).
+  # API-compatibility gate against the published crates.io baseline. Covers the
+  # crates whose public Rust API is the contract; sv-lang-sys (extern decls) and
+  # sv-lang-wasm (heavy wasmtime build) are excluded.
   semver:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
     - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       with:
         fetch-depth: 0
+    - name: python3 (codegen for the vendored build)
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.x'
     - name: cargo-semver-checks
       run: |
         cargo install cargo-semver-checks --locked
-        cargo semver-checks check-release -p sv-lang-kinds || true
+        for c in sv-lang-kinds sv-lang-syntax sv-lang sv-lang-db sv-lang-lsp; do
+          cargo semver-checks check-release -p "$c"
+        done
       shell: bash

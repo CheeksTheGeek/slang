@@ -63,6 +63,16 @@ impl<'t> ExpressionStatementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ExpressionStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.expr();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::VoidCastedCallStatementSyntax`].
 ///
 /// Kinds: VoidCastedCallStatement.
@@ -138,6 +148,20 @@ impl<'t> VoidCastedCallStatementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> VoidCastedCallStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.void_keyword();
+        let _ = self.apostrophe();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ProceduralAssignStatementSyntax`].
 ///
 /// Kinds: ProceduralAssignStatement, ProceduralForceStatement.
@@ -195,6 +219,17 @@ impl<'t> ProceduralAssignStatementSyntax<'t> {
     /// Member `semi` (child 4).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ProceduralAssignStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.expr();
+        let _ = self.semi();
     }
 }
 
@@ -258,6 +293,17 @@ impl<'t> ProceduralDeassignStatementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ProceduralDeassignStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.variable();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DisableStatementSyntax`].
 ///
 /// Kinds: DisableStatement.
@@ -318,6 +364,17 @@ impl<'t> DisableStatementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DisableStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.disable();
+        let _ = self.name();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DisableForkStatementSyntax`].
 ///
 /// Kinds: DisableForkStatement.
@@ -375,6 +432,17 @@ impl<'t> DisableForkStatementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DisableForkStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.disable();
+        let _ = self.fork();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::NamedBlockClauseSyntax`].
 ///
 /// Kinds: NamedBlockClause.
@@ -412,6 +480,14 @@ impl<'t> NamedBlockClauseSyntax<'t> {
     /// Member `name` (child 1).
     pub fn name(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> NamedBlockClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.colon();
+        let _ = self.name();
     }
 }
 
@@ -483,6 +559,19 @@ impl<'t> BlockStatementSyntax<'t> {
         self.node
             .member_node(6)
             .and_then(<NamedBlockClauseSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> BlockStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.begin();
+        let _ = self.block_name();
+        let _ = self.items();
+        let _ = self.end();
+        let _ = self.end_block_name();
     }
 }
 
@@ -559,6 +648,19 @@ impl<'t> WaitStatementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> WaitStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.wait();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+        let _ = self.statement();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::WaitForkStatementSyntax`].
 ///
 /// Kinds: WaitForkStatement.
@@ -613,6 +715,17 @@ impl<'t> WaitForkStatementSyntax<'t> {
     /// Member `semi` (child 4).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> WaitForkStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.wait();
+        let _ = self.fork();
+        let _ = self.semi();
     }
 }
 
@@ -686,6 +799,19 @@ impl<'t> WaitOrderStatementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> WaitOrderStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.wait_order();
+        let _ = self.open_paren();
+        let _ = self.names();
+        let _ = self.close_paren();
+        let _ = self.action();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::RandCaseItemSyntax`].
 ///
 /// Kinds: RandCaseItem.
@@ -734,6 +860,15 @@ impl<'t> RandCaseItemSyntax<'t> {
             .member_node(2)
             .and_then(<StatementSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> RandCaseItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
+        let _ = self.colon();
+        let _ = self.statement();
     }
 }
 
@@ -791,6 +926,17 @@ impl<'t> RandCaseStatementSyntax<'t> {
     /// Member `endCase` (child 4).
     pub fn end_case(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> RandCaseStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.rand_case();
+        let _ = self.items();
+        let _ = self.end_case();
     }
 }
 
@@ -929,6 +1075,14 @@ impl<'t> RsProdItemSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> RsProdItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.arg_list();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::RsCodeBlockSyntax`].
 ///
 /// Kinds: RsCodeBlock.
@@ -974,6 +1128,15 @@ impl<'t> RsCodeBlockSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> RsCodeBlockSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_brace();
+        let _ = self.items();
+        let _ = self.close_brace();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::RsElseClauseSyntax`].
 ///
 /// Kinds: RsElseClause.
@@ -1014,6 +1177,14 @@ impl<'t> RsElseClauseSyntax<'t> {
             .member_node(1)
             .and_then(<RsProdItemSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> RsElseClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.item();
     }
 }
 
@@ -1085,6 +1256,18 @@ impl<'t> RsIfElseSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> RsIfElseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.open_paren();
+        let _ = self.condition();
+        let _ = self.close_paren();
+        let _ = self.if_item();
+        let _ = self.else_clause();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::RsRepeatSyntax`].
 ///
 /// Kinds: RsRepeat.
@@ -1143,6 +1326,17 @@ impl<'t> RsRepeatSyntax<'t> {
             .member_node(4)
             .and_then(<RsProdItemSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> RsRepeatSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+        let _ = self.item();
     }
 }
 
@@ -1253,6 +1447,16 @@ impl<'t> DefaultRsCaseItemSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DefaultRsCaseItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.default_keyword();
+        let _ = self.colon();
+        let _ = self.item();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::StandardRsCaseItemSyntax`].
 ///
 /// Kinds: StandardRsCaseItem.
@@ -1303,6 +1507,16 @@ impl<'t> StandardRsCaseItemSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> StandardRsCaseItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expressions();
+        let _ = self.colon();
+        let _ = self.item();
+        let _ = self.semi();
     }
 }
 
@@ -1369,6 +1583,18 @@ impl<'t> RsCaseSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> RsCaseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.keyword();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+        let _ = self.items();
+        let _ = self.endcase();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::RandJoinClauseSyntax`].
 ///
 /// Kinds: RandJoinClause.
@@ -1413,6 +1639,15 @@ impl<'t> RandJoinClauseSyntax<'t> {
         self.node
             .member_node(2)
             .and_then(<ParenthesizedExpressionSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> RandJoinClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.rand();
+        let _ = self.join();
+        let _ = self.expr();
     }
 }
 
@@ -1464,6 +1699,15 @@ impl<'t> RsWeightClauseSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> RsWeightClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.colon_equal();
+        let _ = self.weight();
+        let _ = self.code_block();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::RsRuleSyntax`].
 ///
 /// Kinds: RsRule.
@@ -1510,6 +1754,15 @@ impl<'t> RsRuleSyntax<'t> {
         self.node
             .member_node(2)
             .and_then(<RsWeightClauseSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> RsRuleSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.rand_join();
+        let _ = self.prods();
+        let _ = self.weight_clause();
     }
 }
 
@@ -1574,6 +1827,18 @@ impl<'t> ProductionSyntax<'t> {
     /// Member `semi` (child 5).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(5)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ProductionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.data_type();
+        let _ = self.name();
+        let _ = self.port_list();
+        let _ = self.colon();
+        let _ = self.rules();
+        let _ = self.semi();
     }
 }
 
@@ -1649,6 +1914,20 @@ impl<'t> RandSequenceStatementSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> RandSequenceStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.randsequence();
+        let _ = self.open_paren();
+        let _ = self.first_production();
+        let _ = self.close_paren();
+        let _ = self.productions();
+        let _ = self.endsequence();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::EventTriggerStatementSyntax`].
 ///
 /// Kinds: BlockingEventTriggerStatement, NonblockingEventTriggerStatement.
@@ -1713,6 +1992,18 @@ impl<'t> EventTriggerStatementSyntax<'t> {
     /// Member `semi` (child 5).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(5)
+    }
+}
+
+#[cfg(test)]
+impl<'t> EventTriggerStatementSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.label();
+        let _ = self.attributes();
+        let _ = self.trigger();
+        let _ = self.timing();
+        let _ = self.name();
+        let _ = self.semi();
     }
 }
 
@@ -1945,6 +2236,14 @@ impl<'t> PortReferenceSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> PortReferenceSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.select();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::PortConcatenationSyntax`].
 ///
 /// Kinds: PortConcatenation.
@@ -1990,6 +2289,15 @@ impl<'t> PortConcatenationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> PortConcatenationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_brace();
+        let _ = self.references();
+        let _ = self.close_brace();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::EmptyNonAnsiPortSyntax`].
 ///
 /// Kinds: EmptyNonAnsiPort.
@@ -2022,6 +2330,13 @@ impl<'t> EmptyNonAnsiPortSyntax<'t> {
     /// Member `placeholder` (child 0).
     pub fn placeholder(&self) -> Option<Token<'t>> {
         self.node.member_token(0)
+    }
+}
+
+#[cfg(test)]
+impl<'t> EmptyNonAnsiPortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.placeholder();
     }
 }
 
@@ -2060,6 +2375,13 @@ impl<'t> ImplicitNonAnsiPortSyntax<'t> {
             .member_node(0)
             .and_then(<PortExpressionSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ImplicitNonAnsiPortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
     }
 }
 
@@ -2120,6 +2442,17 @@ impl<'t> ExplicitNonAnsiPortSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ExplicitNonAnsiPortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.dot();
+        let _ = self.name();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::NonAnsiPortListSyntax`].
 ///
 /// Kinds: NonAnsiPortList.
@@ -2165,6 +2498,15 @@ impl<'t> NonAnsiPortListSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> NonAnsiPortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.ports();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::InterfacePortHeaderSyntax`].
 ///
 /// Kinds: InterfacePortHeader.
@@ -2204,6 +2546,14 @@ impl<'t> InterfacePortHeaderSyntax<'t> {
         self.node
             .member_node(1)
             .and_then(<DotMemberClauseSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> InterfacePortHeaderSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name_or_keyword();
+        let _ = self.modport();
     }
 }
 
@@ -2260,6 +2610,16 @@ impl<'t> VariablePortHeaderSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> VariablePortHeaderSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.const_keyword();
+        let _ = self.direction();
+        let _ = self.var_keyword();
+        let _ = self.data_type();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::NetPortHeaderSyntax`].
 ///
 /// Kinds: NetPortHeader.
@@ -2305,6 +2665,15 @@ impl<'t> NetPortHeaderSyntax<'t> {
             .member_node(2)
             .and_then(<DataTypeSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> NetPortHeaderSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.direction();
+        let _ = self.net_type();
+        let _ = self.data_type();
     }
 }
 
@@ -2356,6 +2725,15 @@ impl<'t> ImplicitAnsiPortSyntax<'t> {
             .member_node(2)
             .and_then(<DeclaratorSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ImplicitAnsiPortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.header();
+        let _ = self.declarator();
     }
 }
 
@@ -2426,6 +2804,19 @@ impl<'t> ExplicitAnsiPortSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ExplicitAnsiPortSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.direction();
+        let _ = self.dot();
+        let _ = self.name();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::AnsiPortListSyntax`].
 ///
 /// Kinds: AnsiPortList.
@@ -2468,6 +2859,15 @@ impl<'t> AnsiPortListSyntax<'t> {
     /// Member `closeParen` (child 2).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> AnsiPortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.ports();
+        let _ = self.close_paren();
     }
 }
 
@@ -2521,6 +2921,16 @@ impl<'t> WildcardPortListSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> WildcardPortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.dot();
+        let _ = self.star();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ParameterPortListSyntax`].
 ///
 /// Kinds: ParameterPortList.
@@ -2568,6 +2978,16 @@ impl<'t> ParameterPortListSyntax<'t> {
     /// Member `closeParen` (child 3).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ParameterPortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.hash();
+        let _ = self.open_paren();
+        let _ = self.declarations();
+        let _ = self.close_paren();
     }
 }
 
@@ -2640,6 +3060,19 @@ impl<'t> ModuleHeaderSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ModuleHeaderSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.module_keyword();
+        let _ = self.lifetime();
+        let _ = self.name();
+        let _ = self.imports();
+        let _ = self.parameters();
+        let _ = self.ports();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ModuleDeclarationSyntax`].
 ///
 /// Kinds: InterfaceDeclaration, ModuleDeclaration, PackageDeclaration, ProgramDeclaration.
@@ -2700,6 +3133,17 @@ impl<'t> ModuleDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ModuleDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.header();
+        let _ = self.members();
+        let _ = self.endmodule();
+        let _ = self.block_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::AnonymousProgramSyntax`].
 ///
 /// Kinds: AnonymousProgram.
@@ -2755,6 +3199,17 @@ impl<'t> AnonymousProgramSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> AnonymousProgramSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.semi();
+        let _ = self.members();
+        let _ = self.endkeyword();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::EmptyMemberSyntax`].
 ///
 /// Kinds: EmptyMember.
@@ -2797,6 +3252,15 @@ impl<'t> EmptyMemberSyntax<'t> {
     /// Member `semi` (child 2).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> EmptyMemberSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.qualifiers();
+        let _ = self.semi();
     }
 }
 
@@ -2848,6 +3312,15 @@ impl<'t> ProceduralBlockSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ProceduralBlockSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.statement();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::GenerateRegionSyntax`].
 ///
 /// Kinds: GenerateRegion.
@@ -2895,6 +3368,16 @@ impl<'t> GenerateRegionSyntax<'t> {
     /// Member `endgenerate` (child 3).
     pub fn endgenerate(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> GenerateRegionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.members();
+        let _ = self.endgenerate();
     }
 }
 
@@ -3005,6 +3488,25 @@ impl<'t> LoopGenerateSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> LoopGenerateSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.open_paren();
+        let _ = self.genvar();
+        let _ = self.identifier();
+        let _ = self.equals();
+        let _ = self.initial_expr();
+        let _ = self.semi1();
+        let _ = self.stop_expr();
+        let _ = self.semi2();
+        let _ = self.iteration_expr();
+        let _ = self.close_paren();
+        let _ = self.block();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::IfGenerateSyntax`].
 ///
 /// Kinds: IfGenerate.
@@ -3078,6 +3580,19 @@ impl<'t> IfGenerateSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> IfGenerateSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.open_paren();
+        let _ = self.condition();
+        let _ = self.close_paren();
+        let _ = self.block();
+        let _ = self.else_clause();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::CaseGenerateSyntax`].
 ///
 /// Kinds: CaseGenerate.
@@ -3143,5 +3658,18 @@ impl<'t> CaseGenerateSyntax<'t> {
     /// Member `endCase` (child 6).
     pub fn end_case(&self) -> Option<Token<'t>> {
         self.node.member_token(6)
+    }
+}
+
+#[cfg(test)]
+impl<'t> CaseGenerateSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.open_paren();
+        let _ = self.condition();
+        let _ = self.close_paren();
+        let _ = self.items();
+        let _ = self.end_case();
     }
 }

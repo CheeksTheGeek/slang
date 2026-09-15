@@ -2329,6 +2329,7 @@ unsafe extern "C" {
     pub fn slang_stmt_cond(node: slang_ast) -> slang_ast;
     pub fn slang_stmt_expr(node: slang_ast) -> slang_ast;
     pub fn slang_stmt_timing(node: slang_ast) -> slang_ast;
+    pub fn slang_timing_control_edge(node: slang_ast) -> slang_edge_kind;
 
     // Block / conditional / case / concurrent-assertion / event-trigger breadth
     pub fn slang_stmt_block_kind(node: slang_ast) -> u32;

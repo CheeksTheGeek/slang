@@ -87,13 +87,23 @@ fn behavioral_tree_walks_in_the_sandbox() {
 
 #[test]
 fn generated_raw_bridge_marshals() {
-    // The xtask-generated raw_* methods (197 of them) marshal the full C
-    // surface; spot-check a scalar-return and an sret-string-return one.
+    // The xtask-generated raw_* methods (~1015; see bridge.rs header) marshal the
+    // C surface. We can't call every one without a compiled design's internal
+    // handles, but we spot-check each distinct *marshalling shape* the generator
+    // emits, so a codegen offset/ABI bug in any shape is caught:
     let mut slang = Slang::new().unwrap();
+    // no-arg, i32-scalar return
     assert!(slang.raw_slang_syntax_kind_count().unwrap() > 500);
-    assert_eq!(slang.raw_slang_syntax_kind_name(0).unwrap(), "Unknown");
-    // Version string comes back as a guest pointer (raw layer returns the ptr).
+    assert!(slang.raw_slang_c_version().unwrap() >= 1);
+    // no-arg, guest-pointer (handle/string-ptr) return
     assert!(slang.raw_slang_version_string().unwrap() != 0);
+    assert!(slang.raw_slang_syntax_model_hash().unwrap() != 0);
+    // one i32 arg, i32-scalar return
+    assert!(slang.raw_slang_ast_kind_count(0).unwrap() > 0); // SLANG_AST_SYMBOL
+    // one i32 arg, sret-`slang_str` return
+    assert_eq!(slang.raw_slang_syntax_kind_name(0).unwrap(), "Unknown");
+    // two i32 args, sret-`slang_str` return
+    assert!(!slang.raw_slang_ast_kind_name(0, 1).unwrap().is_empty());
 }
 
 #[test]

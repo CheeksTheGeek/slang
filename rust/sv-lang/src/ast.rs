@@ -4596,7 +4596,18 @@ macro_rules! impl_handle {
         }
     )+ };
 }
-impl_handle!(Symbol, Type, Expression, Statement, SemNode, Pattern);
+impl_handle!(
+    Symbol,
+    Type,
+    Expression,
+    Statement,
+    SemNode,
+    Pattern,
+    TimingControl,
+    Constraint,
+    AssertionExpr,
+    BinsSelectExpr
+);
 
 /// Wraps a raw ast as a borrowed handle, or `None` if it is null. The single
 /// place the null-check-and-wrap pattern lives.
@@ -17972,6 +17983,11 @@ impl<'d> Expression<'d> {
         sem_children(self.raw)
     }
 
+    /// This expression as a generic [`SemNode`] (for uniform tree walking).
+    pub fn as_sem_node(&self) -> SemNode<'d> {
+        SemNode::from_raw(self.raw)
+    }
+
     /// The immediate sub-expressions of this expression, in order (e.g. a
     /// `BinaryOp` yields `[left, right]`, a `Call` its arguments). Non-expression
     /// children are skipped; use [`children`](Self::children) for those.
@@ -20122,6 +20138,42 @@ impl<'d> SemNode<'d> {
         (self.raw.domain == sys::SLANG_AST_STATEMENT).then(|| Statement::from_raw(self.raw))
     }
 
+    /// This node as a [`TimingControl`], if it is one (domain
+    /// `SLANG_AST_TIMING_CONTROL`) — e.g. the `@(posedge clk)` of a timed
+    /// statement.
+    pub fn as_timing_control(&self) -> Option<TimingControl<'d>> {
+        (self.raw.domain == sys::SLANG_AST_TIMING_CONTROL)
+            .then(|| TimingControl::from_raw(self.raw))
+    }
+
+    /// This node as a [`Constraint`], if it is one (domain
+    /// `SLANG_AST_CONSTRAINT`) — the body of a `constraint` block.
+    pub fn as_constraint(&self) -> Option<Constraint<'d>> {
+        (self.raw.domain == sys::SLANG_AST_CONSTRAINT).then(|| Constraint::from_raw(self.raw))
+    }
+
+    /// This node as an [`AssertionExpr`], if it is one (domain
+    /// `SLANG_AST_ASSERTION_EXPR`) — a node in a concurrent assertion's
+    /// property/sequence tree.
+    pub fn as_assertion_expr(&self) -> Option<AssertionExpr<'d>> {
+        (self.raw.domain == sys::SLANG_AST_ASSERTION_EXPR)
+            .then(|| AssertionExpr::from_raw(self.raw))
+    }
+
+    /// This node as a [`BinsSelectExpr`], if it is one (domain
+    /// `SLANG_AST_BINS_SELECT_EXPR`) — a `bins`-selection expression inside a
+    /// covergroup cross.
+    pub fn as_bins_select_expr(&self) -> Option<BinsSelectExpr<'d>> {
+        (self.raw.domain == sys::SLANG_AST_BINS_SELECT_EXPR)
+            .then(|| BinsSelectExpr::from_raw(self.raw))
+    }
+
+    /// This node as a [`Pattern`], if it is one (domain `SLANG_AST_PATTERN`) —
+    /// a `matches` pattern.
+    pub fn as_pattern(&self) -> Option<Pattern<'d>> {
+        (self.raw.domain == sys::SLANG_AST_PATTERN).then(|| Pattern::from_raw(self.raw))
+    }
+
     /// The node's immediate semantic children.
     ///
     /// # Examples
@@ -20145,6 +20197,245 @@ impl<'d> SemNode<'d> {
 impl core::fmt::Debug for SemNode<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "SemNode({})", self.kind_name())
+    }
+}
+
+/// A timing control in the elaborated behavioral tree — the `@(...)` event
+/// control, `#delay`, or cycle delay that gates a statement (domain
+/// `SLANG_AST_TIMING_CONTROL`). Reach it from [`Statement::timing_control`] or
+/// [`SemNode::as_timing_control`]. `Copy` and pointer-sized.
+#[derive(Clone, Copy)]
+pub struct TimingControl<'d> {
+    raw: sys::slang_ast,
+    _design: PhantomData<&'d Design>,
+}
+
+impl<'d> TimingControl<'d> {
+    /// The timing control's semantic kind (e.g.
+    /// [`SignalEvent`](sv_lang_kinds::TimingControlKind::SignalEvent),
+    /// [`Delay`](sv_lang_kinds::TimingControlKind::Delay)).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, TimingControlKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic clk, input logic d, output logic q);\n\
+    /// #     always_ff @(posedge clk) q <= d; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let timed = block.body().unwrap();
+    /// let tc = timed.timing_control().unwrap();
+    /// assert_eq!(tc.kind(), TimingControlKind::SignalEvent);
+    /// # Ok(()) }
+    /// ```
+    pub fn kind(&self) -> sv_lang_kinds::TimingControlKind {
+        sv_lang_kinds::TimingControlKind::from_raw(self.raw.kind as u16)
+            .unwrap_or(sv_lang_kinds::TimingControlKind::Invalid)
+    }
+
+    /// The kind's reflection name (e.g. `"SignalEventControl"`).
+    pub fn kind_name(&self) -> String {
+        // SAFETY: the node is valid; kind_name reads the reflection table.
+        ffi::owned_str(unsafe { sys::slang_ast_kind_name(self.raw.domain, self.raw.kind) })
+    }
+
+    /// The edge of a signal-event control (`posedge`/`negedge`/`edge`), or
+    /// [`EdgeKind::None`] for a level-sensitive event and for non-signal-event
+    /// kinds.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{EdgeKind, kinds::SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic clk, input logic d, output logic q);\n\
+    /// #     always_ff @(posedge clk) q <= d; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let tc = block.body().unwrap().timing_control().unwrap();
+    /// assert_eq!(tc.edge(), EdgeKind::PosEdge);
+    /// # Ok(()) }
+    /// ```
+    pub fn edge(&self) -> EdgeKind {
+        // SAFETY: the node is valid; returns SLANG_EDGE_NONE for non-signal-event.
+        EdgeKind::from_raw(unsafe { sys::slang_timing_control_edge(self.raw) })
+    }
+
+    /// The immediate semantic children — the event expression(s), delay
+    /// expression, or sub-controls of an event list.
+    pub fn children(&self) -> Vec<SemNode<'d>> {
+        sem_children(self.raw)
+    }
+
+    /// This timing control as a generic [`SemNode`].
+    pub fn as_sem_node(&self) -> SemNode<'d> {
+        SemNode::from_raw(self.raw)
+    }
+
+    /// The syntax node this was elaborated from, if it belongs to `tree`.
+    pub fn syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the node is valid; a null/foreign-tree node yields None.
+        let node = unsafe { sys::slang_ast_syntax(self.raw) };
+        (!node.ptr.is_null() && node.tree == tree.raw()).then(|| Node::from_raw_node(node))
+    }
+}
+
+impl core::fmt::Debug for TimingControl<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "TimingControl({:?})", self.kind())
+    }
+}
+
+/// A constraint in the elaborated tree — the body of a `constraint` block or one
+/// of its clauses (domain `SLANG_AST_CONSTRAINT`). Reach it from
+/// [`Symbol::constraint_block_constraints`] or [`SemNode::as_constraint`].
+/// `Copy` and pointer-sized.
+#[derive(Clone, Copy)]
+pub struct Constraint<'d> {
+    raw: sys::slang_ast,
+    _design: PhantomData<&'d Design>,
+}
+
+impl<'d> Constraint<'d> {
+    /// The constraint's semantic kind (e.g.
+    /// [`ExpressionConstraint`](sv_lang_kinds::ConstraintKind::Expression),
+    /// [`Implication`](sv_lang_kinds::ConstraintKind::Implication)).
+    pub fn kind(&self) -> sv_lang_kinds::ConstraintKind {
+        sv_lang_kinds::ConstraintKind::from_raw(self.raw.kind as u16)
+            .unwrap_or(sv_lang_kinds::ConstraintKind::Invalid)
+    }
+
+    /// The kind's reflection name.
+    pub fn kind_name(&self) -> String {
+        // SAFETY: the node is valid; kind_name reads the reflection table.
+        ffi::owned_str(unsafe { sys::slang_ast_kind_name(self.raw.domain, self.raw.kind) })
+    }
+
+    /// The immediate semantic children — clause constraints and the
+    /// expressions they constrain.
+    pub fn children(&self) -> Vec<SemNode<'d>> {
+        sem_children(self.raw)
+    }
+
+    /// This constraint as a generic [`SemNode`].
+    pub fn as_sem_node(&self) -> SemNode<'d> {
+        SemNode::from_raw(self.raw)
+    }
+
+    /// The syntax node this was elaborated from, if it belongs to `tree`.
+    pub fn syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the node is valid; a null/foreign-tree node yields None.
+        let node = unsafe { sys::slang_ast_syntax(self.raw) };
+        (!node.ptr.is_null() && node.tree == tree.raw()).then(|| Node::from_raw_node(node))
+    }
+}
+
+impl core::fmt::Debug for Constraint<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Constraint({:?})", self.kind())
+    }
+}
+
+/// A node in a concurrent assertion's property/sequence tree (domain
+/// `SLANG_AST_ASSERTION_EXPR`). Reach it from [`AnalyzedAssertion::root`] or
+/// [`SemNode::as_assertion_expr`]. `Copy` and pointer-sized.
+#[derive(Clone, Copy)]
+pub struct AssertionExpr<'d> {
+    raw: sys::slang_ast,
+    _design: PhantomData<&'d Design>,
+}
+
+impl<'d> AssertionExpr<'d> {
+    /// The assertion expression's semantic kind (e.g.
+    /// [`Binary`](sv_lang_kinds::AssertionExprKind::Binary),
+    /// [`SequenceConcat`](sv_lang_kinds::AssertionExprKind::SequenceConcat)).
+    pub fn kind(&self) -> sv_lang_kinds::AssertionExprKind {
+        sv_lang_kinds::AssertionExprKind::from_raw(self.raw.kind as u16)
+            .unwrap_or(sv_lang_kinds::AssertionExprKind::Invalid)
+    }
+
+    /// The kind's reflection name.
+    pub fn kind_name(&self) -> String {
+        // SAFETY: the node is valid; kind_name reads the reflection table.
+        ffi::owned_str(unsafe { sys::slang_ast_kind_name(self.raw.domain, self.raw.kind) })
+    }
+
+    /// The immediate semantic children — operand properties/sequences and the
+    /// boolean expressions at the leaves.
+    pub fn children(&self) -> Vec<SemNode<'d>> {
+        sem_children(self.raw)
+    }
+
+    /// This assertion expression as a generic [`SemNode`].
+    pub fn as_sem_node(&self) -> SemNode<'d> {
+        SemNode::from_raw(self.raw)
+    }
+
+    /// The syntax node this was elaborated from, if it belongs to `tree`.
+    pub fn syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the node is valid; a null/foreign-tree node yields None.
+        let node = unsafe { sys::slang_ast_syntax(self.raw) };
+        (!node.ptr.is_null() && node.tree == tree.raw()).then(|| Node::from_raw_node(node))
+    }
+}
+
+impl core::fmt::Debug for AssertionExpr<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "AssertionExpr({:?})", self.kind())
+    }
+}
+
+/// A `bins`-selection expression inside a covergroup cross (domain
+/// `SLANG_AST_BINS_SELECT_EXPR`). Reach it from [`SemNode::as_bins_select_expr`]
+/// (its children, as it appears in a coverage cross's body). `Copy` and
+/// pointer-sized.
+#[derive(Clone, Copy)]
+pub struct BinsSelectExpr<'d> {
+    raw: sys::slang_ast,
+    _design: PhantomData<&'d Design>,
+}
+
+impl<'d> BinsSelectExpr<'d> {
+    /// The bins-select expression's semantic kind (e.g.
+    /// [`Binary`](sv_lang_kinds::BinsSelectExprKind::Binary),
+    /// [`Condition`](sv_lang_kinds::BinsSelectExprKind::Condition)).
+    pub fn kind(&self) -> sv_lang_kinds::BinsSelectExprKind {
+        sv_lang_kinds::BinsSelectExprKind::from_raw(self.raw.kind as u16)
+            .unwrap_or(sv_lang_kinds::BinsSelectExprKind::Invalid)
+    }
+
+    /// The kind's reflection name.
+    pub fn kind_name(&self) -> String {
+        // SAFETY: the node is valid; kind_name reads the reflection table.
+        ffi::owned_str(unsafe { sys::slang_ast_kind_name(self.raw.domain, self.raw.kind) })
+    }
+
+    /// The immediate semantic children — sub-selections and filter expressions.
+    pub fn children(&self) -> Vec<SemNode<'d>> {
+        sem_children(self.raw)
+    }
+
+    /// This bins-select expression as a generic [`SemNode`].
+    pub fn as_sem_node(&self) -> SemNode<'d> {
+        SemNode::from_raw(self.raw)
+    }
+
+    /// The syntax node this was elaborated from, if it belongs to `tree`.
+    pub fn syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the node is valid; a null/foreign-tree node yields None.
+        let node = unsafe { sys::slang_ast_syntax(self.raw) };
+        (!node.ptr.is_null() && node.tree == tree.raw()).then(|| Node::from_raw_node(node))
+    }
+}
+
+impl core::fmt::Debug for BinsSelectExpr<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "BinsSelectExpr({:?})", self.kind())
     }
 }
 
@@ -20408,6 +20699,34 @@ impl<'d> Statement<'d> {
         // timing control (or an EventTrigger with no delay).
         let ast = unsafe { sys::slang_stmt_timing(self.raw) };
         wrap(ast)
+    }
+
+    /// This statement's timing control as a typed [`TimingControl`] (its
+    /// `kind`/`edge`/children directly accessible), or `None` if there is none.
+    /// A typed sibling of [`timing`](Self::timing).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{SymbolKind, TimingControlKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m(input logic clk, input logic d, output logic q);\n\
+    /// #     always_ff @(posedge clk) q <= d; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let tc = block.body().unwrap().timing_control().unwrap();
+    /// assert_eq!(tc.kind(), TimingControlKind::SignalEvent);
+    /// # Ok(()) }
+    /// ```
+    pub fn timing_control(&self) -> Option<TimingControl<'d>> {
+        self.timing().and_then(|n| n.as_timing_control())
+    }
+
+    /// This statement as a generic [`SemNode`] (for uniform tree walking).
+    pub fn as_sem_node(&self) -> SemNode<'d> {
+        SemNode::from_raw(self.raw)
     }
 
     /// The kind of a `Block` statement (`begin`/`end` vs `fork`/`join`/
@@ -21285,6 +21604,30 @@ impl<'d> Pattern<'d> {
         sv_lang_kinds::PatternKind::from_raw(self.raw.kind as u16)
             .unwrap_or(sv_lang_kinds::PatternKind::Invalid)
     }
+
+    /// The kind's reflection name (e.g. `"StructurePattern"`).
+    pub fn kind_name(&self) -> String {
+        // SAFETY: the node is valid; kind_name reads the reflection table.
+        ffi::owned_str(unsafe { sys::slang_ast_kind_name(self.raw.domain, self.raw.kind) })
+    }
+
+    /// The immediate semantic children — sub-patterns (structure/tagged) and
+    /// the constant/variable expressions at the leaves.
+    pub fn children(&self) -> Vec<SemNode<'d>> {
+        sem_children(self.raw)
+    }
+
+    /// This pattern as a generic [`SemNode`].
+    pub fn as_sem_node(&self) -> SemNode<'d> {
+        SemNode::from_raw(self.raw)
+    }
+
+    /// The syntax node this was elaborated from, if it belongs to `tree`.
+    pub fn syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the node is valid; a null/foreign-tree node yields None.
+        let node = unsafe { sys::slang_ast_syntax(self.raw) };
+        (!node.ptr.is_null() && node.tree == tree.raw()).then(|| Node::from_raw_node(node))
+    }
 }
 
 impl core::fmt::Debug for Pattern<'_> {
@@ -22058,14 +22401,17 @@ impl DriverSource {
     }
 }
 
-/// One driver of a value: an assignment or connection that writes it.
+/// One driver of a value: an assignment or connection that writes it. The
+/// flattened summary returned by [`Analysis::drivers`] and
+/// [`AnalyzedProcedure::drivers`]; see [`ValueDriver`] for the richer,
+/// handle-based form from [`Analysis::driver_handles`].
 #[derive(Clone, Copy)]
-pub struct Driver<'d> {
+pub struct DriverInfo<'d> {
     info: sys::slang_driver_info,
     _design: PhantomData<&'d Design>,
 }
 
-impl<'d> Driver<'d> {
+impl<'d> DriverInfo<'d> {
     /// How the value is driven.
     ///
     /// # Examples
@@ -22155,11 +22501,11 @@ impl<'d> Driver<'d> {
     }
 }
 
-impl core::fmt::Debug for Driver<'_> {
+impl core::fmt::Debug for DriverInfo<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "Driver({:?}, in {:?})",
+            "DriverInfo({:?}, in {:?})",
             self.kind(),
             self.containing_symbol().name()
         )
@@ -22335,7 +22681,7 @@ impl<'d> AnalyzedProcedure<'d> {
     /// assert_eq!(proc.drivers().count(), 1);
     /// # Ok(()) }
     /// ```
-    pub fn drivers(&self) -> impl Iterator<Item = Driver<'d>> + 'd {
+    pub fn drivers(&self) -> impl Iterator<Item = DriverInfo<'d>> + 'd {
         let handle = self.handle;
         // SAFETY: the handle belongs to a live analysis.
         let count = unsafe { sys::slang_analyzed_procedure_driver_count(handle) };
@@ -22343,7 +22689,7 @@ impl<'d> AnalyzedProcedure<'d> {
             let mut info = empty_driver_info();
             // SAFETY: out-param provided; index in range.
             let ok = unsafe { sys::slang_analyzed_procedure_driver_at(handle, i, &mut info) };
-            ok.then_some(Driver {
+            ok.then_some(DriverInfo {
                 info,
                 _design: PhantomData,
             })
@@ -22887,14 +23233,14 @@ impl<'d> Analysis<'d> {
     /// assert_eq!(analysis.drivers(body.find("z").unwrap()).count(), 1);
     /// # Ok(()) }
     /// ```
-    pub fn drivers(&self, value: Symbol<'d>) -> impl Iterator<Item = Driver<'d>> + '_ {
+    pub fn drivers(&self, value: Symbol<'d>) -> impl Iterator<Item = DriverInfo<'d>> + '_ {
         // SAFETY: value belongs to the analyzed design.
         let count = unsafe { sys::slang_analysis_driver_count(self.raw, value.raw) };
         (0..count).filter_map(move |i| {
             let mut info = empty_driver_info();
             // SAFETY: out-param provided; index in range.
             let ok = unsafe { sys::slang_analysis_driver(self.raw, value.raw, i, &mut info) };
-            ok.then_some(Driver {
+            ok.then_some(DriverInfo {
                 info,
                 _design: PhantomData,
             })
@@ -22903,7 +23249,7 @@ impl<'d> Analysis<'d> {
 
     /// The drivers of a value symbol, as live [`ValueDriver`] handles rather
     /// than the flattened snapshot [`drivers`](Self::drivers) returns. Unlike
-    /// that curated `Driver` snapshot, a `ValueDriver` also exposes the raw
+    /// that curated [`DriverInfo`] snapshot, a `ValueDriver` also exposes the raw
     /// flag bitmask, the
     /// driven symbol, the driven bit range, and any override source range
     /// (`slang::analysis::ValueDriver`). Empty if `value` is not a value
@@ -22993,7 +23339,7 @@ impl From<sys::slang_range> for SourceSpan {
 }
 
 /// The raw flag bitmask of a [`ValueDriver`] (`slang::analysis::DriverFlags`),
-/// combined with `|`. Unlike the curated subset the `Driver` snapshot exposes
+/// combined with `|`. Unlike the curated subset [`DriverInfo`] exposes
 /// (`is_input_port`, `is_clock_var`, ...), this is every underlying bit.
 ///
 /// # Examples
@@ -23058,7 +23404,7 @@ impl core::ops::BitOrAssign for RawDriverFlags {
 /// A single driver of a value symbol (an assignment or connection that writes
 /// it), as a live handle into the analysis (`slang::analysis::ValueDriver`).
 ///
-/// Unlike the `Driver` snapshot (the flattened form [`Analysis::drivers`]
+/// Unlike [`DriverInfo`] (the flattened form [`Analysis::drivers`]
 /// returns), this is obtained from [`Analysis::driver_handles`] and
 /// additionally exposes
 /// the raw flag bitmask, the driven symbol, the driven bit range, and any

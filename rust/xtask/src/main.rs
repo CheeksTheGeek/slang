@@ -684,6 +684,7 @@ fn gen_syntax_nodes(model: &SyntaxModel) -> Vec<(String, String)> {
 
     let per_shard = model.structs.len().div_ceil(SHARDS);
     let mut files = Vec::new();
+    let mut all_final_names: Vec<String> = Vec::new();
     for (shard, chunk) in model.structs.chunks(per_shard).enumerate() {
         let mut out = header("scripts/syntax.txt (via rust/model/syntax-model-*.json)");
         out.push_str(
@@ -715,8 +716,10 @@ fn gen_syntax_nodes(model: &SyntaxModel) -> Vec<(String, String)> {
                     kinds = s.kinds.join(", "),
                 );
                 let _ = writeln!(out, "impl<'t> {name}<'t> {{");
+                let mut method_names = Vec::new();
                 for (i, m) in s.members.iter().enumerate() {
                     let method = ident(&snake_case(&m.name));
+                    method_names.push(method.clone());
                     let (ret, body) = match m.form.as_str() {
                         "token" => (
                             "Option<Token<'t>>".to_string(),
@@ -766,6 +769,21 @@ fn gen_syntax_nodes(model: &SyntaxModel) -> Vec<(String, String)> {
                     );
                 }
                 out.push_str("}\n\n");
+                // Test-only: call every accessor, forcing the required-member
+                // `.expect()`s so a fuzz over error-recovery trees actually
+                // exercises them (the walk() traversal uses generic children and
+                // never touches these accessors). Kept in sync with the accessors
+                // above by the same generator.
+                let _ = writeln!(
+                    out,
+                    "#[cfg(test)]\nimpl<'t> {name}<'t> {{\n    \
+                     pub(crate) fn touch_members(&self) {{"
+                );
+                for method in &method_names {
+                    let _ = writeln!(out, "        let _ = self.{method}();");
+                }
+                out.push_str("    }\n}\n\n");
+                all_final_names.push(name.clone());
             } else {
                 let children = derived.get(name.as_str()).cloned().unwrap_or_default();
                 let mut all_finals = Vec::new();
@@ -829,6 +847,28 @@ fn gen_syntax_nodes(model: &SyntaxModel) -> Vec<(String, String)> {
         }
         files.push((format!("nodes_{shard}.rs"), out));
     }
+
+    // Test-only dispatch: cast a node to its concrete typed struct and call every
+    // accessor on it. Used by the accessor-robustness fuzz (src/syntax/mod.rs) to
+    // drive all required-member `.expect()`s over error-recovery trees.
+    let mut touch = header("scripts/syntax.txt (via rust/model/syntax-model-*.json)");
+    touch.push_str(
+        "#![allow(clippy::all)]\n\n\
+         use crate::syntax::nodes::*;\n\
+         use crate::syntax::{AstNode, Node};\n\n\
+         /// Cast `node` to its concrete typed view and call every member accessor.\n\
+         #[cfg(test)]\n\
+         pub(crate) fn touch_all_members(node: Node<'_>) {\n",
+    );
+    for name in &all_final_names {
+        let _ = writeln!(
+            touch,
+            "    if let Some(n) = <{name}<'_>>::cast(node) {{\n        n.touch_members();\n        return;\n    }}"
+        );
+    }
+    touch.push_str("}\n");
+    files.push(("touch.rs".to_string(), touch));
+
     files
 }
 

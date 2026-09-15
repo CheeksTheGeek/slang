@@ -125,6 +125,16 @@ impl<'t> AnsiUdpPortListSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> AnsiUdpPortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.ports();
+        let _ = self.close_paren();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::NonAnsiUdpPortListSyntax`].
 ///
 /// Kinds: NonAnsiUdpPortList.
@@ -172,6 +182,16 @@ impl<'t> NonAnsiUdpPortListSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> NonAnsiUdpPortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.ports();
+        let _ = self.close_paren();
+        let _ = self.semi();
     }
 }
 
@@ -230,6 +250,17 @@ impl<'t> WildcardUdpPortListSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> WildcardUdpPortListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.dot();
+        let _ = self.star();
+        let _ = self.close_paren();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UdpInitialStmtSyntax`].
 ///
 /// Kinds: UdpInitialStmt.
@@ -285,6 +316,17 @@ impl<'t> UdpInitialStmtSyntax<'t> {
     /// Member `semi` (child 4).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> UdpInitialStmtSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.initial();
+        let _ = self.name();
+        let _ = self.equals();
+        let _ = self.value();
+        let _ = self.semi();
     }
 }
 
@@ -391,6 +433,16 @@ impl<'t> UdpEdgeFieldSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> UdpEdgeFieldSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.first();
+        let _ = self.second();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UdpSimpleFieldSyntax`].
 ///
 /// Kinds: UdpSimpleField.
@@ -423,6 +475,13 @@ impl<'t> UdpSimpleFieldSyntax<'t> {
     /// Member `field` (child 0).
     pub fn field(&self) -> Option<Token<'t>> {
         self.node.member_token(0)
+    }
+}
+
+#[cfg(test)]
+impl<'t> UdpSimpleFieldSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.field();
     }
 }
 
@@ -490,6 +549,18 @@ impl<'t> UdpEntrySyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> UdpEntrySyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.inputs();
+        let _ = self.colon1();
+        let _ = self.current();
+        let _ = self.colon2();
+        let _ = self.next();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UdpBodySyntax`].
 ///
 /// Kinds: UdpBody.
@@ -544,6 +615,17 @@ impl<'t> UdpBodySyntax<'t> {
     /// Member `endtable` (child 4).
     pub fn endtable(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> UdpBodySyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.port_decls();
+        let _ = self.initial_stmt();
+        let _ = self.table();
+        let _ = self.entries();
+        let _ = self.endtable();
     }
 }
 
@@ -620,6 +702,19 @@ impl<'t> UdpDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> UdpDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.primitive();
+        let _ = self.name();
+        let _ = self.port_list();
+        let _ = self.body();
+        let _ = self.endprimitive();
+        let _ = self.end_block_name();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::SpecparamDeclaratorSyntax`].
 ///
 /// Kinds: SpecparamDeclarator.
@@ -690,6 +785,19 @@ impl<'t> SpecparamDeclaratorSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SpecparamDeclaratorSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.equals();
+        let _ = self.open_paren();
+        let _ = self.value1();
+        let _ = self.comma();
+        let _ = self.value2();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::SpecparamDeclarationSyntax`].
 ///
 /// Kinds: SpecparamDeclaration.
@@ -745,6 +853,17 @@ impl<'t> SpecparamDeclarationSyntax<'t> {
     /// Member `semi` (child 4).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> SpecparamDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.r#type();
+        let _ = self.declarators();
+        let _ = self.semi();
     }
 }
 
@@ -837,6 +956,13 @@ impl<'t> SimplePathSuffixSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SimplePathSuffixSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.outputs();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::EdgeSensitivePathSuffixSyntax`].
 ///
 /// Kinds: EdgeSensitivePathSuffix.
@@ -897,6 +1023,18 @@ impl<'t> EdgeSensitivePathSuffixSyntax<'t> {
     /// Member `closeParen` (child 5).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(5)
+    }
+}
+
+#[cfg(test)]
+impl<'t> EdgeSensitivePathSuffixSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.outputs();
+        let _ = self.polarity_operator();
+        let _ = self.colon();
+        let _ = self.expr();
+        let _ = self.close_paren();
     }
 }
 
@@ -968,6 +1106,19 @@ impl<'t> PathDescriptionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> PathDescriptionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.edge_identifier();
+        let _ = self.inputs();
+        let _ = self.polarity_operator();
+        let _ = self.path_operator();
+        let _ = self.suffix();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::PathDeclarationSyntax`].
 ///
 /// Kinds: PathDeclaration.
@@ -1033,6 +1184,19 @@ impl<'t> PathDeclarationSyntax<'t> {
     /// Member `semi` (child 6).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(6)
+    }
+}
+
+#[cfg(test)]
+impl<'t> PathDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.desc();
+        let _ = self.equals();
+        let _ = self.open_paren();
+        let _ = self.delays();
+        let _ = self.close_paren();
+        let _ = self.semi();
     }
 }
 
@@ -1102,6 +1266,18 @@ impl<'t> ConditionalPathDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ConditionalPathDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.open_paren();
+        let _ = self.predicate();
+        let _ = self.close_paren();
+        let _ = self.path();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::IfNonePathDeclarationSyntax`].
 ///
 /// Kinds: IfNonePathDeclaration.
@@ -1147,6 +1323,15 @@ impl<'t> IfNonePathDeclarationSyntax<'t> {
             .member_node(2)
             .and_then(<PathDeclarationSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> IfNonePathDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.path();
     }
 }
 
@@ -1197,6 +1382,16 @@ impl<'t> PulseStyleDeclarationSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> PulseStyleDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.inputs();
+        let _ = self.semi();
     }
 }
 
@@ -1302,6 +1497,13 @@ impl<'t> EmptyTimingCheckArgSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> EmptyTimingCheckArgSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.placeholder();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::EdgeDescriptorSyntax`].
 ///
 /// Kinds: EdgeDescriptor.
@@ -1339,6 +1541,14 @@ impl<'t> EdgeDescriptorSyntax<'t> {
     /// Member `t2` (child 1).
     pub fn t2(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> EdgeDescriptorSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.t1();
+        let _ = self.t2();
     }
 }
 
@@ -1387,6 +1597,15 @@ impl<'t> EdgeControlSpecifierSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> EdgeControlSpecifierSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_bracket();
+        let _ = self.descriptors();
+        let _ = self.close_bracket();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::TimingCheckEventConditionSyntax`].
 ///
 /// Kinds: TimingCheckEventCondition.
@@ -1427,6 +1646,14 @@ impl<'t> TimingCheckEventConditionSyntax<'t> {
             .member_node(1)
             .and_then(<ExpressionSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> TimingCheckEventConditionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.triple_and();
+        let _ = self.expr();
     }
 }
 
@@ -1487,6 +1714,16 @@ impl<'t> TimingCheckEventArgSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> TimingCheckEventArgSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.edge();
+        let _ = self.control_specifier();
+        let _ = self.terminal();
+        let _ = self.condition();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ExpressionTimingCheckArgSyntax`].
 ///
 /// Kinds: ExpressionTimingCheckArg.
@@ -1522,6 +1759,13 @@ impl<'t> ExpressionTimingCheckArgSyntax<'t> {
             .member_node(0)
             .and_then(<ExpressionSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ExpressionTimingCheckArgSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
     }
 }
 
@@ -1585,6 +1829,18 @@ impl<'t> SystemTimingCheckSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SystemTimingCheckSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.name();
+        let _ = self.open_paren();
+        let _ = self.args();
+        let _ = self.close_paren();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::SpecifyBlockSyntax`].
 ///
 /// Kinds: SpecifyBlock.
@@ -1632,6 +1888,16 @@ impl<'t> SpecifyBlockSyntax<'t> {
     /// Member `endspecify` (child 3).
     pub fn endspecify(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> SpecifyBlockSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.specify();
+        let _ = self.items();
+        let _ = self.endspecify();
     }
 }
 
@@ -1685,6 +1951,16 @@ impl<'t> NetAliasSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> NetAliasSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.keyword();
+        let _ = self.nets();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ExternModuleDeclSyntax`].
 ///
 /// Kinds: ExternModuleDecl.
@@ -1735,6 +2011,16 @@ impl<'t> ExternModuleDeclSyntax<'t> {
             .member_node(3)
             .and_then(<ModuleHeaderSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ExternModuleDeclSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.extern_keyword();
+        let _ = self.actual_attributes();
+        let _ = self.header();
     }
 }
 
@@ -1801,6 +2087,18 @@ impl<'t> ExternUdpDeclSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ExternUdpDeclSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.extern_keyword();
+        let _ = self.actual_attributes();
+        let _ = self.primitive();
+        let _ = self.name();
+        let _ = self.port_list();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ExternInterfaceMethodSyntax`].
 ///
 /// Kinds: ExternInterfaceMethod.
@@ -1856,6 +2154,17 @@ impl<'t> ExternInterfaceMethodSyntax<'t> {
     /// Member `semi` (child 4).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(4)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ExternInterfaceMethodSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.extern_keyword();
+        let _ = self.fork_join();
+        let _ = self.prototype();
+        let _ = self.semi();
     }
 }
 
@@ -2039,6 +2348,15 @@ impl<'t> DistWeightSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DistWeightSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.op();
+        let _ = self.extra_op();
+        let _ = self.expr();
+    }
+}
+
 /// Any node deriving from slang's abstract `DistItemBaseSyntax`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DistItemBaseSyntax<'t> {
@@ -2137,6 +2455,14 @@ impl<'t> DistItemSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DistItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.range();
+        let _ = self.weight();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::DefaultDistItemSyntax`].
 ///
 /// Kinds: DefaultDistItem.
@@ -2176,6 +2502,14 @@ impl<'t> DefaultDistItemSyntax<'t> {
         self.node
             .member_node(1)
             .and_then(<DistWeightSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> DefaultDistItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.default_keyword();
+        let _ = self.weight();
     }
 }
 
@@ -2229,6 +2563,16 @@ impl<'t> DistConstraintListSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> DistConstraintListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.dist();
+        let _ = self.open_brace();
+        let _ = self.items();
+        let _ = self.close_brace();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ExpressionOrDistSyntax`].
 ///
 /// Kinds: ExpressionOrDist.
@@ -2272,6 +2616,14 @@ impl<'t> ExpressionOrDistSyntax<'t> {
             .member_node(1)
             .and_then(<DistConstraintListSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ExpressionOrDistSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
+        let _ = self.distribution();
     }
 }
 
@@ -2323,6 +2675,15 @@ impl<'t> ExpressionConstraintSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ExpressionConstraintSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.soft();
+        let _ = self.expr();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::UniquenessConstraintSyntax`].
 ///
 /// Kinds: UniquenessConstraint.
@@ -2368,6 +2729,15 @@ impl<'t> UniquenessConstraintSyntax<'t> {
     /// Member `semi` (child 2).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> UniquenessConstraintSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.unique();
+        let _ = self.ranges();
+        let _ = self.semi();
     }
 }
 
@@ -2422,6 +2792,15 @@ impl<'t> ImplicationConstraintSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ImplicationConstraintSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.left();
+        let _ = self.arrow();
+        let _ = self.constraints();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ElseConstraintClauseSyntax`].
 ///
 /// Kinds: ElseConstraintClause.
@@ -2462,6 +2841,14 @@ impl<'t> ElseConstraintClauseSyntax<'t> {
             .member_node(1)
             .and_then(<ConstraintItemSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ElseConstraintClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.else_keyword();
+        let _ = self.constraints();
     }
 }
 
@@ -2533,6 +2920,18 @@ impl<'t> ConditionalConstraintSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ConditionalConstraintSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.if_keyword();
+        let _ = self.open_paren();
+        let _ = self.condition();
+        let _ = self.close_paren();
+        let _ = self.constraints();
+        let _ = self.else_clause();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::LoopConstraintSyntax`].
 ///
 /// Kinds: LoopConstraint.
@@ -2581,6 +2980,15 @@ impl<'t> LoopConstraintSyntax<'t> {
             .member_node(2)
             .and_then(<ConstraintItemSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> LoopConstraintSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.foreach_keyword();
+        let _ = self.loop_list();
+        let _ = self.constraints();
     }
 }
 
@@ -2634,6 +3042,16 @@ impl<'t> DisableConstraintSyntax<'t> {
     /// Member `semi` (child 3).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> DisableConstraintSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.disable();
+        let _ = self.soft();
+        let _ = self.name();
+        let _ = self.semi();
     }
 }
 
@@ -2692,6 +3110,17 @@ impl<'t> SolveBeforeConstraintSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SolveBeforeConstraintSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.solve();
+        let _ = self.before_expr();
+        let _ = self.before();
+        let _ = self.after_expr();
+        let _ = self.semi();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ConstraintBlockSyntax`].
 ///
 /// Kinds: ConstraintBlock.
@@ -2734,6 +3163,15 @@ impl<'t> ConstraintBlockSyntax<'t> {
     /// Member `closeBrace` (child 2).
     pub fn close_brace(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ConstraintBlockSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_brace();
+        let _ = self.items();
+        let _ = self.close_brace();
     }
 }
 
@@ -2797,6 +3235,18 @@ impl<'t> ConstraintPrototypeSyntax<'t> {
     /// Member `semi` (child 5).
     pub fn semi(&self) -> Option<Token<'t>> {
         self.node.member_token(5)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ConstraintPrototypeSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.qualifiers();
+        let _ = self.keyword();
+        let _ = self.specifiers();
+        let _ = self.name();
+        let _ = self.semi();
     }
 }
 
@@ -2866,6 +3316,18 @@ impl<'t> ConstraintDeclarationSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ConstraintDeclarationSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.attributes();
+        let _ = self.qualifiers();
+        let _ = self.keyword();
+        let _ = self.specifiers();
+        let _ = self.name();
+        let _ = self.block();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ParenExpressionListSyntax`].
 ///
 /// Kinds: ParenExpressionList.
@@ -2908,6 +3370,15 @@ impl<'t> ParenExpressionListSyntax<'t> {
     /// Member `closeParen` (child 2).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ParenExpressionListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.expressions();
+        let _ = self.close_paren();
     }
 }
 
@@ -2968,6 +3439,16 @@ impl<'t> ArrayOrRandomizeMethodExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ArrayOrRandomizeMethodExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.method();
+        let _ = self.with();
+        let _ = self.args();
+        let _ = self.constraints();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::WithFunctionSampleSyntax`].
 ///
 /// Kinds: WithFunctionSample.
@@ -3017,5 +3498,15 @@ impl<'t> WithFunctionSampleSyntax<'t> {
         self.node
             .member_node(3)
             .and_then(<FunctionPortListSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> WithFunctionSampleSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.with();
+        let _ = self.function();
+        let _ = self.sample();
+        let _ = self.port_list();
     }
 }

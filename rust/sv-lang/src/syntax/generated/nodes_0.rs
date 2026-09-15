@@ -941,6 +941,14 @@ impl<'t> EqualsValueClauseSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> EqualsValueClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.equals();
+        let _ = self.expr();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::AttributeSpecSyntax`].
 ///
 /// Kinds: AttributeSpec.
@@ -980,6 +988,14 @@ impl<'t> AttributeSpecSyntax<'t> {
         self.node
             .member_node(1)
             .and_then(<EqualsValueClauseSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> AttributeSpecSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.value();
     }
 }
 
@@ -1038,6 +1054,17 @@ impl<'t> AttributeInstanceSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> AttributeInstanceSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.open_star();
+        let _ = self.specs();
+        let _ = self.close_star();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::NamedLabelSyntax`].
 ///
 /// Kinds: NamedLabel.
@@ -1075,6 +1102,14 @@ impl<'t> NamedLabelSyntax<'t> {
     /// Member `colon` (child 1).
     pub fn colon(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> NamedLabelSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.colon();
     }
 }
 
@@ -2601,6 +2636,13 @@ impl<'t> EmptyArgumentSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> EmptyArgumentSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.placeholder();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::OrderedArgumentSyntax`].
 ///
 /// Kinds: OrderedArgument.
@@ -2636,6 +2678,13 @@ impl<'t> OrderedArgumentSyntax<'t> {
             .member_node(0)
             .and_then(<PropertyExprSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> OrderedArgumentSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
     }
 }
 
@@ -2696,6 +2745,17 @@ impl<'t> NamedArgumentSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> NamedArgumentSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.dot();
+        let _ = self.name();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ArgumentListSyntax`].
 ///
 /// Kinds: ArgumentList.
@@ -2738,6 +2798,15 @@ impl<'t> ArgumentListSyntax<'t> {
     /// Member `closeParen` (child 2).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ArgumentListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.parameters();
+        let _ = self.close_paren();
     }
 }
 
@@ -2833,6 +2902,13 @@ impl<'t> OrderedParamAssignmentSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> OrderedParamAssignmentSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::NamedParamAssignmentSyntax`].
 ///
 /// Kinds: NamedParamAssignment.
@@ -2890,6 +2966,17 @@ impl<'t> NamedParamAssignmentSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> NamedParamAssignmentSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.dot();
+        let _ = self.name();
+        let _ = self.open_paren();
+        let _ = self.expr();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ParameterValueAssignmentSyntax`].
 ///
 /// Kinds: ParameterValueAssignment.
@@ -2937,6 +3024,16 @@ impl<'t> ParameterValueAssignmentSyntax<'t> {
     /// Member `closeParen` (child 3).
     pub fn close_paren(&self) -> Option<Token<'t>> {
         self.node.member_token(3)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ParameterValueAssignmentSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.hash();
+        let _ = self.open_paren();
+        let _ = self.parameters();
+        let _ = self.close_paren();
     }
 }
 
@@ -3094,6 +3191,15 @@ impl<'t> ParenthesizedPatternSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ParenthesizedPatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_paren();
+        let _ = self.pattern();
+        let _ = self.close_paren();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::VariablePatternSyntax`].
 ///
 /// Kinds: VariablePattern.
@@ -3131,6 +3237,14 @@ impl<'t> VariablePatternSyntax<'t> {
     /// Member `variableName` (child 1).
     pub fn variable_name(&self) -> Option<Token<'t>> {
         self.node.member_token(1)
+    }
+}
+
+#[cfg(test)]
+impl<'t> VariablePatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.dot();
+        let _ = self.variable_name();
     }
 }
 
@@ -3174,6 +3288,14 @@ impl<'t> WildcardPatternSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> WildcardPatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.dot();
+        let _ = self.star();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ExpressionPatternSyntax`].
 ///
 /// Kinds: ExpressionPattern.
@@ -3209,6 +3331,13 @@ impl<'t> ExpressionPatternSyntax<'t> {
             .member_node(0)
             .and_then(<ExpressionSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> ExpressionPatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
     }
 }
 
@@ -3254,6 +3383,15 @@ impl<'t> TaggedPatternSyntax<'t> {
     /// Member `pattern` (child 2).
     pub fn pattern(&self) -> Option<PatternSyntax<'t>> {
         self.node.member_node(2).and_then(<PatternSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> TaggedPatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.tagged();
+        let _ = self.member_name();
+        let _ = self.pattern();
     }
 }
 
@@ -3349,6 +3487,13 @@ impl<'t> OrderedStructurePatternMemberSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> OrderedStructurePatternMemberSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.pattern();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::NamedStructurePatternMemberSyntax`].
 ///
 /// Kinds: NamedStructurePatternMember.
@@ -3397,6 +3542,15 @@ impl<'t> NamedStructurePatternMemberSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> NamedStructurePatternMemberSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.name();
+        let _ = self.colon();
+        let _ = self.pattern();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::StructurePatternSyntax`].
 ///
 /// Kinds: StructurePattern.
@@ -3442,6 +3596,15 @@ impl<'t> StructurePatternSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> StructurePatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_brace();
+        let _ = self.members();
+        let _ = self.close_brace();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::MatchesClauseSyntax`].
 ///
 /// Kinds: MatchesClause.
@@ -3482,6 +3645,14 @@ impl<'t> MatchesClauseSyntax<'t> {
             .member_node(1)
             .and_then(<PatternSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> MatchesClauseSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.matches_keyword();
+        let _ = self.pattern();
     }
 }
 
@@ -3530,6 +3701,14 @@ impl<'t> ConditionalPatternSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ConditionalPatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
+        let _ = self.matches_clause();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ConditionalPredicateSyntax`].
 ///
 /// Kinds: ConditionalPredicate.
@@ -3562,6 +3741,13 @@ impl<'t> ConditionalPredicateSyntax<'t> {
     /// Member `conditions` (child 0).
     pub fn conditions(&self) -> SeparatedList<'t, ConditionalPatternSyntax<'t>> {
         self.node.member_separated_list(0)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ConditionalPredicateSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.conditions();
     }
 }
 
@@ -3677,6 +3863,15 @@ impl<'t> SimpleAssignmentPatternSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> SimpleAssignmentPatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_brace();
+        let _ = self.items();
+        let _ = self.close_brace();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::AssignmentPatternItemSyntax`].
 ///
 /// Kinds: AssignmentPatternItem.
@@ -3728,6 +3923,15 @@ impl<'t> AssignmentPatternItemSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> AssignmentPatternItemSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.key();
+        let _ = self.colon();
+        let _ = self.expr();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::StructuredAssignmentPatternSyntax`].
 ///
 /// Kinds: StructuredAssignmentPattern.
@@ -3770,6 +3974,15 @@ impl<'t> StructuredAssignmentPatternSyntax<'t> {
     /// Member `closeBrace` (child 2).
     pub fn close_brace(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> StructuredAssignmentPatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_brace();
+        let _ = self.items();
+        let _ = self.close_brace();
     }
 }
 
@@ -3836,6 +4049,18 @@ impl<'t> ReplicatedAssignmentPatternSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ReplicatedAssignmentPatternSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_brace();
+        let _ = self.count_expr();
+        let _ = self.inner_open_brace();
+        let _ = self.items();
+        let _ = self.inner_close_brace();
+        let _ = self.close_brace();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::BadExpressionSyntax`].
 ///
 /// Kinds: BadExpression.
@@ -3871,6 +4096,13 @@ impl<'t> BadExpressionSyntax<'t> {
             .member_node(0)
             .and_then(<ExpressionSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> BadExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
     }
 }
 
@@ -4054,6 +4286,15 @@ impl<'t> PrefixUnaryExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> PrefixUnaryExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.operator_token();
+        let _ = self.attributes();
+        let _ = self.operand();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::PostfixUnaryExpressionSyntax`].
 ///
 /// Kinds: PostdecrementExpression, PostincrementExpression.
@@ -4099,6 +4340,15 @@ impl<'t> PostfixUnaryExpressionSyntax<'t> {
     /// Member `operatorToken` (child 2).
     pub fn operator_token(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> PostfixUnaryExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.operand();
+        let _ = self.attributes();
+        let _ = self.operator_token();
     }
 }
 
@@ -4155,6 +4405,16 @@ impl<'t> BinaryExpressionSyntax<'t> {
             .member_node(3)
             .and_then(<ExpressionSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> BinaryExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.left();
+        let _ = self.operator_token();
+        let _ = self.attributes();
+        let _ = self.right();
     }
 }
 
@@ -4222,6 +4482,17 @@ impl<'t> MinTypMaxExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> MinTypMaxExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.min();
+        let _ = self.colon1();
+        let _ = self.typ();
+        let _ = self.colon2();
+        let _ = self.max();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::TaggedUnionExpressionSyntax`].
 ///
 /// Kinds: TaggedUnionExpression.
@@ -4266,6 +4537,15 @@ impl<'t> TaggedUnionExpressionSyntax<'t> {
         self.node
             .member_node(2)
             .and_then(<ExpressionSyntax<'t>>::cast)
+    }
+}
+
+#[cfg(test)]
+impl<'t> TaggedUnionExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.tagged();
+        let _ = self.member();
+        let _ = self.expr();
     }
 }
 
@@ -4330,6 +4610,17 @@ impl<'t> ValueRangeExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ValueRangeExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_bracket();
+        let _ = self.left();
+        let _ = self.op();
+        let _ = self.right();
+        let _ = self.close_bracket();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::RangeListSyntax`].
 ///
 /// Kinds: RangeList.
@@ -4372,6 +4663,15 @@ impl<'t> RangeListSyntax<'t> {
     /// Member `closeBrace` (child 2).
     pub fn close_brace(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> RangeListSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_brace();
+        let _ = self.value_ranges();
+        let _ = self.close_brace();
     }
 }
 
@@ -4423,6 +4723,15 @@ impl<'t> InsideExpressionSyntax<'t> {
             .member_node(2)
             .and_then(<RangeListSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> InsideExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
+        let _ = self.inside();
+        let _ = self.ranges();
     }
 }
 
@@ -4495,6 +4804,18 @@ impl<'t> ConditionalExpressionSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> ConditionalExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.predicate();
+        let _ = self.question();
+        let _ = self.attributes();
+        let _ = self.left();
+        let _ = self.colon();
+        let _ = self.right();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::AssignmentPatternExpressionSyntax`].
 ///
 /// Kinds: AssignmentPatternExpression.
@@ -4537,6 +4858,14 @@ impl<'t> AssignmentPatternExpressionSyntax<'t> {
             .member_node(1)
             .and_then(<AssignmentPatternSyntax<'t>>::cast)
             .expect("slang guarantees this member is present")
+    }
+}
+
+#[cfg(test)]
+impl<'t> AssignmentPatternExpressionSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.r#type();
+        let _ = self.pattern();
     }
 }
 
@@ -4631,6 +4960,13 @@ impl<'t> BitSelectSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> BitSelectSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.expr();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::RangeSelectSyntax`].
 ///
 /// Kinds: AscendingRangeSelect, DescendingRangeSelect, SimpleRangeSelect.
@@ -4682,6 +5018,15 @@ impl<'t> RangeSelectSyntax<'t> {
     }
 }
 
+#[cfg(test)]
+impl<'t> RangeSelectSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.left();
+        let _ = self.range();
+        let _ = self.right();
+    }
+}
+
 /// Typed view of a [`Node`] whose struct is [`SyntaxStruct::ElementSelectSyntax`].
 ///
 /// Kinds: ElementSelect.
@@ -4726,6 +5071,15 @@ impl<'t> ElementSelectSyntax<'t> {
     /// Member `closeBracket` (child 2).
     pub fn close_bracket(&self) -> Option<Token<'t>> {
         self.node.member_token(2)
+    }
+}
+
+#[cfg(test)]
+impl<'t> ElementSelectSyntax<'t> {
+    pub(crate) fn touch_members(&self) {
+        let _ = self.open_bracket();
+        let _ = self.selector();
+        let _ = self.close_bracket();
     }
 }
 

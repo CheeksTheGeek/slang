@@ -68,7 +68,11 @@ fn classify_arg(name: &str, ty: &str) -> Result<Arg, String> {
         return Ok(Arg::Struct(name.to_string(), sz));
     }
     match ty.as_str() {
-        "u64" | "usize" | "i64" => Ok(Arg::I64(name.to_string())),
+        "u64" | "i64" => Ok(Arg::I64(name.to_string())),
+        // `usize`/`isize` is size_t: 32-bit on wasm32 (the guest target), so it
+        // marshals as an i32 — NOT i64 (which would be a wasm arg-type mismatch;
+        // the hand-written `find` passes lengths as i32 for exactly this reason).
+        "usize" | "isize" => Ok(Arg::I32(name.to_string())),
         "u32" | "i32" | "u16" | "u8" | "bool" | "f64" => Ok(Arg::I32(name.to_string())),
         // enum aliases (slang_*_kind, slang_*_flag, ...) resolve to c_uint.
         t if t.starts_with("slang_") => Ok(Arg::I32(name.to_string())),
@@ -88,7 +92,9 @@ fn classify_ret(ty: &str) -> Result<Ret, String> {
         return Ok(Ret::I32);
     }
     match ty.as_str() {
-        "u64" | "usize" | "i64" => Ok(Ret::I64),
+        "u64" | "i64" => Ok(Ret::I64),
+        // size_t is 32-bit on wasm32 (see classify_arg).
+        "usize" | "isize" => Ok(Ret::I32),
         "u32" | "i32" | "u16" | "u8" | "bool" => Ok(Ret::I32),
         t if t.starts_with("slang_") => Ok(Ret::I32),
         other => Err(format!("unsupported return type `{other}`")),

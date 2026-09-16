@@ -267,7 +267,7 @@ impl Slang {
         &mut self,
         sm: u32,
         pattern: u32,
-        pattern_len: u64,
+        pattern_len: u32,
         system: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
@@ -277,7 +277,7 @@ impl Slang {
             &[
                 Val::I32(sm as i32),
                 Val::I32(pattern as i32),
-                Val::I64(pattern_len as i64),
+                Val::I32(pattern_len as i32),
                 Val::I32(system as i32),
                 Val::I32(__err as i32),
             ],
@@ -293,9 +293,9 @@ impl Slang {
         &mut self,
         sm: u32,
         path: u32,
-        path_len: u64,
+        path_len: u32,
         text: u32,
-        text_len: u64,
+        text_len: u32,
     ) -> Result<u32, Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -304,9 +304,9 @@ impl Slang {
             &[
                 Val::I32(sm as i32),
                 Val::I32(path as i32),
-                Val::I64(path_len as i64),
+                Val::I32(path_len as i32),
                 Val::I32(text as i32),
-                Val::I64(text_len as i64),
+                Val::I32(text_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -324,7 +324,7 @@ impl Slang {
         &mut self,
         sm: u32,
         path: u32,
-        path_len: u64,
+        path_len: u32,
     ) -> Result<u32, Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -333,7 +333,7 @@ impl Slang {
             &[
                 Val::I32(sm as i32),
                 Val::I32(path as i32),
-                Val::I64(path_len as i64),
+                Val::I32(path_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -386,7 +386,7 @@ impl Slang {
         Ok(__s)
     }
     /// Raw marshalling for `slang_source_manager_line`.
-    pub fn raw_slang_source_manager_line(&mut self, sm: u32, loc: &[u8]) -> Result<u64, Error> {
+    pub fn raw_slang_source_manager_line(&mut self, sm: u32, loc: &[u8]) -> Result<u32, Error> {
         let __p_loc = self.malloc(16)?;
         self.write(__p_loc, &loc[..16])?;
         let __r = self.call(
@@ -396,13 +396,12 @@ impl Slang {
         self.free(__p_loc);
         let __v = __r?;
         Ok(match __v.first() {
-            Some(Val::I64(n)) => *n as u64,
-            Some(Val::I32(n)) => *n as u64,
+            Some(Val::I32(n)) => *n as u32,
             _ => 0,
         })
     }
     /// Raw marshalling for `slang_source_manager_column`.
-    pub fn raw_slang_source_manager_column(&mut self, sm: u32, loc: &[u8]) -> Result<u64, Error> {
+    pub fn raw_slang_source_manager_column(&mut self, sm: u32, loc: &[u8]) -> Result<u32, Error> {
         let __p_loc = self.malloc(16)?;
         self.write(__p_loc, &loc[..16])?;
         let __r = self.call(
@@ -412,8 +411,7 @@ impl Slang {
         self.free(__p_loc);
         let __v = __r?;
         Ok(match __v.first() {
-            Some(Val::I64(n)) => *n as u64,
-            Some(Val::I32(n)) => *n as u64,
+            Some(Val::I32(n)) => *n as u32,
             _ => 0,
         })
     }
@@ -500,9 +498,9 @@ impl Slang {
         &mut self,
         options: u32,
         name: u32,
-        name_len: u64,
+        name_len: u32,
         value: u32,
-        value_len: u64,
+        value_len: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -511,9 +509,9 @@ impl Slang {
             &[
                 Val::I32(options as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(value as i32),
-                Val::I64(value_len as i64),
+                Val::I32(value_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -528,7 +526,7 @@ impl Slang {
         &mut self,
         options: u32,
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -537,7 +535,7 @@ impl Slang {
             &[
                 Val::I32(options as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -565,11 +563,11 @@ impl Slang {
         &mut self,
         sm: u32,
         text: u32,
-        text_len: u64,
+        text_len: u32,
         name: u32,
-        name_len: u64,
+        name_len: u32,
         path: u32,
-        path_len: u64,
+        path_len: u32,
         options: u32,
     ) -> Result<u32, Error> {
         let __err = self.malloc(252)?;
@@ -579,11 +577,11 @@ impl Slang {
             &[
                 Val::I32(sm as i32),
                 Val::I32(text as i32),
-                Val::I64(text_len as i64),
+                Val::I32(text_len as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(path as i32),
-                Val::I64(path_len as i64),
+                Val::I32(path_len as i32),
                 Val::I32(options as i32),
                 Val::I32(__err as i32),
             ],
@@ -602,7 +600,7 @@ impl Slang {
         &mut self,
         sm: u32,
         path: u32,
-        path_len: u64,
+        path_len: u32,
         options: u32,
     ) -> Result<u32, Error> {
         let __err = self.malloc(252)?;
@@ -612,7 +610,7 @@ impl Slang {
             &[
                 Val::I32(sm as i32),
                 Val::I32(path as i32),
-                Val::I64(path_len as i64),
+                Val::I32(path_len as i32),
                 Val::I32(options as i32),
                 Val::I32(__err as i32),
             ],
@@ -1673,7 +1671,7 @@ impl Slang {
         &mut self,
         comp: u32,
         name: u32,
-        name_len: u64,
+        name_len: u32,
         scope: &[u8],
     ) -> Result<u32, Error> {
         let __p_scope = self.malloc(16)?;
@@ -1683,7 +1681,7 @@ impl Slang {
             &[
                 Val::I32(comp as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(__p_scope as i32),
             ],
         );
@@ -1807,7 +1805,7 @@ impl Slang {
         &mut self,
         comp: u32,
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<Vec<u32>, Error> {
         let __sret = self.malloc(16)?;
         let __r = self.call(
@@ -1816,7 +1814,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(comp as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
             ],
         );
         __r?;
@@ -1832,7 +1830,7 @@ impl Slang {
         &mut self,
         comp: u32,
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<Vec<u32>, Error> {
         let __sret = self.malloc(16)?;
         let __r = self.call(
@@ -1841,7 +1839,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(comp as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
             ],
         );
         __r?;
@@ -2063,14 +2061,14 @@ impl Slang {
         &mut self,
         comp: u32,
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<u32, Error> {
         let __r = self.call(
             "slang_compilation_get_source_library",
             &[
                 Val::I32(comp as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
             ],
         );
         let __v = __r?;
@@ -2191,7 +2189,7 @@ impl Slang {
         &mut self,
         comp: u32,
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<Vec<u32>, Error> {
         let __sret = self.malloc(16)?;
         let __err = self.malloc(252)?;
@@ -2202,7 +2200,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(comp as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -2361,7 +2359,7 @@ impl Slang {
         comp: u32,
         type_kind: u32,
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<u32, Error> {
         let __r = self.call(
             "slang_compilation_get_system_method",
@@ -2369,7 +2367,7 @@ impl Slang {
                 Val::I32(comp as i32),
                 Val::I32(type_kind as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
             ],
         );
         let __v = __r?;
@@ -2995,7 +2993,7 @@ impl Slang {
         &mut self,
         scope: &[u8],
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<Vec<u32>, Error> {
         let __sret = self.malloc(16)?;
         let __p_scope = self.malloc(16)?;
@@ -3008,7 +3006,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(__p_scope as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -3029,7 +3027,7 @@ impl Slang {
         &mut self,
         scope: &[u8],
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<Vec<u32>, Error> {
         let __sret = self.malloc(16)?;
         let __p_scope = self.malloc(16)?;
@@ -3042,7 +3040,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(__p_scope as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -3628,7 +3626,7 @@ impl Slang {
         &mut self,
         sym: &[u8],
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<Vec<u32>, Error> {
         let __sret = self.malloc(16)?;
         let __p_sym = self.malloc(16)?;
@@ -3639,7 +3637,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(__p_sym as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
             ],
         );
         self.free(__p_sym);
@@ -11931,12 +11929,12 @@ impl Slang {
         &mut self,
         driver: u32,
         names: u32,
-        names_len: u64,
+        names_len: u32,
         kind: u32,
         description: u32,
-        description_len: u64,
+        description_len: u32,
         value_name: u32,
-        value_name_len: u64,
+        value_name_len: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -11945,12 +11943,12 @@ impl Slang {
             &[
                 Val::I32(driver as i32),
                 Val::I32(names as i32),
-                Val::I64(names_len as i64),
+                Val::I32(names_len as i32),
                 Val::I32(kind as i32),
                 Val::I32(description as i32),
-                Val::I64(description_len as i64),
+                Val::I32(description_len as i32),
                 Val::I32(value_name as i32),
-                Val::I64(value_name_len as i64),
+                Val::I32(value_name_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -12091,7 +12089,7 @@ impl Slang {
         &mut self,
         driver: u32,
         overview: u32,
-        overview_len: u64,
+        overview_len: u32,
     ) -> Result<String, Error> {
         let __sret = self.malloc(12)?;
         let __err = self.malloc(252)?;
@@ -12102,7 +12100,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(driver as i32),
                 Val::I32(overview as i32),
-                Val::I64(overview_len as i64),
+                Val::I32(overview_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -12289,7 +12287,7 @@ impl Slang {
         &mut self,
         driver: u32,
         pattern: u32,
-        pattern_len: u64,
+        pattern_len: u32,
         make_relative: u32,
         separate_unit: u32,
     ) -> Result<u32, Error> {
@@ -12300,7 +12298,7 @@ impl Slang {
             &[
                 Val::I32(driver as i32),
                 Val::I32(pattern as i32),
-                Val::I64(pattern_len as i64),
+                Val::I32(pattern_len as i32),
                 Val::I32(make_relative as i32),
                 Val::I32(separate_unit as i32),
                 Val::I32(__err as i32),
@@ -12574,7 +12572,7 @@ impl Slang {
         &mut self,
         loader: u32,
         pattern: u32,
-        pattern_len: u64,
+        pattern_len: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -12583,7 +12581,7 @@ impl Slang {
             &[
                 Val::I32(loader as i32),
                 Val::I32(pattern as i32),
-                Val::I64(pattern_len as i64),
+                Val::I32(pattern_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -12598,9 +12596,9 @@ impl Slang {
         &mut self,
         loader: u32,
         library_name: u32,
-        library_name_len: u64,
+        library_name_len: u32,
         pattern: u32,
-        pattern_len: u64,
+        pattern_len: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -12609,9 +12607,9 @@ impl Slang {
             &[
                 Val::I32(loader as i32),
                 Val::I32(library_name as i32),
-                Val::I64(library_name_len as i64),
+                Val::I32(library_name_len as i32),
                 Val::I32(pattern as i32),
-                Val::I64(pattern_len as i64),
+                Val::I32(pattern_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -12626,9 +12624,9 @@ impl Slang {
         &mut self,
         loader: u32,
         pattern: u32,
-        pattern_len: u64,
+        pattern_len: u32,
         base_path: u32,
-        base_path_len: u64,
+        base_path_len: u32,
         options: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
@@ -12638,9 +12636,9 @@ impl Slang {
             &[
                 Val::I32(loader as i32),
                 Val::I32(pattern as i32),
-                Val::I64(pattern_len as i64),
+                Val::I32(pattern_len as i32),
                 Val::I32(base_path as i32),
-                Val::I64(base_path_len as i64),
+                Val::I32(base_path_len as i32),
                 Val::I32(options as i32),
                 Val::I32(__err as i32),
             ],
@@ -12656,7 +12654,7 @@ impl Slang {
         &mut self,
         loader: u32,
         pattern: u32,
-        pattern_len: u64,
+        pattern_len: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -12665,7 +12663,7 @@ impl Slang {
             &[
                 Val::I32(loader as i32),
                 Val::I32(pattern as i32),
-                Val::I64(pattern_len as i64),
+                Val::I32(pattern_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -12680,7 +12678,7 @@ impl Slang {
         &mut self,
         loader: u32,
         extension: u32,
-        extension_len: u64,
+        extension_len: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -12689,7 +12687,7 @@ impl Slang {
             &[
                 Val::I32(loader as i32),
                 Val::I32(extension as i32),
-                Val::I64(extension_len as i64),
+                Val::I32(extension_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -12704,15 +12702,15 @@ impl Slang {
         &mut self,
         loader: u32,
         file_patterns: u32,
-        file_patterns_count: u64,
+        file_patterns_count: u32,
         include_paths: u32,
-        include_paths_count: u64,
+        include_paths_count: u32,
         defines: u32,
-        defines_count: u64,
+        defines_count: u32,
         library_name: u32,
-        library_name_len: u64,
+        library_name_len: u32,
         warning_options: u32,
-        warning_options_count: u64,
+        warning_options_count: u32,
     ) -> Result<(), Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -12721,15 +12719,15 @@ impl Slang {
             &[
                 Val::I32(loader as i32),
                 Val::I32(file_patterns as i32),
-                Val::I64(file_patterns_count as i64),
+                Val::I32(file_patterns_count as i32),
                 Val::I32(include_paths as i32),
-                Val::I64(include_paths_count as i64),
+                Val::I32(include_paths_count as i32),
                 Val::I32(defines as i32),
-                Val::I64(defines_count as i64),
+                Val::I32(defines_count as i32),
                 Val::I32(library_name as i32),
-                Val::I64(library_name_len as i64),
+                Val::I32(library_name_len as i32),
                 Val::I32(warning_options as i32),
-                Val::I64(warning_options_count as i64),
+                Val::I32(warning_options_count as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -13965,7 +13963,7 @@ impl Slang {
         &mut self,
         session: u32,
         text: u32,
-        text_len: u64,
+        text_len: u32,
     ) -> Result<u32, Error> {
         let __err = self.malloc(252)?;
         self.zero(__err, 252)?;
@@ -13974,7 +13972,7 @@ impl Slang {
             &[
                 Val::I32(session as i32),
                 Val::I32(text as i32),
-                Val::I64(text_len as i64),
+                Val::I32(text_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -14596,7 +14594,7 @@ impl Slang {
         &mut self,
         context_scope: &[u8],
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<Vec<u32>, Error> {
         let __sret = self.malloc(16)?;
         let __p_context_scope = self.malloc(16)?;
@@ -14609,7 +14607,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(__p_context_scope as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -14630,7 +14628,7 @@ impl Slang {
         &mut self,
         context_scope: &[u8],
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<Vec<u32>, Error> {
         let __sret = self.malloc(16)?;
         let __p_context_scope = self.malloc(16)?;
@@ -14643,7 +14641,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(__p_context_scope as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(__err as i32),
             ],
         );
@@ -14665,7 +14663,7 @@ impl Slang {
         assertion_inst: &[u8],
         context_scope: &[u8],
         name: u32,
-        name_len: u64,
+        name_len: u32,
         out_symbol: u32,
     ) -> Result<u32, Error> {
         let __p_assertion_inst = self.malloc(16)?;
@@ -14680,7 +14678,7 @@ impl Slang {
                 Val::I32(__p_assertion_inst as i32),
                 Val::I32(__p_context_scope as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(out_symbol as i32),
                 Val::I32(__err as i32),
             ],
@@ -14702,7 +14700,7 @@ impl Slang {
         temp_var: &[u8],
         context_scope: &[u8],
         name: u32,
-        name_len: u64,
+        name_len: u32,
         out_symbol: u32,
     ) -> Result<u32, Error> {
         let __p_temp_var = self.malloc(16)?;
@@ -14717,7 +14715,7 @@ impl Slang {
                 Val::I32(__p_temp_var as i32),
                 Val::I32(__p_context_scope as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(out_symbol as i32),
                 Val::I32(__err as i32),
             ],
@@ -14827,7 +14825,7 @@ impl Slang {
         this_var: &[u8],
         context_scope: &[u8],
         name: u32,
-        name_len: u64,
+        name_len: u32,
         result: u32,
     ) -> Result<u32, Error> {
         let __p_class_type = self.malloc(16)?;
@@ -14845,7 +14843,7 @@ impl Slang {
                 Val::I32(__p_this_var as i32),
                 Val::I32(__p_context_scope as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
                 Val::I32(result as i32),
                 Val::I32(__err as i32),
             ],
@@ -15408,7 +15406,7 @@ impl Slang {
         &mut self,
         sym: &[u8],
         name: u32,
-        name_len: u64,
+        name_len: u32,
     ) -> Result<Vec<u32>, Error> {
         let __sret = self.malloc(16)?;
         let __p_sym = self.malloc(16)?;
@@ -15419,7 +15417,7 @@ impl Slang {
                 Val::I32(__sret as i32),
                 Val::I32(__p_sym as i32),
                 Val::I32(name as i32),
-                Val::I64(name_len as i64),
+                Val::I32(name_len as i32),
             ],
         );
         self.free(__p_sym);

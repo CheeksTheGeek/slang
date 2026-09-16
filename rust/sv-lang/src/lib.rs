@@ -334,6 +334,14 @@ impl Session {
     /// As [`parse`](Self::parse), naming the buffer (shown in diagnostics) and
     /// giving it a path (used to resolve `` `include ``).
     ///
+    /// **Re-parsing / path uniqueness:** a non-empty `path` registers a *unique*
+    /// buffer in this session's source manager, so calling this twice with the
+    /// same non-empty `path` (e.g. to re-parse a file after an edit) fails. To
+    /// re-parse repeatedly within one session while still labelling diagnostics
+    /// with the file name, pass the name as `name` and leave `path` empty (`""`);
+    /// only pass a non-empty `path` when you need `` `include `` resolution
+    /// relative to it. Alternatively use a fresh [`Session`] per generation.
+    ///
     /// # Examples
     /// ```
     /// # fn main() -> Result<(), sv_lang::Error> {

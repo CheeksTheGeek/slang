@@ -106,6 +106,34 @@ jobs:
       working-directory: .
       run: ctest --test-dir build/capi --output-on-failure --no-tests=error -R capi -j8
 
+  # Differential oracle: cross-check the safe Rust API against slang's own
+  # `--ast-json` output over a corpus (hierarchy, kinds, types, params). Builds
+  # the slang CLI, so it is its own job; the pyslang constant-value half needs a
+  # nanobind build and stays opt-in (it self-skips when pyslang is absent).
+  differential:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        fetch-depth: 0
+    - name: python3 (codegen for the vendored build)
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.x'
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
+      with:
+        key: differential
+    - name: Build the slang CLI
+      working-directory: .
+      run: |
+        cmake -B build/cli -DSLANG_INCLUDE_TOOLS=ON -DCMAKE_BUILD_TYPE=Release
+        cmake --build build/cli --target slang -j8
+    - name: ast-json differential
+      env:
+        SLANG_BIN: ${{ github.workspace }}/build/cli/bin/slang
+      run: cargo test -p sv-lang --test differential -- --nocapture
+
   # Nightly soundness gates: the thread-sanitizer negative test (the un-totalized
   # walk MUST race and the totalized one must be clean) and miri over the pure-Rust
   # mock backend (validates the handle/lifetime algebra the FFI hides from miri).

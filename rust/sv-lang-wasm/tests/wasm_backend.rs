@@ -214,6 +214,26 @@ fn observer_hooks_fire_in_the_sandbox() {
 }
 
 #[test]
+fn diagnostics_are_visible_in_the_sandbox() {
+    let mut slang = Slang::new().unwrap();
+
+    // A clean design has no diagnostics.
+    let ok = slang.parse("module m; logic x; endmodule\n").unwrap();
+    assert!(slang.diagnostics(&ok).unwrap().is_empty());
+
+    // A malformed design parses (error recovery) but carries diagnostics that
+    // are now visible — previously the sandbox dropped them silently.
+    let bad = slang.parse("module m; logic [ ; endmodule\n").unwrap();
+    let diags = slang.diagnostics(&bad).unwrap();
+    assert!(!diags.is_empty(), "expected parse diagnostics, got none");
+    let rendered = slang.diagnostics_render(&bad).unwrap();
+    assert!(
+        !rendered.is_empty(),
+        "expected rendered diagnostics text, got empty"
+    );
+}
+
+#[test]
 fn version_and_kinds() {
     let mut slang = Slang::new().expect("load wasm");
     let v = slang.version();

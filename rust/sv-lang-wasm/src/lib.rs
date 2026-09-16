@@ -836,6 +836,40 @@ impl Slang {
         self.syntax_kind_name(kind)
     }
 
+    /// The lex/preprocess/parse diagnostics for `tree`, as message strings.
+    ///
+    /// slang's parse does not fail on syntax errors — it returns an
+    /// error-recovery tree that still carries diagnostics — so [`parse`] alone
+    /// can succeed on malformed input. This is how you see those diagnostics in
+    /// the sandbox (the native backend exposes them via `SyntaxTree::diagnostics`).
+    ///
+    /// [`parse`]: Slang::parse
+    pub fn diagnostics(&mut self, tree: &Tree) -> Result<Vec<String>, Error> {
+        let diags = self.raw_slang_syntax_tree_diagnostics(tree.tree)?;
+        if diags == 0 {
+            return Ok(Vec::new());
+        }
+        let count = self.raw_slang_diagnostics_count(diags)?;
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            out.push(self.raw_slang_diagnostics_message(diags, i)?);
+        }
+        self.raw_slang_diagnostics_destroy(diags)?;
+        Ok(out)
+    }
+
+    /// The full rendered diagnostics text for `tree` — source snippets and carets,
+    /// exactly as slang's default renderer produces. Empty when there are none.
+    pub fn diagnostics_render(&mut self, tree: &Tree) -> Result<String, Error> {
+        let diags = self.raw_slang_syntax_tree_diagnostics(tree.tree)?;
+        if diags == 0 {
+            return Ok(String::new());
+        }
+        let text = self.raw_slang_diagnostics_render(diags, 0)?;
+        self.raw_slang_diagnostics_destroy(diags)?;
+        Ok(text)
+    }
+
     /// The number of top-level module declarations (walks the tree's children).
     ///
     /// A `slang_node` is a 16-byte struct; on wasm32 it is passed by value using

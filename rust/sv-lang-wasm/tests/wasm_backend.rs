@@ -214,6 +214,22 @@ fn observer_hooks_fire_in_the_sandbox() {
 }
 
 #[test]
+fn parameter_value_in_the_sandbox() {
+    let mut slang = Slang::new().unwrap();
+    let tree = slang
+        .parse("module m; localparam int W = 8; localparam logic [7:0] B = 8'hbe; endmodule\n")
+        .unwrap();
+    let design = slang.compile(&tree).unwrap();
+    let tops = slang.top_instances(&design).unwrap();
+    let body = slang.instance_body(tops[0]).unwrap().unwrap();
+    let w = slang.find(body, "W").unwrap().unwrap();
+    assert_eq!(slang.parameter_value(w).unwrap(), "8");
+    // slang renders the constant in decimal.
+    let b = slang.find(body, "B").unwrap().unwrap();
+    assert_eq!(slang.parameter_value(b).unwrap(), "8'd190");
+}
+
+#[test]
 fn diagnostics_are_visible_in_the_sandbox() {
     let mut slang = Slang::new().unwrap();
 

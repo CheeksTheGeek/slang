@@ -981,6 +981,17 @@ pub struct Design {
 #[derive(Clone, Copy, Debug)]
 pub struct Node(Ast);
 
+/// The 16-byte little-endian `slang_ast` image of a node, for the generated
+/// `raw_*` bridge methods that take the struct by value as a byte slice.
+fn ast_bytes(a: Ast) -> [u8; 16] {
+    let mut b = [0u8; 16];
+    b[0..4].copy_from_slice(&a.ptr.to_le_bytes());
+    b[4..8].copy_from_slice(&a.comp.to_le_bytes());
+    b[8..12].copy_from_slice(&a.kind.to_le_bytes());
+    b[12..16].copy_from_slice(&a.domain.to_le_bytes());
+    b
+}
+
 impl Slang {
     // -- guest slang_ast marshalling --
 
@@ -1223,6 +1234,24 @@ impl Slang {
         self.free(np);
         let a = a?;
         Ok((!a.is_null()).then_some(Node(a)))
+    }
+
+    /// The value of a parameter/localparam symbol in slang's string form (e.g.
+    /// `"8"`, `"16'hbeef"`). Errors if `node` is not a parameter (mirroring the
+    /// C API contract) — check its kind first if unsure.
+    ///
+    /// ```no_run
+    /// let mut slang = sv_lang_wasm::Slang::new()?;
+    /// let tree = slang.parse("module m; localparam int W = 8; endmodule\n")?;
+    /// let design = slang.compile(&tree)?;
+    /// let tops = slang.top_instances(&design)?;
+    /// let body = slang.instance_body(tops[0])?.unwrap();
+    /// let w = slang.find(body, "W")?.unwrap();
+    /// assert_eq!(slang.parameter_value(w)?, "8");
+    /// # Ok::<(), sv_lang_wasm::Error>(())
+    /// ```
+    pub fn parameter_value(&mut self, node: Node) -> Result<String, Error> {
+        self.raw_slang_parameter_value(&ast_bytes(node.0))
     }
 
     /// The declared type of a value symbol.

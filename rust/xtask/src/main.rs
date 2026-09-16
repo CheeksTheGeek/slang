@@ -96,17 +96,17 @@ struct AstEnum {
     values: Vec<String>,
 }
 
-/// The `DiagSubsystem` enumerators in the exact order declared by the X-macro
-/// in `include/slang/diagnostics/Diagnostics.h`. That enum is hand-written in
-/// C++, so this list must be kept in sync by hand; a test in `sv-lang-kinds`
-/// cross-checks it against the model's subsystem set.
-///
-/// `Invalid` is the X-macro's FIRST entry (ordinal 0) — it MUST be here so the
-/// remaining ordinals match slang's runtime `DiagCode::getSubsystem()`, which
-/// the C ABI packs as `subsystem << 16 | code`. Omitting it shifts every
-/// subsystem down one and decodes every diagnostic code to the wrong name.
+/// The `DiagSubsystem` enumerators, matching the diagnostics model's subsystem
+/// set. Note this is a 0-based numbering (`General = 0`) that intentionally does
+/// NOT include slang's `Invalid` sentinel; slang's own `DiagSubsystem` X-macro
+/// (`include/slang/diagnostics/Diagnostics.h`) starts with `Invalid = 0`, so its
+/// runtime ordinals are one HIGHER than these. The `DiagCode::from_raw`/`as_raw`
+/// generated below apply that +1/-1 offset when crossing the C ABI (which packs
+/// `subsystem << 16 | code`). Keeping this enum 0-based (rather than adding
+/// `Invalid` and shifting) keeps the public discriminants stable — a non-
+/// breaking fix. A test in `sv-lang-kinds` cross-checks the list against the
+/// model's subsystem set.
 const DIAG_SUBSYSTEMS: &[&str] = &[
-    "Invalid",
     "General",
     "Lexer",
     "Numeric",
@@ -420,15 +420,22 @@ fn gen_diag_code(model: &DiagModel) -> String {
          \x20       Self {{ subsystem, code }}\n\
          \x20   }}\n\n\
          \x20   /// Packs the code into a single `u32` (`subsystem << 16 | code`), the\n\
-         \x20   /// representation used across the C ABI.\n\
+         \x20   /// representation used across the C ABI. slang's runtime\n\
+         \x20   /// `DiagSubsystem` reserves ordinal 0 for `Invalid` (see the note on\n\
+         \x20   /// [`DiagSubsystem`]), so the packed subsystem is `self.subsystem + 1`.\n\
          \x20   #[inline]\n\
          \x20   pub const fn as_raw(self) -> u32 {{\n\
-         \x20       ((self.subsystem as u32) << 16) | self.code as u32\n\
+         \x20       (((self.subsystem as u32) + 1) << 16) | self.code as u32\n\
          \x20   }}\n\n\
-         \x20   /// Unpacks a `u32` produced by [`Self::as_raw`]. Returns `None` if the\n\
-         \x20   /// subsystem or code is out of the known range.\n\
+         \x20   /// Unpacks a `u32` produced by [`Self::as_raw`] (or received from the\n\
+         \x20   /// native library). Returns `None` if the subsystem is `Invalid`/\n\
+         \x20   /// unknown or the code is out of the known range. Mirrors [`Self::as_raw`]:\n\
+         \x20   /// the packed subsystem ordinal is one higher than this enum's.\n\
          \x20   pub const fn from_raw(raw: u32) -> Option<Self> {{\n\
-         \x20       let Some(subsystem) = DiagSubsystem::from_raw((raw >> 16) as u16) else {{\n\
+         \x20       let Some(sub_ord) = ((raw >> 16) as u16).checked_sub(1) else {{\n\
+         \x20           return None;\n\
+         \x20       }};\n\
+         \x20       let Some(subsystem) = DiagSubsystem::from_raw(sub_ord) else {{\n\
          \x20           return None;\n\
          \x20       }};\n\
          \x20       let code = (raw & 0xFFFF) as u16;\n\

@@ -10,34 +10,32 @@
 #[allow(missing_docs)] // variant names are slang's own and self-describing
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DiagSubsystem {
-    Invalid = 0,
-    General = 1,
-    Lexer = 2,
-    Numeric = 3,
-    Preprocessor = 4,
-    Parser = 5,
-    Declarations = 6,
-    Expressions = 7,
-    Statements = 8,
-    Types = 9,
-    Lookup = 10,
-    SysFuncs = 11,
-    ConstEval = 12,
-    Compilation = 13,
-    Analysis = 14,
-    Meta = 15,
-    Driver = 16,
-    Tidy = 17,
-    Netlist = 18,
+    General = 0,
+    Lexer = 1,
+    Numeric = 2,
+    Preprocessor = 3,
+    Parser = 4,
+    Declarations = 5,
+    Expressions = 6,
+    Statements = 7,
+    Types = 8,
+    Lookup = 9,
+    SysFuncs = 10,
+    ConstEval = 11,
+    Compilation = 12,
+    Analysis = 13,
+    Meta = 14,
+    Driver = 15,
+    Tidy = 16,
+    Netlist = 17,
 }
 
 impl DiagSubsystem {
     /// The number of variants.
-    pub const COUNT: u16 = 19;
+    pub const COUNT: u16 = 18;
 
     /// Every variant, in discriminant order.
     pub const ALL: &'static [DiagSubsystem] = &[
-        DiagSubsystem::Invalid,
         DiagSubsystem::General,
         DiagSubsystem::Lexer,
         DiagSubsystem::Numeric,
@@ -59,7 +57,6 @@ impl DiagSubsystem {
     ];
 
     const NAMES: &'static [&'static str] = &[
-        "Invalid",
         "General",
         "Lexer",
         "Numeric",
@@ -147,16 +144,23 @@ impl DiagCode {
     }
 
     /// Packs the code into a single `u32` (`subsystem << 16 | code`), the
-    /// representation used across the C ABI.
+    /// representation used across the C ABI. slang's runtime
+    /// `DiagSubsystem` reserves ordinal 0 for `Invalid` (see the note on
+    /// [`DiagSubsystem`]), so the packed subsystem is `self.subsystem + 1`.
     #[inline]
     pub const fn as_raw(self) -> u32 {
-        ((self.subsystem as u32) << 16) | self.code as u32
+        (((self.subsystem as u32) + 1) << 16) | self.code as u32
     }
 
-    /// Unpacks a `u32` produced by [`Self::as_raw`]. Returns `None` if the
-    /// subsystem or code is out of the known range.
+    /// Unpacks a `u32` produced by [`Self::as_raw`] (or received from the
+    /// native library). Returns `None` if the subsystem is `Invalid`/
+    /// unknown or the code is out of the known range. Mirrors [`Self::as_raw`]:
+    /// the packed subsystem ordinal is one higher than this enum's.
     pub const fn from_raw(raw: u32) -> Option<Self> {
-        let Some(subsystem) = DiagSubsystem::from_raw((raw >> 16) as u16) else {
+        let Some(sub_ord) = ((raw >> 16) as u16).checked_sub(1) else {
+            return None;
+        };
+        let Some(subsystem) = DiagSubsystem::from_raw(sub_ord) else {
             return None;
         };
         let code = (raw & 0xFFFF) as u16;
@@ -194,7 +198,6 @@ impl DiagCode {
 
     const fn table(subsystem: DiagSubsystem) -> &'static [DiagInfo] {
         match subsystem {
-            DiagSubsystem::Invalid => INVALID_TABLE,
             DiagSubsystem::General => GENERAL_TABLE,
             DiagSubsystem::Lexer => LEXER_TABLE,
             DiagSubsystem::Numeric => NUMERIC_TABLE,
@@ -223,8 +226,6 @@ type DiagInfo = (
     Option<&'static str>,
     &'static str,
 );
-
-const INVALID_TABLE: &[DiagInfo] = &[];
 
 const GENERAL_TABLE: &[DiagInfo] = &[
     (

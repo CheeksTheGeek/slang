@@ -2333,6 +2333,8 @@ unsafe extern "C" {
     pub fn slang_pattern_expr(node: slang_ast) -> slang_ast;
     pub fn slang_pattern_variable(node: slang_ast) -> slang_ast;
     pub fn slang_assertion_expr_op(node: slang_ast) -> i32;
+    pub fn slang_constraint_expr(node: slang_ast) -> slang_ast;
+    pub fn slang_constraint_predicate(node: slang_ast) -> slang_ast;
 
     // Block / conditional / case / concurrent-assertion / event-trigger breadth
     pub fn slang_stmt_block_kind(node: slang_ast) -> u32;

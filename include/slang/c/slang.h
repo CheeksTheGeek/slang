@@ -4531,6 +4531,14 @@ SLANG_C_API slang_ast slang_pattern_variable(slang_ast node);
 /// enum value; -1 for any other kind. history: since 1.3.
 SLANG_C_API int32_t slang_assertion_expr_op(slang_ast node);
 
+/// The constrained expression of an ExpressionConstraint (`node` a CONSTRAINT of
+/// kind Expression) — an EXPRESSION node, else a null ast. history: since 1.3.
+SLANG_C_API slang_ast slang_constraint_expr(slang_ast node);
+
+/// The controlling predicate of an Implication/Conditional constraint (`node` a
+/// CONSTRAINT) — an EXPRESSION node, else a null ast. history: since 1.3.
+SLANG_C_API slang_ast slang_constraint_predicate(slang_ast node);
+
 /* Block / conditional / case / concurrent-assertion / event-trigger statement
  * breadth. All are pure reads on a frozen compilation: every field they read
  * is set directly at Statement construction, never lazily computed. history:

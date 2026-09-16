@@ -20322,6 +20322,23 @@ impl<'d> Constraint<'d> {
         sem_children(self.raw)
     }
 
+    /// The constrained expression of an
+    /// [`Expression`](sv_lang_kinds::ConstraintKind::Expression) constraint
+    /// (e.g. `x > 0;`), or `None` for any other kind.
+    pub fn expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the node is valid; a null ast (non-expression constraint) -> None.
+        wrap(unsafe { sys::slang_constraint_expr(self.raw) })
+    }
+
+    /// The controlling predicate of an
+    /// [`Implication`](sv_lang_kinds::ConstraintKind::Implication) (`p -> {...}`)
+    /// or [`Conditional`](sv_lang_kinds::ConstraintKind::Conditional)
+    /// (`if (p) {...}`) constraint, or `None` for any other kind.
+    pub fn predicate(&self) -> Option<Expression<'d>> {
+        // SAFETY: the node is valid; a null ast (no predicate) -> None.
+        wrap(unsafe { sys::slang_constraint_predicate(self.raw) })
+    }
+
     /// This constraint as a generic [`SemNode`].
     pub fn as_sem_node(&self) -> SemNode<'d> {
         SemNode::from_raw(self.raw)

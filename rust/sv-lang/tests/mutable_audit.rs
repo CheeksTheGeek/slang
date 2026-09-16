@@ -24,7 +24,7 @@ const BASELINE_MUTABLE: usize = 140;
 /// confirm any new value-returning `&Design` accessor has a matching
 /// `FreezeVisitor` force (per SOUNDNESS-MEMOS.md's B-latent rule) before bumping
 /// this baseline. Coarse by design — it forces the review, it does not perform it.
-const BASELINE_AST_ACCESSORS: usize = 841;
+const BASELINE_AST_ACCESSORS: usize = 843;
 
 #[test]
 fn mutable_field_count_is_audited() {

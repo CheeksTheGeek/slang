@@ -4080,6 +4080,33 @@ int32_t slang_assertion_expr_op(slang_ast node) {
     });
 }
 
+slang_ast slang_constraint_expr(slang_ast node) {
+    // ExpressionConstraint::expr (Constraints.h) — the constrained expression.
+    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
+        if (node.domain != SLANG_AST_CONSTRAINT || !node.ptr)
+            return noAst(node.compilation, SLANG_AST_EXPRESSION);
+        auto* c = static_cast<const Constraint*>(node.ptr);
+        if (c->kind == ConstraintKind::Expression)
+            return wrapAst(c->as<ExpressionConstraint>().expr, node.compilation);
+        return noAst(node.compilation, SLANG_AST_EXPRESSION);
+    });
+}
+
+slang_ast slang_constraint_predicate(slang_ast node) {
+    // The controlling predicate of an Implication/Conditional constraint
+    // (Constraints.h) — an EXPRESSION node, else a null ast.
+    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
+        if (node.domain != SLANG_AST_CONSTRAINT || !node.ptr)
+            return noAst(node.compilation, SLANG_AST_EXPRESSION);
+        auto* c = static_cast<const Constraint*>(node.ptr);
+        if (c->kind == ConstraintKind::Implication)
+            return wrapAst(c->as<ImplicationConstraint>().predicate, node.compilation);
+        if (c->kind == ConstraintKind::Conditional)
+            return wrapAst(c->as<ConditionalConstraint>().predicate, node.compilation);
+        return noAst(node.compilation, SLANG_AST_EXPRESSION);
+    });
+}
+
 // ---- Block / conditional / case / assertion / event-trigger breadth --------
 //
 // Every field read below is set directly at Statement construction (see

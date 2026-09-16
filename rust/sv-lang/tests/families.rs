@@ -3,7 +3,7 @@
 //! these were reachable only as opaque `SemNode`s (string `kind_name()` +
 //! generic children); these tests prove the typed `.kind()`/navigation is wired.
 
-use sv_lang::kinds::{PatternKind, SymbolKind, TimingControlKind};
+use sv_lang::kinds::{ConstraintKind, PatternKind, SymbolKind, TimingControlKind};
 use sv_lang::{Compilation, Design, EdgeKind, SemNode, Session};
 
 fn design(src: &str) -> Design {
@@ -125,6 +125,46 @@ fn assertion_expr_is_typed() {
         found,
         "expected an assertion-expr node in the property tree; saw {nodes:?}"
     );
+}
+
+#[test]
+fn constraint_is_typed() {
+    // A class constraint block: reach its constraints and inspect them by name.
+    let d = design(
+        "class C;\n\
+             rand int x;\n\
+             constraint c { x > 0; if (x < 5) x > 2; }\n\
+         endclass\n\
+         module m; C obj; endmodule\n",
+    );
+    let units = d.compilation_units().next().unwrap();
+    let class = units.find("C").unwrap();
+    let cblock = class.find("c").unwrap();
+    let root = cblock
+        .constraint_block_constraints()
+        .expect("constraint block has a body");
+
+    let mut stack = vec![root];
+    let mut saw_expr = false;
+    let mut saw_pred = false;
+    while let Some(n) = stack.pop() {
+        if let Some(c) = n.as_constraint() {
+            assert_ne!(c.kind(), ConstraintKind::Invalid);
+            if c.kind() == ConstraintKind::Expression {
+                assert!(
+                    c.expr().is_some(),
+                    "an expression constraint should expose its expr by name"
+                );
+                saw_expr = true;
+            }
+            if c.predicate().is_some() {
+                saw_pred = true;
+            }
+        }
+        stack.extend(n.children());
+    }
+    assert!(saw_expr, "expected the `x > 0` expression constraint");
+    assert!(saw_pred, "expected the `if (x < 5)` conditional predicate");
 }
 
 #[test]

@@ -11,7 +11,12 @@ fn expression_source_range_syntax_and_location() {
     let src = "module m;\n  logic [7:0] x, y;\n  wire [7:0] s = x & y;\nendmodule\n";
     comp.add_source(src).unwrap();
     let design = comp.compile().unwrap();
-    let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    let body = design
+        .top_instances()
+        .next()
+        .unwrap()
+        .instance_body()
+        .unwrap();
     let init = body.find("s").unwrap().initializer().unwrap();
 
     // 1. A real byte range with buffer ids.

@@ -14,10 +14,8 @@ fn diagnostic_codes_decode_to_the_right_name() {
     let mut comp = Compilation::new(&session).unwrap();
     // `nope` is undeclared (Lookup::UndeclaredIdentifier); `ghost_mod` is an
     // unknown instantiation (Lookup::UnknownModule).
-    comp.add_source(
-        "module m;\n  logic a;\n  assign a = nope;\n  ghost_mod u();\nendmodule\n",
-    )
-    .unwrap();
+    comp.add_source("module m;\n  logic a;\n  assign a = nope;\n  ghost_mod u();\nendmodule\n")
+        .unwrap();
     let design = comp.compile().unwrap();
     let diags = design.diagnostics();
 

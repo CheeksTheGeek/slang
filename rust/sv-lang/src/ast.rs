@@ -20371,6 +20371,18 @@ impl<'d> AssertionExpr<'d> {
         sem_children(self.raw)
     }
 
+    /// The operator of a [`Unary`](sv_lang_kinds::AssertionExprKind::Unary) or
+    /// [`Binary`](sv_lang_kinds::AssertionExprKind::Binary) assertion
+    /// expression, as slang's raw `UnaryAssertionOperator`/
+    /// `BinaryAssertionOperator` enum value; `None` for any other kind. (The
+    /// operator enums are not yet mirrored as typed Rust enums — this is the
+    /// raw discriminant, disambiguated by [`kind`](Self::kind).)
+    pub fn op(&self) -> Option<i32> {
+        // SAFETY: the node is valid; returns -1 for non-unary/binary kinds.
+        let op = unsafe { sys::slang_assertion_expr_op(self.raw) };
+        (op >= 0).then_some(op)
+    }
+
     /// This assertion expression as a generic [`SemNode`].
     pub fn as_sem_node(&self) -> SemNode<'d> {
         SemNode::from_raw(self.raw)
@@ -21615,6 +21627,22 @@ impl<'d> Pattern<'d> {
     /// the constant/variable expressions at the leaves.
     pub fn children(&self) -> Vec<SemNode<'d>> {
         sem_children(self.raw)
+    }
+
+    /// The constant expression of a
+    /// [`Constant`](sv_lang_kinds::PatternKind::Constant) pattern, or `None`
+    /// for any other kind.
+    pub fn value_expr(&self) -> Option<Expression<'d>> {
+        // SAFETY: the node is valid; a null ast (non-constant pattern) -> None.
+        wrap(unsafe { sys::slang_pattern_expr(self.raw) })
+    }
+
+    /// The bound variable symbol of a
+    /// [`Variable`](sv_lang_kinds::PatternKind::Variable) pattern, or `None`
+    /// for any other kind.
+    pub fn variable(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the node is valid; a null ast (non-variable pattern) -> None.
+        wrap(unsafe { sys::slang_pattern_variable(self.raw) })
     }
 
     /// This pattern as a generic [`SemNode`].

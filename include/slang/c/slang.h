@@ -4516,6 +4516,21 @@ SLANG_C_API slang_ast slang_stmt_timing(slang_ast node);
 /// level-sensitive event and for any other node/kind. history: since 1.3.
 SLANG_C_API slang_edge_kind slang_timing_control_edge(slang_ast node);
 
+/// The constant expression of a ConstantPattern (`node` a PATTERN of kind
+/// Constant) — an EXPRESSION node, or a null ast for any other pattern kind.
+/// history: since 1.3.
+SLANG_C_API slang_ast slang_pattern_expr(slang_ast node);
+
+/// The bound variable symbol of a VariablePattern (`node` a PATTERN of kind
+/// Variable) — a SYMBOL node, or a null ast for any other pattern kind.
+/// history: since 1.3.
+SLANG_C_API slang_ast slang_pattern_variable(slang_ast node);
+
+/// The operator of a Unary/Binary assertion expression (`node` an
+/// ASSERTION_EXPR), as its raw slang UnaryAssertionOperator/BinaryAssertionOperator
+/// enum value; -1 for any other kind. history: since 1.3.
+SLANG_C_API int32_t slang_assertion_expr_op(slang_ast node);
+
 /* Block / conditional / case / concurrent-assertion / event-trigger statement
  * breadth. All are pure reads on a frozen compilation: every field they read
  * is set directly at Statement construction, never lazily computed. history:

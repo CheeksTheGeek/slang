@@ -92,6 +92,7 @@ fn assertion_expr_is_typed() {
     let body_node = body.as_sem_node();
     let mut stack = vec![body_node];
     let mut found = false;
+    let mut saw_op = false;
     while let Some(n) = stack.pop() {
         if let Some(ae) = n.as_assertion_expr() {
             assert_ne!(
@@ -100,10 +101,26 @@ fn assertion_expr_is_typed() {
                 "assertion-expr node {:?} should have a real kind",
                 ae.kind_name()
             );
+            // A Unary/Binary assertion expr (e.g. the `|->` implication) exposes
+            // its operator by name; other kinds return None.
+            use sv_lang::kinds::AssertionExprKind::{Binary, Unary};
+            if matches!(ae.kind(), Binary | Unary) {
+                assert!(
+                    ae.op().is_some(),
+                    "unary/binary assertion op should be Some"
+                );
+                saw_op = true;
+            } else {
+                assert!(ae.op().is_none());
+            }
             found = true;
         }
         stack.extend(n.children());
     }
+    assert!(
+        saw_op,
+        "the `a |-> b` implication should expose a binary op"
+    );
     assert!(
         found,
         "expected an assertion-expr node in the property tree; saw {nodes:?}"
@@ -127,11 +144,21 @@ fn pattern_is_typed() {
     // Walk to any Pattern node (domain SLANG_AST_PATTERN == 7).
     let mut stack = vec![body.as_sem_node()];
     let mut saw_pattern = false;
+    let mut saw_const = false;
     while let Some(n) = stack.pop() {
         if let Some(p) = n.as_pattern() {
             assert_ne!(p.kind(), PatternKind::Invalid);
             let _ = p.kind_name();
             let _ = p.children();
+            // The `2'b00` case item is a ConstantPattern whose value expression
+            // is reachable by name; other kinds return None.
+            if p.kind() == PatternKind::Constant {
+                assert!(
+                    p.value_expr().is_some(),
+                    "a constant pattern should expose its value expression"
+                );
+                saw_const = true;
+            }
             saw_pattern = true;
         }
         stack.extend(n.children());
@@ -140,4 +167,5 @@ fn pattern_is_typed() {
         saw_pattern,
         "expected a Pattern node under a `case matches`"
     );
+    assert!(saw_const, "expected the `2'b00` constant pattern");
 }

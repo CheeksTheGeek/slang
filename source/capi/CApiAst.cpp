@@ -4041,6 +4041,45 @@ slang_edge_kind slang_timing_control_edge(slang_ast node) {
     });
 }
 
+slang_ast slang_pattern_expr(slang_ast node) {
+    // ConstantPattern::expr (Patterns.h) — set at construction, a pure read.
+    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
+        if (node.domain != SLANG_AST_PATTERN || !node.ptr)
+            return noAst(node.compilation, SLANG_AST_EXPRESSION);
+        auto* p = static_cast<const Pattern*>(node.ptr);
+        if (p->kind == PatternKind::Constant)
+            return wrapAst(p->as<ConstantPattern>().expr, node.compilation);
+        return noAst(node.compilation, SLANG_AST_EXPRESSION);
+    });
+}
+
+slang_ast slang_pattern_variable(slang_ast node) {
+    // VariablePattern::variable (Patterns.h) — the bound pattern variable symbol.
+    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_SYMBOL), {
+        if (node.domain != SLANG_AST_PATTERN || !node.ptr)
+            return noAst(node.compilation, SLANG_AST_SYMBOL);
+        auto* p = static_cast<const Pattern*>(node.ptr);
+        if (p->kind == PatternKind::Variable)
+            return wrapAst(p->as<VariablePattern>().variable, node.compilation);
+        return noAst(node.compilation, SLANG_AST_SYMBOL);
+    });
+}
+
+int32_t slang_assertion_expr_op(slang_ast node) {
+    // The Unary/Binary assertion operator (AssertionExpr.h), as its raw enum
+    // value; -1 for any other kind. Set at construction, a pure read.
+    SLANG_C_ACCESS(-1, {
+        if (node.domain != SLANG_AST_ASSERTION_EXPR || !node.ptr)
+            return -1;
+        auto* a = static_cast<const AssertionExpr*>(node.ptr);
+        if (a->kind == AssertionExprKind::Unary)
+            return (int32_t)a->as<UnaryAssertionExpr>().op;
+        if (a->kind == AssertionExprKind::Binary)
+            return (int32_t)a->as<BinaryAssertionExpr>().op;
+        return -1;
+    });
+}
+
 // ---- Block / conditional / case / assertion / event-trigger breadth --------
 //
 // Every field read below is set directly at Statement construction (see

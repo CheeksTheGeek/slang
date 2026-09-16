@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1015 functions generated, 48 skipped (callbacks / struct out-params).
+//! is written on top. 1018 functions generated, 48 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -9221,6 +9221,54 @@ impl Slang {
         let __p_node = self.malloc(16)?;
         self.write(__p_node, &node[..16])?;
         let __r = self.call("slang_timing_control_edge", &[Val::I32(__p_node as i32)]);
+        self.free(__p_node);
+        let __v = __r?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_pattern_expr`.
+    pub fn raw_slang_pattern_expr(&mut self, node: &[u8]) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_node = self.malloc(16)?;
+        self.write(__p_node, &node[..16])?;
+        let __r = self.call(
+            "slang_pattern_expr",
+            &[Val::I32(__sret as i32), Val::I32(__p_node as i32)],
+        );
+        self.free(__p_node);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_pattern_variable`.
+    pub fn raw_slang_pattern_variable(&mut self, node: &[u8]) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_node = self.malloc(16)?;
+        self.write(__p_node, &node[..16])?;
+        let __r = self.call(
+            "slang_pattern_variable",
+            &[Val::I32(__sret as i32), Val::I32(__p_node as i32)],
+        );
+        self.free(__p_node);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_assertion_expr_op`.
+    pub fn raw_slang_assertion_expr_op(&mut self, node: &[u8]) -> Result<u32, Error> {
+        let __p_node = self.malloc(16)?;
+        self.write(__p_node, &node[..16])?;
+        let __r = self.call("slang_assertion_expr_op", &[Val::I32(__p_node as i32)]);
         self.free(__p_node);
         let __v = __r?;
         Ok(match __v.first() {

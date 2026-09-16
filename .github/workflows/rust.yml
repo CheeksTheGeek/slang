@@ -128,7 +128,8 @@ jobs:
       working-directory: .
       run: |
         cmake -B build/cli -DSLANG_INCLUDE_TOOLS=ON -DCMAKE_BUILD_TYPE=Release
-        cmake --build build/cli --target slang -j8
+        # The CMake target is `slang_driver`; its output binary is named `slang`.
+        cmake --build build/cli --target slang_driver -j8
     - name: ast-json differential
       env:
         SLANG_BIN: ${{ github.workspace }}/build/cli/bin/slang

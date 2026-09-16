@@ -391,9 +391,55 @@ impl Session {
         Ok(SyntaxTree::from_raw(tree, self.clone()))
     }
 
+    /// Resolves a [`SourceLoc`] — from an [`Expression::source_range`],
+    /// [`Statement::source_range`], symbol location, or diagnostic span — to its
+    /// file name and 1-based line and column, using this session's source
+    /// manager. Returns `None` for a null location (buffer 0).
+    ///
+    /// The `SourceLoc` must come from a tree/design parsed with this session (or
+    /// its clone), so the buffer ids line up.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let session = sv_lang::Session::new();
+    /// let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source("module m; logic [7:0] x, y; wire [7:0] s = x & y; endmodule\n")?;
+    /// let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("s").unwrap().initializer().unwrap();
+    /// let at = session.resolve_location(init.source_range().start).unwrap();
+    /// assert_eq!(at.line, 1);
+    /// assert!(at.column > 1);
+    /// # Ok(()) }
+    /// ```
+    pub fn resolve_location(&self, loc: SourceLoc) -> Option<SourceLocation> {
+        if loc.buffer == 0 {
+            return None;
+        }
+        let raw = sys::slang_loc {
+            buffer: loc.buffer,
+            reserved_: 0,
+            offset: loc.offset,
+        };
+        let (file, line, column) = location_of(self.inner.sm, raw);
+        Some(SourceLocation { file, line, column })
+    }
+
     pub(crate) fn raw(&self) -> sys::slang_source_manager {
         self.inner.sm
     }
+}
+
+/// A resolved source location: file name and 1-based line/column, produced by
+/// [`Session::resolve_location`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceLocation {
+    /// The source file name (as slang's source manager reports it).
+    pub file: String,
+    /// The 1-based line number.
+    pub line: usize,
+    /// The 1-based column number.
+    pub column: usize,
 }
 
 /// Renders a location's file/line/column from a session's source manager.

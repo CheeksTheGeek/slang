@@ -17988,6 +17988,36 @@ impl<'d> Expression<'d> {
         SemNode::from_raw(self.raw)
     }
 
+    /// The source range this expression was elaborated from
+    /// (`slang::ast::Expression::sourceRange`) — a `[start, end)` byte span with
+    /// buffer ids, for byte-exact back-mapping to source.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; logic [7:0] x, y; wire [7:0] s = x & y; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let init = body.find("s").unwrap().initializer().unwrap();
+    /// assert!(init.source_range().end.offset > init.source_range().start.offset);
+    /// # Ok(()) }
+    /// ```
+    pub fn source_range(&self) -> SourceSpan {
+        // SAFETY: the expression handle is valid; range is a pure read.
+        unsafe { sys::slang_ast_range(self.raw) }.into()
+    }
+
+    /// The syntax node this expression was elaborated from, if it belongs to
+    /// `tree` (`slang::ast::Expression::syntax`). `None` for a compiler-
+    /// synthesized expression with no syntax, or one from a different tree.
+    pub fn syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the expression is valid; a null/foreign-tree node yields None.
+        let node = unsafe { sys::slang_ast_syntax(self.raw) };
+        (!node.ptr.is_null() && node.tree == tree.raw()).then(|| Node::from_raw_node(node))
+    }
+
     /// The immediate sub-expressions of this expression, in order (e.g. a
     /// `BinaryOp` yields `[left, right]`, a `Call` its arguments). Non-expression
     /// children are skipped; use [`children`](Self::children) for those.
@@ -20756,6 +20786,23 @@ impl<'d> Statement<'d> {
     /// This statement as a generic [`SemNode`] (for uniform tree walking).
     pub fn as_sem_node(&self) -> SemNode<'d> {
         SemNode::from_raw(self.raw)
+    }
+
+    /// The source range this statement was elaborated from
+    /// (`slang::ast::Statement::sourceRange`) — a `[start, end)` byte span for
+    /// byte-exact back-mapping to source.
+    pub fn source_range(&self) -> SourceSpan {
+        // SAFETY: the statement handle is valid; range is a pure read.
+        unsafe { sys::slang_ast_range(self.raw) }.into()
+    }
+
+    /// The syntax node this statement was elaborated from, if it belongs to
+    /// `tree`. `None` for a compiler-synthesized statement or one from a
+    /// different tree.
+    pub fn syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the statement is valid; a null/foreign-tree node yields None.
+        let node = unsafe { sys::slang_ast_syntax(self.raw) };
+        (!node.ptr.is_null() && node.tree == tree.raw()).then(|| Node::from_raw_node(node))
     }
 
     /// The kind of a `Block` statement (`begin`/`end` vs `fork`/`join`/

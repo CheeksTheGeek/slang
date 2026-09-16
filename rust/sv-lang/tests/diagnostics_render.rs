@@ -1,6 +1,49 @@
 //! Diagnostic span capture and the optional miette / ariadne renderers.
 
-use sv_lang::Session;
+use sv_lang::{Compilation, Session};
+
+/// Diagnostic codes decode to the right name. The C ABI packs the code as
+/// `subsystem << 16 | index`, and slang's `DiagSubsystem` X-macro starts with
+/// `Invalid` (ordinal 0) — so the Rust enum must too, or every code decodes one
+/// subsystem off (a Lookup error read as a SysFuncs one). Regression test for
+/// exactly that: reported by a downstream consumer as "use of undeclared
+/// identifier" decoding as `NonstandardSysFunc`.
+#[test]
+fn diagnostic_codes_decode_to_the_right_name() {
+    let session = Session::new();
+    let mut comp = Compilation::new(&session).unwrap();
+    // `nope` is undeclared (Lookup::UndeclaredIdentifier); `ghost_mod` is an
+    // unknown instantiation (Lookup::UnknownModule).
+    comp.add_source(
+        "module m;\n  logic a;\n  assign a = nope;\n  ghost_mod u();\nendmodule\n",
+    )
+    .unwrap();
+    let design = comp.compile().unwrap();
+    let diags = design.diagnostics();
+
+    let undeclared = diags
+        .items()
+        .iter()
+        .find(|d| d.message.contains("undeclared identifier"))
+        .expect("an undeclared-identifier diagnostic");
+    assert_eq!(
+        undeclared.code_name(),
+        "UndeclaredIdentifier",
+        "Lookup diagnostic decoded to the wrong name (subsystem ordinal off?)"
+    );
+    assert_eq!(
+        undeclared.code.subsystem,
+        sv_lang::kinds::DiagSubsystem::Lookup
+    );
+
+    let unknown_mod = diags
+        .items()
+        .iter()
+        .find(|d| d.message.contains("unknown") && d.message.contains("ghost_mod"));
+    if let Some(d) = unknown_mod {
+        assert_eq!(d.code_name(), "UnknownModule");
+    }
+}
 
 const SRC: &str = "module m;\n  int x = ;\nendmodule\n";
 

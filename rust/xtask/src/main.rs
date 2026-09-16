@@ -100,7 +100,13 @@ struct AstEnum {
 /// in `include/slang/diagnostics/Diagnostics.h`. That enum is hand-written in
 /// C++, so this list must be kept in sync by hand; a test in `sv-lang-kinds`
 /// cross-checks it against the model's subsystem set.
+///
+/// `Invalid` is the X-macro's FIRST entry (ordinal 0) — it MUST be here so the
+/// remaining ordinals match slang's runtime `DiagCode::getSubsystem()`, which
+/// the C ABI packs as `subsystem << 16 | code`. Omitting it shifts every
+/// subsystem down one and decodes every diagnostic code to the wrong name.
 const DIAG_SUBSYSTEMS: &[&str] = &[
+    "Invalid",
     "General",
     "Lexer",
     "Numeric",

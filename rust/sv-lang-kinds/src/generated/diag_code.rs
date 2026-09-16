@@ -10,32 +10,34 @@
 #[allow(missing_docs)] // variant names are slang's own and self-describing
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DiagSubsystem {
-    General = 0,
-    Lexer = 1,
-    Numeric = 2,
-    Preprocessor = 3,
-    Parser = 4,
-    Declarations = 5,
-    Expressions = 6,
-    Statements = 7,
-    Types = 8,
-    Lookup = 9,
-    SysFuncs = 10,
-    ConstEval = 11,
-    Compilation = 12,
-    Analysis = 13,
-    Meta = 14,
-    Driver = 15,
-    Tidy = 16,
-    Netlist = 17,
+    Invalid = 0,
+    General = 1,
+    Lexer = 2,
+    Numeric = 3,
+    Preprocessor = 4,
+    Parser = 5,
+    Declarations = 6,
+    Expressions = 7,
+    Statements = 8,
+    Types = 9,
+    Lookup = 10,
+    SysFuncs = 11,
+    ConstEval = 12,
+    Compilation = 13,
+    Analysis = 14,
+    Meta = 15,
+    Driver = 16,
+    Tidy = 17,
+    Netlist = 18,
 }
 
 impl DiagSubsystem {
     /// The number of variants.
-    pub const COUNT: u16 = 18;
+    pub const COUNT: u16 = 19;
 
     /// Every variant, in discriminant order.
     pub const ALL: &'static [DiagSubsystem] = &[
+        DiagSubsystem::Invalid,
         DiagSubsystem::General,
         DiagSubsystem::Lexer,
         DiagSubsystem::Numeric,
@@ -57,6 +59,7 @@ impl DiagSubsystem {
     ];
 
     const NAMES: &'static [&'static str] = &[
+        "Invalid",
         "General",
         "Lexer",
         "Numeric",
@@ -191,6 +194,7 @@ impl DiagCode {
 
     const fn table(subsystem: DiagSubsystem) -> &'static [DiagInfo] {
         match subsystem {
+            DiagSubsystem::Invalid => INVALID_TABLE,
             DiagSubsystem::General => GENERAL_TABLE,
             DiagSubsystem::Lexer => LEXER_TABLE,
             DiagSubsystem::Numeric => NUMERIC_TABLE,
@@ -219,6 +223,8 @@ type DiagInfo = (
     Option<&'static str>,
     &'static str,
 );
+
+const INVALID_TABLE: &[DiagInfo] = &[];
 
 const GENERAL_TABLE: &[DiagInfo] = &[
     (

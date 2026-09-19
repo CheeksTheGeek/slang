@@ -2,7 +2,7 @@
 //! @file slang.h
 //! @brief Stable C API for slang, the SystemVerilog compiler frontend
 //
-// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-FileCopyrightText: Chaitanya Sharma
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 //

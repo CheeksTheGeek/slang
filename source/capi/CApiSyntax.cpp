@@ -2,7 +2,7 @@
 // CApiSyntax.cpp
 // C API: syntax trees, nodes, tokens, trivia and traversal
 //
-// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-FileCopyrightText: Chaitanya Sharma
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 #include "CApiInternal.h"

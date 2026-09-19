@@ -2,7 +2,7 @@
 // CApiAst.cpp
 // C API: compilation, freezing, symbols, scopes, types, expressions
 //
-// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-FileCopyrightText: Chaitanya Sharma
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 #include "CApiInternal.h"

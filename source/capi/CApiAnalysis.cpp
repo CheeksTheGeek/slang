@@ -2,7 +2,7 @@
 // CApiAnalysis.cpp
 // C API: semantic analysis (lints and driver tracking)
 //
-// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-FileCopyrightText: Chaitanya Sharma
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 #include "CApiInternal.h"

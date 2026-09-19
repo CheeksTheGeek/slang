@@ -2,7 +2,7 @@
 //! @file CApiInternal.h
 //! @brief Private definitions shared by the C API implementation files
 //
-// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-FileCopyrightText: Chaitanya Sharma
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 #pragma once

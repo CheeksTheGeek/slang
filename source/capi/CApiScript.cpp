@@ -2,7 +2,7 @@
 // CApiScript.cpp
 // C API: the script session (interactive snippet evaluation)
 //
-// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-FileCopyrightText: Chaitanya Sharma
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 #include "CApiInternal.h"

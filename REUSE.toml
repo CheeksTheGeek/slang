@@ -64,3 +64,36 @@ path = "docs/cppreference-doxygen-web.tag.xml"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "cppreference.com"
 SPDX-License-Identifier = "CC-BY-SA-3.0"
+
+[[annotations]]
+path = "rust/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Chaitanya Sharma"
+SPDX-License-Identifier = "MIT"
+
+# Third-party content vendored under rust/. These come after the rust/** entry
+# above so they take precedence over it.
+
+[[annotations]]
+path = "rust/sv-lang-sys/deps/fmt/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Victor Zverovich and fmt contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "rust/sv-lang-sys/deps/boost_regex/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Boost authors"
+SPDX-License-Identifier = "BSL-1.0"
+
+[[annotations]]
+path = "rust/sv-lang-sys/deps/tomlplusplus/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Mark Gillard"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "rust/corpus/ibex/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "lowRISC contributors, ETH Zurich, University of Bologna, and Microsoft"
+SPDX-License-Identifier = "Apache-2.0"

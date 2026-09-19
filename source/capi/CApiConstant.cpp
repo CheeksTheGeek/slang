@@ -2,7 +2,7 @@
 // CApiConstant.cpp
 // C API: structured constant values (ConstantValue / SVInt)
 //
-// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-FileCopyrightText: Chaitanya Sharma
 // SPDX-License-Identifier: MIT
 //------------------------------------------------------------------------------
 #include "CApiInternal.h"

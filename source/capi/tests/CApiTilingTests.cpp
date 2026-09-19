@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-FileCopyrightText: Chaitanya Sharma
 // SPDX-License-Identifier: MIT
 //
 // Property tests over the repository's own test corpus: for every syntax node

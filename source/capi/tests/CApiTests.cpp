@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Michael Popoloski
+// SPDX-FileCopyrightText: Chaitanya Sharma
 // SPDX-License-Identifier: MIT
 
 #include <catch2/catch_test_macros.hpp>

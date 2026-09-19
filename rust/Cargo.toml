@@ -19,7 +19,7 @@ exclude = ["fuzz"]
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/MikePopoloski/slang"
+repository = "https://github.com/CheeksTheGeek/slang"
 homepage = "https://sv-lang.com"
 
 [workspace.dependencies]

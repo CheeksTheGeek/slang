@@ -33,6 +33,8 @@ pub struct Compilation {
     session: Session,
     // Keeps added trees alive for the compilation's lifetime.
     _trees: Vec<SyntaxTree>,
+    // Whether compile() pre-folds all constants during freeze (see Options).
+    prefold: bool,
 }
 
 // SAFETY: the raw compilation is owned exclusively (no `Clone`, no shared
@@ -50,9 +52,19 @@ impl Drop for Compilation {
 
 /// Bits controlling how a compilation is built. Values match slang's
 /// `CompilationFlags`.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Options {
     flags: u32,
+    prefold: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            flags: 0,
+            prefold: true,
+        }
+    }
 }
 
 impl Options {
@@ -65,6 +77,29 @@ impl Options {
     /// ```
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Controls whether elaboration pre-folds every constant expression during
+    /// [`Compilation::compile`] (default `true`).
+    ///
+    /// With prefolding on, `constant()`/`constant_value()` return a value for
+    /// every expression slang can fold. Set it **off** to match pyslang's
+    /// `expr.constant` population exactly — only the constants slang caches
+    /// *naturally* during binding and lint (implicit-conversion checks,
+    /// comparisons, parameter and dimension evaluation) are present, and every
+    /// other expression reads `None`. The resulting [`Design`] is still
+    /// `Send + Sync` — `constant()` is a pure read either way — it simply
+    /// carries fewer cached constants. (`eval` on an [`EvalSession`] still folds
+    /// on demand.)
+    ///
+    /// # Examples
+    /// ```
+    /// let opts = sv_lang::Options::new().with_prefold(false);
+    /// # let _ = opts;
+    /// ```
+    pub fn with_prefold(mut self, prefold: bool) -> Self {
+        self.prefold = prefold;
+        self
     }
 
     /// Sets the raw `CompilationFlags` bitmask. `DisableInstanceCaching` is
@@ -129,6 +164,7 @@ impl Compilation {
             raw,
             session: session.clone(),
             _trees: Vec::new(),
+            prefold: options.prefold,
         })
     }
 
@@ -167,7 +203,18 @@ impl Compilation {
             raw,
             session: session.clone(),
             _trees: Vec::new(),
+            prefold: true,
         })
+    }
+
+    /// Whether [`compile`](Self::compile) pre-folds all constant expressions
+    /// during freeze (see [`Options::with_prefold`]). Set `false` to make
+    /// `constant()`/`constant_value()` return only the constants slang caches
+    /// naturally (matching pyslang's `expr.constant`) — useful when building a
+    /// compilation directly (e.g. via [`from_option_bag`](Self::from_option_bag))
+    /// where no [`Options`] were passed. The Design stays `Send + Sync`.
+    pub fn set_prefold(&mut self, prefold: bool) {
+        self.prefold = prefold;
     }
 
     /// The raw handle, for passing to a C accessor that takes a `slang_compilation`.
@@ -288,7 +335,16 @@ impl Compilation {
     /// # Ok(()) }
     /// ```
     pub fn compile(self) -> Result<Design, Error> {
-        self.freeze_into(sys::SLANG_FREEZE_ALL)
+        // ELABORATE_ALL + SEAL always; PREFOLD only when requested (default).
+        // Skipping PREFOLD leaves `constant()` reading the natural bind-time
+        // population (matching pyslang) — still Sync-safe, as `getConstant` is a
+        // pure read and the canonical/type/symbol memos are forced regardless.
+        let flags = if self.prefold {
+            sys::SLANG_FREEZE_ALL
+        } else {
+            sys::SLANG_FREEZE_ELABORATE_ALL | sys::SLANG_FREEZE_SEAL
+        };
+        self.freeze_into(flags)
     }
 
     /// **TEST-ONLY, DELIBERATELY UNSOUND.** Freezes with `SEAL` only, skipping

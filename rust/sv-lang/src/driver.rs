@@ -79,6 +79,8 @@ impl OptionKind {
 pub struct Driver {
     inner: Arc<DriverInner>,
     session: Session,
+    // Whether compile() pre-folds all constants during freeze (see set_prefold).
+    prefold: bool,
 }
 
 /// An owned, opaque bag of the options a [`Driver`] assembled from its
@@ -127,7 +129,11 @@ impl Driver {
         // SAFETY: the driver owns its SM for as long as `inner` lives.
         let sm = unsafe { sys::slang_driver_source_manager(raw) };
         let session = Session::from_borrowed(sm, inner.clone());
-        Ok(Driver { inner, session })
+        Ok(Driver {
+            inner,
+            session,
+            prefold: true,
+        })
     }
 
     /// Creates a driver with NO standard arguments registered — `--top`,
@@ -156,7 +162,11 @@ impl Driver {
         // SAFETY: the driver owns its SM for as long as `inner` lives.
         let sm = unsafe { sys::slang_driver_source_manager(raw) };
         let session = Session::from_borrowed(sm, inner.clone());
-        Ok(Driver { inner, session })
+        Ok(Driver {
+            inner,
+            session,
+            prefold: true,
+        })
     }
 
     /// Adds slang's standard command-line arguments (`--top`, `-D`, `-I`,
@@ -468,6 +478,16 @@ impl Driver {
         &self.session
     }
 
+    /// Controls whether [`compile`](Self::compile) pre-folds every constant
+    /// expression during freeze (default `true`). Set `false` to make
+    /// `constant()`/`constant_value()` on the resulting [`Design`] return only
+    /// the constants slang caches naturally during binding/lint — matching
+    /// pyslang's `expr.constant` — with every other expression reading `None`.
+    /// The design stays `Send + Sync` (see [`Options::with_prefold`](crate::Options::with_prefold)).
+    pub fn set_prefold(&mut self, prefold: bool) {
+        self.prefold = prefold;
+    }
+
     /// Creates a compilation from the parsed trees with the command-line
     /// options, then elaborates and freezes it into a [`Design`].
     ///
@@ -494,15 +514,16 @@ impl Driver {
 
         let mut freeze_err = ffi::error();
         let mut report = sys::slang_freeze_report::default();
+        // PREFOLD only when requested (default); see set_prefold. Skipping it
+        // leaves `constant()` reading the natural bind-time population (pyslang
+        // parity); the design stays Send+Sync (getConstant is a pure read).
+        let flags = if self.prefold {
+            sys::SLANG_FREEZE_ALL
+        } else {
+            sys::SLANG_FREEZE_ELABORATE_ALL | sys::SLANG_FREEZE_SEAL
+        };
         // SAFETY: we own `comp`; out-error checked.
-        unsafe {
-            sys::slang_compilation_freeze(
-                comp,
-                sys::SLANG_FREEZE_ALL,
-                &mut report,
-                &mut freeze_err,
-            );
-        }
+        unsafe { sys::slang_compilation_freeze(comp, flags, &mut report, &mut freeze_err) }
         ffi::check(&freeze_err)?;
         Ok(crate::ast::design_from_raw(
             comp,

@@ -7249,6 +7249,71 @@ impl<'d> Symbol<'d> {
         unsafe { crate::ConstantValue::from_raw(raw) }
     }
 
+    /// A subrange `[msb:lsb]` of this symbol's elaborated integer value's bits
+    /// (see [`constant_value`](Self::constant_value)), as a new
+    /// [`ConstantValue`](crate::ConstantValue) of width `msb - lsb + 1`.
+    ///
+    /// This is the **wide-value path**: the slice is computed on slang's
+    /// full-width value, so it works for parameters wider than 1024 bits —
+    /// which [`constant_value`](Self::constant_value) reports with the correct
+    /// [`bit_width`](crate::SVInt::bit_width) but, being marshalled through the
+    /// 1024-bit [`SVInt`](crate::SVInt) limit, with an empty
+    /// [`bits`](crate::SVInt::bits). Read such a value in chunks of ≤1024 bits.
+    /// Out-of-range indices come back as x (matching `slang::SVInt::slice`), so
+    /// this only fails on `msb < lsb`, a non-integer / absent value, or an
+    /// underlying error. Mirrors
+    /// [`Expression::constant_bit_slice`](Expression::constant_bit_slice) over
+    /// the symbol's `getValue()`; a pure read on a frozen design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam bit [7:0] X = 8'hA5; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let x = body.find("X").unwrap();
+    /// assert_eq!(x.constant_bit_slice(3, 0).unwrap().as_i64(), Some(0x5));
+    /// assert_eq!(x.constant_bit_slice(7, 4).unwrap().as_i64(), Some(0xA));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_bit_slice(&self, msb: i32, lsb: i32) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the symbol is valid; out-error checked.
+        let raw = unsafe { sys::slang_symbol_constant_value(self.raw, &mut err) };
+        if ffi::check(&err).is_err() || raw.is_null() {
+            if !raw.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` valid; the borrowed svint is used only while `raw` is
+        // still alive, below.
+        let v = unsafe { sys::slang_constant_integer(raw) };
+        let result = if v.is_null() {
+            None
+        } else {
+            let mut err2 = ffi::error();
+            // SAFETY: `v` valid; out-error checked.
+            let out = unsafe { sys::slang_svint_slice(v, msb, lsb, &mut err2) };
+            if ffi::check(&err2).is_err() {
+                if !out.is_null() {
+                    // SAFETY: a non-null handle on error is still owned; free it.
+                    unsafe { sys::slang_constant_destroy(out) };
+                }
+                None
+            } else {
+                // SAFETY: `out` is a valid owned handle (or null); consumed.
+                unsafe { crate::ConstantValue::from_raw(out) }
+            }
+        };
+        // SAFETY: we own `raw` and are done reading it.
+        unsafe { sys::slang_constant_destroy(raw) };
+        result
+    }
+
     /// True if `self` (a `Parameter` or `TypeParameter` symbol) is a
     /// `localparam`. False for any other symbol kind, or a non-local
     /// parameter. A direct field read

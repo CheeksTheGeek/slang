@@ -121,6 +121,48 @@ impl Options {
     }
 }
 
+/// A canonical built-in SystemVerilog type, used to describe the return and
+/// argument types of a system subroutine registered with
+/// [`Compilation::add_nonconstant_system_function`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltinType {
+    /// `int` (32-bit two-state signed).
+    Int,
+    /// `logic` (single-bit four-state).
+    Logic,
+    /// `bit` (single-bit two-state).
+    Bit,
+    /// `byte` (8-bit two-state signed).
+    Byte,
+    /// `integer` (32-bit four-state signed).
+    Integer,
+    /// `real` (double-precision float).
+    Real,
+    /// `shortreal` (single-precision float).
+    ShortReal,
+    /// `string`.
+    String,
+    /// `void`.
+    Void,
+}
+
+impl BuiltinType {
+    // Matches the slang_builtin_type ordinals in the C header.
+    fn to_raw(self) -> u32 {
+        match self {
+            BuiltinType::Int => 0,
+            BuiltinType::Logic => 1,
+            BuiltinType::Bit => 2,
+            BuiltinType::Byte => 3,
+            BuiltinType::Integer => 4,
+            BuiltinType::Real => 5,
+            BuiltinType::ShortReal => 6,
+            BuiltinType::String => 7,
+            BuiltinType::Void => 8,
+        }
+    }
+}
+
 impl Compilation {
     /// Creates an empty compilation.
     ///
@@ -215,6 +257,55 @@ impl Compilation {
     /// where no [`Options`] were passed. The Design stays `Send + Sync`.
     pub fn set_prefold(&mut self, prefold: bool) {
         self.prefold = prefold;
+    }
+
+    /// Registers a non-constant system function so the elaborator recognizes
+    /// `name` (e.g. `"$fputc"`) instead of reporting `UnknownSystemName` (which
+    /// otherwise binds the whole enclosing statement as invalid). Mirrors
+    /// pyslang's `comp.addSystemSubroutine(NonConstantFunction(...))`. All
+    /// `arg_types` are required arguments.
+    ///
+    /// Must be called **before** [`compile`](Self::compile) (before any binding);
+    /// returns [`Error`] if the compilation is already finalized. On the
+    /// [`Driver`](crate::Driver) path, build the compilation with
+    /// [`from_option_bag`](Self::from_option_bag), register here, then
+    /// [`compile`](Self::compile).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{BuiltinType, Compilation, Session};
+    /// let session = Session::new();
+    /// let mut comp = Compilation::new(&session)?;
+    /// // $fputc(int, int) -> int ; $is_signed(int) -> int
+    /// comp.add_nonconstant_system_function("$fputc", BuiltinType::Int,
+    ///     &[BuiltinType::Int, BuiltinType::Int])?;
+    /// comp.add_nonconstant_system_function("$is_signed", BuiltinType::Int,
+    ///     &[BuiltinType::Int])?;
+    /// # Ok(()) }
+    /// ```
+    pub fn add_nonconstant_system_function(
+        &mut self,
+        name: &str,
+        return_type: BuiltinType,
+        arg_types: &[BuiltinType],
+    ) -> Result<(), Error> {
+        let mut err = ffi::error();
+        let (n, nl) = ffi::as_ptr_len(name);
+        let args: Vec<u32> = arg_types.iter().map(|t| t.to_raw()).collect();
+        // SAFETY: `n`/`nl` and the args slice are valid for the call; out-error checked.
+        unsafe {
+            sys::slang_compilation_add_nonconstant_system_function(
+                self.raw,
+                n,
+                nl,
+                return_type.to_raw(),
+                args.as_ptr(),
+                args.len(),
+                &mut err,
+            );
+        }
+        ffi::check(&err)
     }
 
     /// The raw handle, for passing to a C accessor that takes a `slang_compilation`.

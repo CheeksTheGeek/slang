@@ -1453,6 +1453,15 @@ unsafe extern "C" {
         extra_flags: u32,
         err: *mut slang_error,
     ) -> slang_compilation;
+    pub fn slang_compilation_add_nonconstant_system_function(
+        comp: slang_compilation,
+        name: *const c_char,
+        name_len: usize,
+        return_type: u32,
+        arg_types: *const u32,
+        n_args: usize,
+        err: *mut slang_error,
+    );
     pub fn slang_compilation_destroy(comp: slang_compilation);
     pub fn slang_compilation_add_tree(
         comp: slang_compilation,

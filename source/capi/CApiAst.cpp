@@ -145,6 +145,70 @@ slang_compilation slang_compilation_create_from_bag(slang_bag bag, uint32_t extr
     return nullptr;
 }
 
+// Maps a slang_builtin_type ordinal to the compilation's canonical built-in
+// Type; null for an unknown ordinal.
+static const ast::Type* builtinTypeOf(ast::Compilation& c, uint32_t kind) {
+    switch (kind) {
+        case SLANG_BUILTIN_TYPE_INT:
+            return &c.getIntType();
+        case SLANG_BUILTIN_TYPE_LOGIC:
+            return &c.getLogicType();
+        case SLANG_BUILTIN_TYPE_BIT:
+            return &c.getBitType();
+        case SLANG_BUILTIN_TYPE_BYTE:
+            return &c.getByteType();
+        case SLANG_BUILTIN_TYPE_INTEGER:
+            return &c.getIntegerType();
+        case SLANG_BUILTIN_TYPE_REAL:
+            return &c.getRealType();
+        case SLANG_BUILTIN_TYPE_SHORTREAL:
+            return &c.getShortRealType();
+        case SLANG_BUILTIN_TYPE_STRING:
+            return &c.getStringType();
+        case SLANG_BUILTIN_TYPE_VOID:
+            return &c.getVoidType();
+        default:
+            return nullptr;
+    }
+}
+
+void slang_compilation_add_nonconstant_system_function(slang_compilation comp, const char* name,
+                                                       size_t name_len, uint32_t return_type,
+                                                       const uint32_t* arg_types, size_t n_args,
+                                                       slang_error* err) {
+    if (!checkEntry(err))
+        return;
+    if (!comp || !name || (n_args && !arg_types)) {
+        setError(err, SLANG_ERR_INVALID_ARG, "null argument");
+        return;
+    }
+    if (comp->comp->isFinalized()) {
+        setError(err, SLANG_ERR_INVALID_STATE,
+                 "system subroutines must be registered before the compilation is finalized");
+        return;
+    }
+    SLANG_C_GUARD(err, {
+        auto& c = *comp->comp;
+        const ast::Type* ret = builtinTypeOf(c, return_type);
+        if (!ret) {
+            setError(err, SLANG_ERR_INVALID_ARG, "unknown return type kind");
+            return;
+        }
+        std::vector<const ast::Type*> args;
+        args.reserve(n_args);
+        for (size_t i = 0; i < n_args; i++) {
+            const ast::Type* a = builtinTypeOf(c, arg_types[i]);
+            if (!a) {
+                setError(err, SLANG_ERR_INVALID_ARG, "unknown argument type kind");
+                return;
+            }
+            args.push_back(a);
+        }
+        c.addSystemSubroutine(std::make_shared<ast::NonConstantFunction>(
+            std::string(name, name_len), *ret, n_args, args));
+    });
+}
+
 void slang_compilation_destroy(slang_compilation comp) {
     if (!comp)
         return;

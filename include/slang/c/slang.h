@@ -798,6 +798,29 @@ SLANG_C_API slang_compilation slang_compilation_create_from_bag(slang_bag bag /*
                                                                 uint32_t extra_flags,
                                                                 slang_error* err);
 
+/// A canonical built-in type, for slang_compilation_add_nonconstant_system_function.
+typedef enum slang_builtin_type {
+    SLANG_BUILTIN_TYPE_INT = 0,
+    SLANG_BUILTIN_TYPE_LOGIC = 1,
+    SLANG_BUILTIN_TYPE_BIT = 2,
+    SLANG_BUILTIN_TYPE_BYTE = 3,
+    SLANG_BUILTIN_TYPE_INTEGER = 4,
+    SLANG_BUILTIN_TYPE_REAL = 5,
+    SLANG_BUILTIN_TYPE_SHORTREAL = 6,
+    SLANG_BUILTIN_TYPE_STRING = 7,
+    SLANG_BUILTIN_TYPE_VOID = 8,
+} slang_builtin_type;
+
+/// Registers a non-constant system function (slang::ast::NonConstantFunction) so
+/// the elaborator recognizes `name` (e.g. "$fputc") instead of reporting
+/// UnknownSystemName. `return_type` and each of the `n_args` `arg_types` are
+/// slang_builtin_type ordinals; all args are required. Must be called BEFORE the
+/// compilation is finalized (before freeze / any binding). Errors with
+/// SLANG_ERR_INVALID_STATE if the compilation is already finalized.
+SLANG_C_API void slang_compilation_add_nonconstant_system_function(
+    slang_compilation comp, const char* name, size_t name_len, uint32_t return_type,
+    const uint32_t* arg_types, size_t n_args, slang_error* err);
+
 /// Destroys a compilation. Every slang_ast from it becomes invalid. Syntax trees
 /// that were added are released (the caller's own retain, if any, remains).
 SLANG_C_API void slang_compilation_destroy(slang_compilation comp);

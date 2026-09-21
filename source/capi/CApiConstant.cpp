@@ -17,6 +17,8 @@
 #include "slang/ast/symbols/BlockSymbols.h"
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
+#include "slang/ast/symbols/ParameterSymbols.h"
+#include "slang/ast/types/AllTypes.h"
 #include "slang/numeric/ConstantValue.h"
 #include "slang/numeric/SVInt.h"
 
@@ -100,6 +102,39 @@ slang_constant slang_symbol_attribute_value(slang_ast sym, slang_error* err) {
         if (cv.bad())
             return (slang_constant) nullptr;
         return new slang_constant_t{cv};
+    });
+    return nullptr;
+}
+
+slang_constant slang_symbol_constant_value(slang_ast sym, slang_error* err) {
+    if (!checkEntry(err))
+        return nullptr;
+    SLANG_C_GUARD(err, {
+        auto s = symbolOf(sym);
+        if (!s)
+            return (slang_constant) nullptr;
+        // The elaborated value that reflects defparam and instance overrides
+        // (unlike the declared initializer). All three getValue() memos are
+        // forced pre-seal by the freeze sweep, so this is a pure read on a
+        // frozen design; copying into an owned ConstantValue only allocates on
+        // the C heap, never the arena.
+        const ConstantValue* cv = nullptr;
+        switch (s->kind) {
+            case SymbolKind::Parameter:
+                cv = &s->as<ParameterSymbol>().getValue();
+                break;
+            case SymbolKind::EnumValue:
+                cv = &s->as<EnumValueSymbol>().getValue();
+                break;
+            case SymbolKind::Specparam:
+                cv = &s->as<SpecparamSymbol>().getValue();
+                break;
+            default:
+                return (slang_constant) nullptr;
+        }
+        if (!cv || cv->bad())
+            return (slang_constant) nullptr;
+        return new slang_constant_t{*cv};
     });
     return nullptr;
 }

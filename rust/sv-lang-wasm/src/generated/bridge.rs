@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1021 functions generated, 48 skipped (callbacks / struct out-params).
+//! is written on top. 1022 functions generated, 48 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -4007,6 +4007,26 @@ impl Slang {
         self.zero(__err, 252)?;
         let __r = self.call(
             "slang_symbol_attribute_value",
+            &[Val::I32(__p_sym as i32), Val::I32(__err as i32)],
+        );
+        self.free(__p_sym);
+        let __chk = self.check_err(__err);
+        self.free(__err);
+        let __v = __r?;
+        __chk?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_symbol_constant_value`.
+    pub fn raw_slang_symbol_constant_value(&mut self, sym: &[u8]) -> Result<u32, Error> {
+        let __p_sym = self.malloc(16)?;
+        self.write(__p_sym, &sym[..16])?;
+        let __err = self.malloc(252)?;
+        self.zero(__err, 252)?;
+        let __r = self.call(
+            "slang_symbol_constant_value",
             &[Val::I32(__p_sym as i32), Val::I32(__err as i32)],
         );
         self.free(__p_sym);

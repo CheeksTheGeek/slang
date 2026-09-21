@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 3
+#define SLANG_C_VERSION_MINOR 4
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -3880,6 +3880,18 @@ SLANG_C_API slang_constant slang_expression_constant_value(slang_ast expr, slang
 /// (slang_constant_destroy). Mirrors slang::ast::AttributeSymbol::getValue.
 /// history: since 1.3.
 SLANG_C_API slang_constant slang_symbol_attribute_value(slang_ast sym, slang_error* err);
+
+/// The elaborated constant value of a Parameter, EnumValue, or Specparam
+/// symbol as a structured constant (same representation as
+/// slang_expression_constant_value). Unlike the symbol's declared initializer
+/// expression, this reflects defparam and instance parameter overrides.
+/// NULL on error (including any other symbol kind, or a value that failed to
+/// fold). All three underlying getValue() memos are forced by the freeze
+/// sweep, so this is a pure read on a frozen design; the caller owns the
+/// returned handle (slang_constant_destroy). Mirrors
+/// slang::ast::ParameterSymbol/EnumValueSymbol/SpecparamSymbol::getValue.
+/// history: since 1.4.
+SLANG_C_API slang_constant slang_symbol_constant_value(slang_ast sym, slang_error* err);
 
 /// The value of an IntegerLiteral expression as a structured constant (same
 /// representation as slang_expression_constant_value) — mirrors

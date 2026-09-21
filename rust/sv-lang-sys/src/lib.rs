@@ -22,7 +22,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// `SLANG_C_VERSION_MAJOR` the declarations in this crate were generated for.
 pub const SLANG_C_VERSION_MAJOR: u32 = 1;
 /// `SLANG_C_VERSION_MINOR` the declarations in this crate were generated for.
-pub const SLANG_C_VERSION_MINOR: u32 = 3;
+pub const SLANG_C_VERSION_MINOR: u32 = 4;
 /// Encoded as by `SLANG_C_VERSION_ENCODE`.
 pub const SLANG_C_VERSION: u32 = SLANG_C_VERSION_MAJOR * 10000 + SLANG_C_VERSION_MINOR;
 
@@ -1789,6 +1789,7 @@ unsafe extern "C" {
     pub fn slang_symbol_assertion_port_direction(sym: slang_ast) -> slang_argument_direction;
     pub fn slang_symbol_assertion_port_is_local_var(sym: slang_ast) -> bool;
     pub fn slang_symbol_attribute_value(sym: slang_ast, err: *mut slang_error) -> slang_constant;
+    pub fn slang_symbol_constant_value(sym: slang_ast, err: *mut slang_error) -> slang_constant;
     pub fn slang_symbol_checker_instance_body_parent_instance(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_checker_port_count(sym: slang_ast) -> u32;
     pub fn slang_symbol_checker_port(sym: slang_ast, index: u32) -> slang_ast;

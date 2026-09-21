@@ -7204,6 +7204,51 @@ impl<'d> Symbol<'d> {
         ffi::check(&err).ok().map(|()| ffi::owned_str(s))
     }
 
+    /// The elaborated constant value of a `Parameter`, `EnumValue`, or
+    /// `Specparam` symbol as a structured
+    /// [`ConstantValue`](crate::ConstantValue). Unlike
+    /// [`parameter_value`](Self::parameter_value) /
+    /// [`enum_member_value`](Self::enum_member_value) (slang's printed text,
+    /// which it abbreviates above 128 bits) and unlike reading the declared
+    /// initializer expression, this reflects `defparam` and instance parameter
+    /// overrides and preserves the full width. `None` for any other symbol
+    /// kind, or a value that failed to fold.
+    ///
+    /// A pure read on a frozen design: the value is forced during elaboration
+    /// (the freeze sweep forces all three `getValue()` memos), so this never
+    /// evaluates and is safe on a shared [`Design`] — including a no-prefold one.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module inner #(parameter int W = 1); endmodule\n\
+    /// #      module top; inner #(.W(42)) u(); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let top = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let u = top.members().find(|s| s.name() == "u").unwrap();
+    /// let w = u.instance_body().unwrap().find("W").unwrap();
+    /// // The instance override (42), not the declared default (1).
+    /// assert_eq!(w.constant_value().unwrap().as_i64(), Some(42));
+    /// # Ok(()) }
+    /// ```
+    pub fn constant_value(&self) -> Option<crate::ConstantValue> {
+        let mut err = ffi::error();
+        // SAFETY: the symbol is valid; out-error checked.
+        let raw = unsafe { sys::slang_symbol_constant_value(self.raw, &mut err) };
+        if ffi::check(&err).is_err() {
+            if !raw.is_null() {
+                // SAFETY: a non-null handle on error is still owned; free it.
+                unsafe { sys::slang_constant_destroy(raw) };
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a valid owned handle (or null); consumed.
+        unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
     /// True if `self` (a `Parameter` or `TypeParameter` symbol) is a
     /// `localparam`. False for any other symbol kind, or a non-local
     /// parameter. A direct field read

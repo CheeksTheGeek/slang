@@ -1,0 +1,127 @@
+# Residual public slang API methods not bound by name and not caught by a
+# structural rule in api_coverage.py. Each line is `Class::method  # reason`.
+# This is the reviewed backlog that makes the coverage gate falsifiable: any
+# NEW public method (e.g. from a slang version bump) that is neither bound nor
+# listed here FAILS `api_coverage.py --check`. Tags:
+#   TODO-BIND  = genuine read accessor worth exposing (real backlog)
+#   false-neg  = already reachable under a renamed/snake_case form
+#   internal   = elaboration/eval/diagnostic machinery, not a read surface
+#   niche      = rarely-needed; bind on request
+
+AnalyzedProcedure::getMemoryUsage  # TODO-BIND or false-neg; triage
+AssertionExpr::canSucceedVacuously  # internal/niche; triage
+AssertionExpr::computeSequenceLength  # internal/niche; triage
+AssertionExpr::isParenthesized  # TODO-BIND or false-neg; triage
+AssignmentExpression::isBlocking  # TODO-BIND candidate accessor
+AssignmentExpression::isLValueArg  # TODO-BIND candidate accessor
+AssignmentExpression::isNonBlocking  # TODO-BIND candidate accessor
+AssociativeArrayType::hasWildcardIndexType  # TODO-BIND candidate accessor
+CallExpression::getIteratorInfo  # TODO-BIND candidate accessor
+CallExpression::getKnownSystemName  # TODO-BIND candidate accessor
+CaseStatement::getKnownBranch  # TODO-BIND candidate accessor
+ClassType::getBaseClass  # TODO-BIND candidate accessor
+ClassType::getDeclaredInterfaces  # TODO-BIND candidate accessor
+ClassType::hasCycles  # TODO-BIND candidate accessor
+ConfigBlockSymbol::findRuleFromSyntax  # TODO-BIND candidate accessor
+ConfigBlockSymbol::getCellOverrides  # TODO-BIND candidate accessor
+ConfigBlockSymbol::getInstanceOverrides  # TODO-BIND candidate accessor
+ConstantRange::contains  # internal/niche; triage
+ConstantRange::fullWidth  # internal/niche; triage
+ConstantValue::getVariant  # TODO-BIND or false-neg; triage
+ConstantValue::isInteger  # TODO-BIND or false-neg; triage
+ConstantValue::isMap  # TODO-BIND or false-neg; triage
+ConstantValue::isNullHandle  # TODO-BIND or false-neg; triage
+ConstantValue::isReal  # TODO-BIND or false-neg; triage
+ConstantValue::isShortReal  # TODO-BIND or false-neg; triage
+ConstantValue::isUnpacked  # TODO-BIND or false-neg; triage
+ConstantValue::map  # internal/niche; triage
+ConstantValue::unionVal  # internal/niche; triage
+ConstraintBlockSymbol::getOutOfBlockIndex  # TODO-BIND candidate accessor
+ConversionExpression::applyTo  # internal/niche; triage
+ConversionExpression::convert  # internal/niche; triage
+DFAResults::getBitMapAllocator  # TODO-BIND or false-neg; triage
+DFAResults::getImplicitEventRValues  # TODO-BIND or false-neg; triage
+DFAResults::getLValue  # TODO-BIND or false-neg; triage
+DFAResults::getLValues  # TODO-BIND or false-neg; triage
+DFAResults::getRValues  # TODO-BIND or false-neg; triage
+DFAResults::getTimedStatements  # TODO-BIND or false-neg; triage
+DFAResults::inferClock  # internal/niche; triage
+DFAResults::isDefinitelyAssigned  # TODO-BIND or false-neg; triage
+DFAResults::isReferenced  # TODO-BIND or false-neg; triage
+DeclaredType::getResolvedTypeSyntax  # TODO-BIND candidate accessor
+DefinitionSymbol::hasDefault  # TODO-BIND candidate accessor
+DiagCode::coalesceWithDifferingArgs  # internal/niche; triage
+DiagCode::getCode  # TODO-BIND or false-neg; triage
+DiagCode::getSubsystem  # TODO-BIND or false-neg; triage
+DiagCode::showNoteWithNoLocation  # internal/niche; triage
+ElementSelectExpression::isConstantSelect  # TODO-BIND candidate accessor
+EnumType::findDefinition  # TODO-BIND candidate accessor
+EvaluatedDimension::isRange  # TODO-BIND or false-neg; triage
+Expression::findPotentiallyImplicitNets  # TODO-BIND candidate accessor
+Expression::getEffectiveSign  # TODO-BIND candidate accessor
+Expression::isParenthesized  # TODO-BIND candidate accessor
+Expression::tryBindInterfaceRef  # TODO-BIND candidate accessor
+Expression::unwrapImplicitConversions  # internal/niche; triage
+FormalArgumentSymbol::getMergedVariable  # TODO-BIND candidate accessor
+ForwardingTypedefSymbol::getNextForwardDecl  # TODO-BIND candidate accessor
+GenericClassDefSymbol::getParameterDecls  # TODO-BIND candidate accessor
+GenericClassDefSymbol::numSpecializations  # TODO-BIND candidate accessor
+GenericClassDefSymbol::specializations  # internal/niche; triage
+HierarchicalReference::isUpward  # TODO-BIND or false-neg; triage
+HierarchicalReference::isViaIfacePort  # TODO-BIND or false-neg; triage
+InstanceSymbol::getCanonicalBody  # TODO-BIND candidate accessor
+InstanceSymbol::isTopLevel  # TODO-BIND candidate accessor
+InstanceSymbolBase::getArrayDimensions  # TODO-BIND or false-neg; triage
+InterfacePortSymbol::getConnectionAndExpr  # TODO-BIND candidate accessor
+MinTypMaxExpression::selected  # internal/niche; triage
+ModportPortSymbol::getConnectionExpr  # TODO-BIND candidate accessor
+MultiPortSymbol::hasInitializer  # TODO-BIND candidate accessor
+NewArrayExpression::initExpr  # internal/niche; triage
+PackageSymbol::resolveExports  # TODO-BIND candidate accessor
+ParameterSymbol::isFromConfig  # TODO-BIND candidate accessor
+ParameterSymbol::isFromGenvar  # TODO-BIND candidate accessor
+ParameterSymbolBase::allMatching  # internal/niche; triage
+PortSymbol::getNetRanges  # TODO-BIND candidate accessor
+PortSymbol::getNetTypes  # TODO-BIND candidate accessor
+PortSymbol::hasInitializer  # TODO-BIND candidate accessor
+PredefinedIntegerType::isDefaultSigned  # TODO-BIND candidate accessor
+RandSeqProductionSymbol::findProduction  # TODO-BIND candidate accessor
+RangeSelectExpression::isConstantSelect  # TODO-BIND candidate accessor
+SVInt::caseXWildcardEqual  # internal/niche; triage
+SVInt::caseZWildcardEqual  # internal/niche; triage
+SVInt::condWildcardEqual  # internal/niche; triage
+SVInt::exactlyEqual  # internal/niche; triage
+SVInt::getNumWords  # TODO-BIND or false-neg; triage
+SVInt::getRawPtr  # TODO-BIND or false-neg; triage
+SVInt::isSingleWord  # TODO-BIND or false-neg; triage
+SVInt::toDouble  # internal/niche; triage
+SVInt::toFloat  # internal/niche; triage
+SVInt::writeTo  # internal/niche; triage
+SVQueue::resizeToBound  # internal/niche; triage
+Scope::getContainingInstanceOrChecker  # TODO-BIND candidate accessor
+Scope::getWildcardImportData  # TODO-BIND candidate accessor
+Scope::memberAt  # internal/niche; triage
+SimpleAssignmentPatternExpression::applyConversions  # internal/niche; triage
+SpecparamSymbol::getPulseErrorLimit  # TODO-BIND candidate accessor
+SpecparamSymbol::getPulseRejectLimit  # TODO-BIND candidate accessor
+Statement::StatementContext  # internal/niche; triage
+Statement::observeTiming  # internal/niche; triage
+Statement::tryGetBlock  # TODO-BIND candidate accessor
+StatementBlockSymbol::isKnownBad  # TODO-BIND candidate accessor
+StatementBlockSymbol::tryGetStatement  # TODO-BIND candidate accessor
+Symbol::appendHierarchicalPath  # internal/niche; triage
+Symbol::getHierarchicalParent  # TODO-BIND candidate accessor
+Symbol::isDeclaredBefore  # TODO-BIND candidate accessor
+Symbol::scopeOrNull  # internal/niche; triage
+SystemSubroutine::isArgByRef  # TODO-BIND or false-neg; triage
+SystemSubroutine::isArgUnevaluated  # TODO-BIND or false-neg; triage
+Type::getArrayElementType  # TODO-BIND candidate accessor
+Type::getCanonicalType  # TODO-BIND candidate accessor
+Type::isIdenticalStructUnion  # TODO-BIND candidate accessor
+Type::isValidForPort  # TODO-BIND candidate accessor
+Type::isValidForUnion  # TODO-BIND candidate accessor
+Type::isVirtualInterfaceOrArray  # TODO-BIND candidate accessor
+TypeParameterSymbol::getTypeAlias  # TODO-BIND candidate accessor
+ValueSymbol::getNextBackreference  # TODO-BIND candidate accessor
+logic_t::exactlyEqual  # internal/niche; triage
+logic_t::toChar  # internal/niche; triage

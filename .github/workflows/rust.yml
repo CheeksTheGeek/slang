@@ -41,6 +41,8 @@ jobs:
       run: cargo clippy --workspace --all-targets -- -D warnings
     - name: Codegen is up to date
       run: cargo xtask codegen --check
+    - name: API coverage gate
+      run: python3 scripts/api_coverage.py --check
     - name: Docs (deny warnings)
       run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
       shell: bash

@@ -48,7 +48,7 @@ void keepAliveInDict(nb::handle self, nb::handle obj) {
 
 class PySimpleSystemSubroutine : public SimpleSystemSubroutine {
 public:
-    NB_TRAMPOLINE(SimpleSystemSubroutine, 1);
+    NB_TRAMPOLINE(SimpleSystemSubroutine);
 
     std::vector<const Type*> argTypes_;
     const Type* returnType_;
@@ -86,9 +86,9 @@ public:
     }
 
     nb::object getObj() const {
-        PyObject* obj = PyWeakref_GET_OBJECT(pyWeak.ptr());
-        if (obj && obj != Py_None)
-            return nb::borrow(obj);
+        nb::object obj = pyWeak();
+        if (obj.is_valid() && !obj.is_none())
+            return obj;
         return nb::object();
     }
 
@@ -421,7 +421,7 @@ void registerCompilation(nb::module_& m, nb::module_& ast, nb::module_& driver) 
 
     class PySystemSubroutine : public SystemSubroutine {
     public:
-        NB_TRAMPOLINE(SystemSubroutine, 5);
+        NB_TRAMPOLINE(SystemSubroutine);
 
         PySystemSubroutine(std::string name, SubroutineKind kind) :
             SystemSubroutine(std::move(name), kind) {}

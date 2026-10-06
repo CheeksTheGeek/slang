@@ -28,7 +28,7 @@ set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
 include(gitversion)
 get_git_version(SLANG_VERSION_PATCH SLANG_GIT_PRERELEASE SLANG_VERSION_HASH)
 
-set(SLANG_VERSION_MAJOR 11)
+set(SLANG_VERSION_MAJOR 12)
 set(SLANG_VERSION_MINOR 0)
 set(SLANG_VERSION_PRERELEASE
     "${SLANG_GIT_PRERELEASE}"
@@ -116,7 +116,15 @@ set(SCRIPTS_DIR ${PROJECT_SOURCE_DIR}/scripts)
 # Find Python. If we're building python bindings we need the development modules
 # as well.
 if(SLANG_INCLUDE_PYLIB)
-  find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
+  # Split-mode nanobind extensions use the stable ABI. On Windows this requires
+  # FindPython to provide the Python::SABIModule target in addition to
+  # Python::Module (nanobind still checks for the latter when it is loaded).
+  if(WIN32)
+    find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.Module
+                                                 Development.SABIModule)
+  else()
+    find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.Module)
+  endif()
 else()
   find_package(Python REQUIRED COMPONENTS Interpreter)
 endif()

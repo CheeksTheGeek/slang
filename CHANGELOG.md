@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 ### Language Compatibility
+### Notable Breaking Changes
+### New Features
+### Improvements
+### Fixes
+
+
+## [v12.0] - 2026-09-29
+### Language Compatibility
 * Added `--allow-cross-auto-bin-max` (included in 'vcs' compat mode) which enables the `cross_auto_bin_max` legacy coverage option, for compatibility with (pre-IEEE) SystemVerilog 3.1a (thanks to @hankhsu1996)
 * ANSI input ports without an explicit port kind (net or var) are specified by the LRM to be nets. slang instead used to default them to variables, so that cases like `input int p` wouldn't error (since 2-state types are not valid for nets). Now they are defaulted to nets to match the LRM, with a carve out for the 2-state net type check to suppress the error for these implicit cases only. This behavior better matches the LRM and several commercial tools. `--infer-input-ports-as-vars` (included by default in 'vcs' compat mode) can be used to get the old behavior. (thanks to @likeamahoney)
 * Embedded class covergroups are now allowed to reference class members declared later in textual order. The LRM is not clear about this but all commercial tools agree.
@@ -14,6 +22,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 ### Notable Breaking Changes
 * The minimum required CMake version to build slang is now 3.28
 * fmtlib is now a fully private dependency of slang, to avoid introducing transitive dependencies to downstream users that otherwise have no need for it. In general it should be possible to build slang fully self-contained, so that relying on it does not balloon your dependency tree. See [the docs](https://sv-lang.com/building.html#dependencies) for more details.
+* 3rd party dependencies now require an explicit CMake option to use a local system-installed version (e.g. SLANG_USE_SYSTEM_BOOST). Previously this tried to auto-detect system installations but it caused too many issues where there happened to be a local copy that was undesirable for whatever reason.
+* The pyslang bindings have been ported to nanobind. For the most part downstream user scripts should continue to work the same, but there may be subtle edge cases (that are hard to enumerate or completely unknown to us).
 
 ### New Features
 * Added support for external [diagnostic waivers](https://sv-lang.com/waivers.html) files for suppressing unwanted warnings (thanks to @sjalloq)
@@ -23,8 +33,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Improvements
 * Depfiles created by `--Mall` and `--Minclude` now include system-style included files (via angle brackets) in addition to user-style (via double quotes) (thanks to @AndrewNolte)
+* When using `--allow-toplevel-iface-ports`, `$static_assert` constraints in a top-level module body can now pin interface port parameters to specific values or types, which is applied to the synthesized default interface instances (thanks to @AndrewNolte)
 * `$static_assert` with type reference comparisons now shows a detailed resolution chain for type aliases when the assert fails (thanks to @AndrewNolte)
 * Library search (with `--libdir`) can now parse files in parallel when threading is enabled (thanks to @ebrevdo)
+* Help text for the slang tool has been reformatted and improved in minor ways
+* Improved diagnostics for missing assignment pattern elements (thanks to @AndrewNolte)
 
 ### Fixes
 * Fixed a potential crash when a single symbol has many (greater than 16) attributes declared (thanks to @AndrewNolte)
@@ -42,12 +55,43 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 * Fixed several internal assertions that could occur when recovering from invalid syntax
 * Fixed a malformed diagnostic for missing identifier tokens that go through the implicit net search logic
 * Fixed a crash when trying to analyze checkers with invalid port connections
+* Fixed ICE that could occur when a `randsequence` inside an unrolled `for` loop used a side-effecting index to drive an array element
+* Fixed ICE that could occur when analyzing a case statement over an enum that has a value with an erroneous initializer
 * Fixed output port initializers to count as drivers for multi-driver checking (thanks to @x-Aksara-x)
+* Fixed a bug where package exports that go through multiple layers of re-export from other packages would not work correctly (thanks to @AndrewNolte)
+* Fixed ICE during constant evaluation of tagged packed union member access with unknown tag (thanks to @EylonKrause)
+* Fixed ICE during constant evaluation of a queue read at one past the end (thanks to @EylonKrause)
+* Fixed ICE during constant evaluation of a streaming concat reorder on an irregular slice boundary (thanks to @EylonKrause)
+* Fixed ICE during constant evaluation of a streaming 'with' range past the array extent (thanks to @EylonKrause)
+* Fixed ICE during constant evaluation of string formatting using '%u/%z' with unpacked unions (thanks to @EylonKrause)
+* Fixed ICE during constant evaluation of string formatting using integer/char specifiers with a null handle (thanks to @EylonKrause)
+* Fixed ICE due to unbounded recursion of generic class specializations with changing param values (thanks to @EylonKrause)
+* Fixed a bug where SVInt::set() would drop high words when promoting from 2-state to 4-state, corrupting the value (thanks to @EylonKrause)
+* Fixed potentially incorrect instance caching when a module has an interface array port that is connected to different interface types (thanks to @hankhsu1996)
+* Fixed constant evaluation of string ato* methods to work correctly for inputs larger than 2^31 (thanks to @hankhsu1996)
+* Fixed a potential crash when using the `--libext` flag (thanks to @x-Aksara-x)
+* Fixed JSON AST serialization of `randsequence` productions to include the statement bodies of code blocks
+* Fixed `-Wunused-subroutine` firing on subroutines named in an `export "DPI-C"` directive, since the export makes them reachable from C
 
 ### Tools & Bindings
 #### pyslang
-* Fixed binding of enum members named "and" and "or" (thanks to @slide)
+* As mentioned above, the bindings have been ported to nanobind (previously using pybind11) (thanks to @jpienaar)
+* Fixed binding of symbols that match Python keyword names (thanks to @slide and @allRisc)
 * Improved performance of visiting nodes when using the `lookup_table` dict of callbacks (thanks to @hankhsu1996)
+
+#### slang-tidy
+* Added a "NoCaseX" rule that warns about uses of `casex` (thanks to @Ozzy1423)
+* Added a "NoDefParam" rule that warns about uses of `defparam` (thanks to @Ozzy1423)
+* Added a "TypedefEnums" rule that warns about enums not declared via a typedef (thanks to @Ozzy1423)
+* Added a "TypedefStructUnion" rule that warns about structs and unions not declared via a typedef (thanks to @Ozzy1423)
+* Added new checks for naming of various constructs, configured via regex: cover groups, crosses, cover points, enums, structs, unions, typedefs (thanks to @Ozzy1423)
+* Added a "StructFieldsInSameProcess" rule that warns about struct fields being assigned from multiple processes (thanks to @spomata)
+* Fixed the `resetIsActiveHigh` config having inverted polarity, and changed default to `false` so that it stays consistent with the default `resetName` of `rst_ni` (thanks to @spomata)
+* Fixed the "OnlyAssignedOnReset" check to issue the right diagnostics (previously was erroneously using "RegisterNotAssignedOnReset") (thanks to @spomata)
+* Fixed the "EnforceModuleInstantiationPrefix" check to actually apply to non-top level modules (thanks to @nwistoffTT)
+
+#### slang-unifdef
+* Added a new tool that can be used to rewrite code as if certain macros were either defined or not defined, while leaving other idefs alone (thanks to @AndrewNolte)
 
 
 ## [v11.0] - 2026-05-14

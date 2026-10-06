@@ -334,6 +334,7 @@ const RootSymbol& Compilation::getRoot(bool skipDefParamsAndBinds) {
     auto isValidTop = [&](auto& definition) {
         if (hasFlag(CompilationFlags::AllowInvalidTop))
             return true;
+
         // All parameters must have defaults.
         for (auto& param : definition.parameters) {
             if (!param.hasDefault() &&
@@ -1704,24 +1705,22 @@ void Compilation::addDiagnostics(const Diagnostics& diagnostics) {
         addDiag(diag);
 }
 
-bool shouldReportUninstantiatedDiag(const DiagCode& code) {
-    static const flat_hash_set<DiagCode> BadLookupDiags = {
-        diag::ScopeIndexOutOfRange,
-        diag::InvalidScopeIndexExpression,
-        diag::CouldNotResolveHierarchicalPath,
-        diag::DotIntoInstArray,
-    };
+static const flat_hash_set<DiagCode> BadLookupDiags = {
+    diag::ScopeIndexOutOfRange,
+    diag::InvalidScopeIndexExpression,
+    diag::CouldNotResolveHierarchicalPath,
+    diag::DotIntoInstArray,
+};
 
+static bool shouldReportUninstantiatedDiag(const DiagCode& code) {
     switch (code.getSubsystem()) {
         case DiagSubsystem::Declarations:
             return true;
         case DiagSubsystem::Lookup:
             return !BadLookupDiags.contains(code);
         default:
-            break;
+            return false;
     }
-
-    return false;
 }
 
 Diagnostic& Compilation::addDiag(Diagnostic diag) {
@@ -1752,8 +1751,9 @@ Diagnostic& Compilation::addDiag(Diagnostic diag) {
 
     if (!isInstantiated(diag.symbol)) {
         if (!hasFlag(CompilationFlags::CheckUninstantiated) ||
-            !shouldReportUninstantiatedDiag(diag.code))
+            !shouldReportUninstantiatedDiag(diag.code)) {
             return suppressDiag();
+        }
     }
 
     const bool isError = diag.isError();
@@ -1998,9 +1998,13 @@ void Compilation::checkDPIMethods(std::span<const SubroutineSymbol* const> dpiIm
             continue;
         }
 
+        // The export directive counts as a use of the subroutine, since it can be
+        // called from the C side; mark it referenced so it isn't flagged as unused.
+        auto& sub = symbol->as<SubroutineSymbol>();
+        noteReference(sub);
+
         // This check is a little verbose because we're avoiding issuing an error if the
         // functionOrTask keyword is invalid, i.e. not 'function' or 'task'.
-        auto& sub = symbol->as<SubroutineSymbol>();
         if ((sub.subroutineKind == SubroutineKind::Function &&
              syntax->functionOrTask.kind == TokenKind::TaskKeyword) ||
             (sub.subroutineKind == SubroutineKind::Task &&
@@ -2490,8 +2494,9 @@ std::pair<Compilation::DefinitionLookupResult, bool> Compilation::resolveConfigR
 Diagnostic* Compilation::errorMissingDef(std::string_view name, const Scope& scope,
                                          SourceRange sourceRange, DiagCode code) const {
     if (hasFlag(CompilationFlags::IgnoreUnknownModules) || name.empty() ||
-        (scope.isUninstantiated() && !hasFlag(CompilationFlags::CheckUninstantiated)))
+        (scope.isUninstantiated() && !hasFlag(CompilationFlags::CheckUninstantiated))) {
         return nullptr;
+    }
 
     if (auto def = getExternDefinition(name, scope)) {
         auto& diag = scope.addDiag(diag::MissingExternModuleImpl, getExternNameToken(*def).range());

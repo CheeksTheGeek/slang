@@ -200,6 +200,7 @@ private:
     mutable std::optional<const Expression*> baseConstructorCall;
     mutable std::optional<uint64_t> cachedBitstreamWidth;
     mutable std::optional<bool> cachedHasCycles;
+    mutable uint32_t specializationDepth = 0;
     SymbolIndex headerIndex;
 };
 

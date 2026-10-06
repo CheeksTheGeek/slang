@@ -69,7 +69,7 @@ The available options are:
 |          **clkName**          |  string  |       clk_i        |
 |    **clkNameRegexString**     |  string  | \"clk\\S*\|clock\\S*\" |
 |         **resetName**         |  string  |      rst_ni        |
-|     **resetIsActiveHigh**     |   bool   |       true         |
+|     **resetIsActiveHigh**     |   bool   |       false        |
 |      **inputPortSuffix**      | [string] |       [_i]         |
 |     **outputPortSuffix**      | [string] |       [_o]         |
 |      **inoutPortSuffix**      | [string] |       [_io]        |
@@ -81,6 +81,20 @@ The available options are:
 |   **covergroupRegexString**   |  string  |     \"cg_\\S*\"    |
 |   **coverpointRegexString**   |  string  |    \"cp_\\S*\"     |
 |     **crossRegexString**      |  string  |   "cross_\\S*\"    |
+|      **enumRegexString**      |  string  | \"[a-z_0-9]+_e\"   |
+|     **structRegexString**     |  string  | \"[a-z_0-9]+_t\"   |
+|     **unionRegexString**      |  string  | \"[a-z_0-9]+_t\"   |
+|    **typedefRegexString**     |  string  | \"[a-z_0-9]+_t\"   |
+
+**resetIsActiveHigh** describes the reset polarity of the design under test: set it to
+`true` when the reset named by **resetName** is asserted high, and `false` when it is
+asserted low. It defaults to `false` to match the default **resetName** of `rst_ni`.
+The synthesis checks use it to work out which branch of an `if` inside an `always_ff`
+is the reset branch.
+
+`style-typedef-name` applies to all typedefs. If `style-enum-name`, `style-struct-name`,
+or `style-union-name` are enabled, those checks take precedence for the corresponding
+typedefs.
 
 An example of a possible configuration file:
 
@@ -93,7 +107,8 @@ Checks:
 CheckConfigs:
     clkName: clk,
     clkNameRegexString: "clk_signal\S*|clock_port\S*",
-    resetIsActiveHigh: false,
+    resetName: rst_i,
+    resetIsActiveHigh: true,
     inputPortSuffix: _k,
     outputPortSuffix: _p
 ```

@@ -111,7 +111,7 @@ unsafe fn static_cstr(p: *const core::ffi::c_char) -> &'static str {
         .unwrap_or("")
 }
 
-/// The slang version the linked library reports, e.g. `"11.0.3+abc1234"`.
+/// The slang version the linked library reports, e.g. `"12.0.0+abc1234"`.
 ///
 /// # Examples
 /// ```

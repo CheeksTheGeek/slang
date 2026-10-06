@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 mod wasm_bridge;
 
-const SLANG_VERSION: &str = "11.0";
+const SLANG_VERSION: &str = "12.0";
 
 #[derive(Deserialize)]
 struct SyntaxModel {

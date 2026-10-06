@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 /// The audited baseline. Update this ONLY together with a review of the new
 /// `mutable` fields and, if needed, SAFETY.md.
-const BASELINE_MUTABLE: usize = 140;
+const BASELINE_MUTABLE: usize = 141;
 
 /// The audited size of the public accessor surface (`pub fn` in `ast.rs`). The
 /// `mutable`-count check catches a NEW lazy memo appearing UPSTREAM, but not a

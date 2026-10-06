@@ -3137,4 +3137,4 @@ pub const SYNTAX_MODEL_HASH: &str =
     "ba08bb1f5aca5e04a8d91b41b8bcc17bdd7bdf0272204936d617bfdd93cc72b8";
 
 /// The slang version the syntax model was generated from.
-pub const SLANG_VERSION: &str = "11.0";
+pub const SLANG_VERSION: &str = "12.0";

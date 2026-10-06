@@ -3327,1401 +3327,1408 @@
           "option": null
         },
         {
-          "name": "AssignmentPatternMissingElements",
+          "name": "AssignmentPatternMissingDynamicElements",
           "index": 19,
           "severity": "Error",
-          "message": "not all elements of array are covered by an assignment pattern key",
+          "message": "assignment pattern does not cover all elements in an array of length {} of type {}",
+          "option": null
+        },
+        {
+          "name": "AssignmentPatternMissingElements",
+          "index": 20,
+          "severity": "Error",
+          "message": "assignment pattern does not cover all elements of type {}",
           "option": null
         },
         {
           "name": "AssignmentPatternNoContext",
-          "index": 20,
+          "index": 21,
           "severity": "Error",
           "message": "assignment pattern target type cannot be deduced in this context",
           "option": null
         },
         {
           "name": "AssignmentPatternNoMember",
-          "index": 21,
+          "index": 22,
           "severity": "Error",
           "message": "member '{}' is not covered by any assignment pattern key",
           "option": null
         },
         {
           "name": "AssignmentRequiresParens",
-          "index": 22,
+          "index": 23,
           "severity": "Error",
           "message": "assignment expressions must be parenthesized",
           "option": null
         },
         {
           "name": "AssignmentToConstVar",
-          "index": 23,
+          "index": 24,
           "severity": "Error",
           "message": "cannot assign to read-only variable '{}'",
           "option": null
         },
         {
           "name": "AutoFromNonBlockingTiming",
-          "index": 24,
+          "index": 25,
           "severity": "Error",
           "message": "cannot refer to automatic variable '{}' from intra-assignment event control of nonblocking assignment",
           "option": null
         },
         {
           "name": "AutoFromNonProcedural",
-          "index": 25,
+          "index": 26,
           "severity": "Error",
           "message": "cannot refer to automatic variable '{}' from non-procedural context",
           "option": null
         },
         {
           "name": "AutoFromStaticInit",
-          "index": 26,
+          "index": 27,
           "severity": "Error",
           "message": "cannot refer to automatic variable '{}' from static initializer",
           "option": null
         },
         {
           "name": "AutoVarToRefStatic",
-          "index": 27,
+          "index": 28,
           "severity": "Error",
           "message": "cannot pass automatic variables or elements of dynamically sized arrays to 'ref static' argument",
           "option": null
         },
         {
           "name": "BadAssignment",
-          "index": 28,
+          "index": 29,
           "severity": "Error",
           "message": "value of type {} cannot be assigned to type {}",
           "option": null
         },
         {
           "name": "BadAssignmentPatternType",
-          "index": 29,
+          "index": 30,
           "severity": "Error",
           "message": "invalid target type {} for assignment pattern",
           "option": null
         },
         {
           "name": "BadBinaryExpression",
-          "index": 30,
+          "index": 31,
           "severity": "Error",
           "message": "invalid operands to binary expression ({} and {})",
           "option": null
         },
         {
           "name": "BadCastType",
-          "index": 31,
+          "index": 32,
           "severity": "Error",
           "message": "invalid casting type {}",
           "option": null
         },
         {
           "name": "BadConcatExpression",
-          "index": 32,
+          "index": 33,
           "severity": "Error",
           "message": "invalid operand type {} in concatenation",
           "option": null
         },
         {
           "name": "BadConditionalExpression",
-          "index": 33,
+          "index": 34,
           "severity": "Error",
           "message": "invalid operands to conditional expression ({} and {})",
           "option": null
         },
         {
           "name": "BadConversion",
-          "index": 34,
+          "index": 35,
           "severity": "Error",
           "message": "value of type {} cannot be converted to type {}",
           "option": null
         },
         {
           "name": "BadIndexExpression",
-          "index": 35,
+          "index": 36,
           "severity": "Error",
           "message": "value of type {} cannot be indexed",
           "option": null
         },
         {
           "name": "BadIntegerCast",
-          "index": 36,
+          "index": 37,
           "severity": "Error",
           "message": "cannot change width or signedness of non-integral expression (type is {})",
           "option": null
         },
         {
           "name": "BadReplicationExpression",
-          "index": 37,
+          "index": 38,
           "severity": "Error",
           "message": "invalid operands to replication expression ({} and {})",
           "option": null
         },
         {
           "name": "BadSetMembershipType",
-          "index": 38,
+          "index": 39,
           "severity": "Error",
           "message": "invalid type {} for {} expression",
           "option": null
         },
         {
           "name": "BadSliceType",
-          "index": 39,
+          "index": 40,
           "severity": "Error",
           "message": "value of type {} cannot be sliced",
           "option": null
         },
         {
           "name": "BadStreamCast",
-          "index": 40,
+          "index": 41,
           "severity": "Error",
           "message": "streaming concatenation cannot be converted to type {}",
           "option": null
         },
         {
           "name": "BadStreamContext",
-          "index": 41,
+          "index": 42,
           "severity": "Error",
           "message": "streaming operator can only be used in an assignment or bit-stream cast argument",
           "option": null
         },
         {
           "name": "BadStreamExprType",
-          "index": 42,
+          "index": 43,
           "severity": "Error",
           "message": "stream expression type {} is not a bit-stream type",
           "option": null
         },
         {
           "name": "BadStreamSize",
-          "index": 43,
+          "index": 44,
           "severity": "Error",
           "message": "streaming operator target size {} does not fit source size {}",
           "option": null
         },
         {
           "name": "BadStreamSlice",
-          "index": 44,
+          "index": 45,
           "severity": "Error",
           "message": "streaming operator slice size cannot be a dynamically sized type identifier",
           "option": null
         },
         {
           "name": "BadStreamSourceType",
-          "index": 45,
+          "index": 46,
           "severity": "Error",
           "message": "source type {} of streaming concatenation is not a bit-stream type",
           "option": null
         },
         {
           "name": "BadStreamTargetType",
-          "index": 46,
+          "index": 47,
           "severity": "Error",
           "message": "target type {} of streaming concatenation is not a bit-stream type",
           "option": null
         },
         {
           "name": "BadStreamWithOrder",
-          "index": 47,
+          "index": 48,
           "severity": "Error",
           "message": "'with' expression cannot appear after unconstrained dynamically sized stream expression",
           "option": null
         },
         {
           "name": "BadStreamWithType",
-          "index": 48,
+          "index": 49,
           "severity": "Error",
           "message": "stream expression type before 'with' must be a one-dimensional unpacked array",
           "option": null
         },
         {
           "name": "BadUnaryExpression",
-          "index": 49,
+          "index": 50,
           "severity": "Error",
           "message": "invalid operand type {} to unary expression",
           "option": null
         },
         {
           "name": "BadValueRange",
-          "index": 50,
+          "index": 51,
           "severity": "Error",
           "message": "invalid bounds in value range ({} and {})",
           "option": null
         },
         {
           "name": "BlockingAssignToFreeVar",
-          "index": 51,
+          "index": 52,
           "severity": "Error",
           "message": "continuous assignments and blocking procedural assignments to free checker variables are not allowed",
           "option": null
         },
         {
           "name": "CHandleInAssertion",
-          "index": 52,
+          "index": 53,
           "severity": "Error",
           "message": "cannot reference variable of type 'chandle' in concurrent assertion expressions",
           "option": null
         },
         {
           "name": "CannotCompareTwoInstances",
-          "index": 53,
+          "index": 54,
           "severity": "Error",
           "message": "cannot compare two instances to each other; at least one side must be a virtual interface",
           "option": null
         },
         {
           "name": "CantModifyConst",
-          "index": 54,
+          "index": 55,
           "severity": "Error",
           "message": "constant '{}' is not modifiable",
           "option": null
         },
         {
           "name": "ChainedMethodParens",
-          "index": 55,
+          "index": 56,
           "severity": "Error",
           "message": "parentheses are required when chaining method calls",
           "option": null
         },
         {
           "name": "CheckerArgCannotBeEmpty",
-          "index": 56,
+          "index": 57,
           "severity": "Error",
           "message": "checker port connection for '{}' cannot be empty",
           "option": null
         },
         {
           "name": "CheckerAutoVarRef",
-          "index": 57,
+          "index": 58,
           "severity": "Error",
           "message": "cannot refer to automatic variable '{}' from procedural code in a checker",
           "option": null
         },
         {
           "name": "CheckerConstCast",
-          "index": 58,
+          "index": 59,
           "severity": "Error",
           "message": "checker arguments containing a const cast can only be used in assertions within the checker body",
           "option": null
         },
         {
           "name": "CheckerCovergroupProc",
-          "index": 59,
+          "index": 60,
           "severity": "Error",
           "message": "checker procedures cannot reference covergroups",
           "option": null
         },
         {
           "name": "CheckerForkJoinRef",
-          "index": 60,
+          "index": 61,
           "severity": "Error",
           "message": "checkers cannot refer to members of fork-join blocks from their enclosing scopes",
           "option": null
         },
         {
           "name": "ClassMemberInAssertion",
-          "index": 61,
+          "index": 62,
           "severity": "Error",
           "message": "cannot reference non-static class members in concurrent assertion expressions",
           "option": null
         },
         {
           "name": "ClassPrivateMembersBitstream",
-          "index": 62,
+          "index": 63,
           "severity": "Error",
           "message": "cannot use class type {} as a bit-stream because it has local or protected members that are not accessible in this context",
           "option": null
         },
         {
           "name": "ClockVarAssignConcat",
-          "index": 63,
+          "index": 64,
           "severity": "Error",
           "message": "clocking signal '{}' cannot be part of a concatenation or assignment pattern lvalue",
           "option": null
         },
         {
           "name": "ClockVarBadTiming",
-          "index": 64,
+          "index": 65,
           "severity": "Error",
           "message": "clocking signals cannot be driven with a timing control other than a cycle delay",
           "option": null
         },
         {
           "name": "ClockVarOutputRead",
-          "index": 65,
+          "index": 66,
           "severity": "Error",
           "message": "cannot read from output clocking signal '{}'",
           "option": null
         },
         {
           "name": "ConstVarToRef",
-          "index": 66,
+          "index": 67,
           "severity": "Error",
           "message": "cannot bind const variable to 'ref' argument",
           "option": null
         },
         {
           "name": "CopyClassTarget",
-          "index": 67,
+          "index": 68,
           "severity": "Error",
           "message": "expected {} to be a class type for shallow copy expression",
           "option": null
         },
         {
           "name": "CoverOptionImmutable",
-          "index": 68,
+          "index": 69,
           "severity": "Error",
           "message": "the '{}' option cannot be modified outside of the covergroup definition",
           "option": null
         },
         {
           "name": "CoverageSampleFormal",
-          "index": 69,
+          "index": 70,
           "severity": "Error",
           "message": "sample formal argument '{}' can only be referenced in a coverpoint, cross, or conditional guard expression",
           "option": null
         },
         {
           "name": "CycleDelayNonClock",
-          "index": 70,
+          "index": 71,
           "severity": "Error",
           "message": "intra-assignment cycle delays can only be used with clocking signals",
           "option": null
         },
         {
           "name": "DistRealRangeWeight",
-          "index": 71,
+          "index": 72,
           "severity": "Error",
           "message": "'dist' for a range of real values must include an explicit weight and must use the ':/' operator",
           "option": null
         },
         {
           "name": "DuplicateArgAssignment",
-          "index": 72,
+          "index": 73,
           "severity": "Error",
           "message": "duplicate assignment for argument '{}'",
           "option": null
         },
         {
           "name": "DynamicFromChecker",
-          "index": 73,
+          "index": 74,
           "severity": "Error",
           "message": "cannot refer to an element or member of a dynamic type from within a checker",
           "option": null
         },
         {
           "name": "EmptyArgNotAllowed",
-          "index": 74,
+          "index": 75,
           "severity": "Error",
           "message": "empty argument not allowed",
           "option": null
         },
         {
           "name": "EmptyConcatNotAllowed",
-          "index": 75,
+          "index": 76,
           "severity": "Error",
           "message": "concatenation cannot be empty",
           "option": null
         },
         {
           "name": "EnumValueSizeMismatch",
-          "index": 76,
+          "index": 77,
           "severity": "Error",
           "message": "expression width of {} does not exactly match declared enum type width of {}",
           "option": null
         },
         {
           "name": "EventExprAssertionArg",
-          "index": 77,
+          "index": 78,
           "severity": "Error",
           "message": "argument of type 'event' can only be used in places where event expressions are allowed",
           "option": null
         },
         {
           "name": "EventExpressionFuncArg",
-          "index": 78,
+          "index": 79,
           "severity": "Error",
           "message": "cannot call a function with output, inout, or ref arguments from an event expression",
           "option": null
         },
         {
           "name": "ExpectedIterationExpression",
-          "index": 79,
+          "index": 80,
           "severity": "Error",
           "message": "expected a single array iteration expression",
           "option": null
         },
         {
           "name": "ExpectedIteratorName",
-          "index": 80,
+          "index": 81,
           "severity": "Error",
           "message": "expected name of iterator for use with 'with' expression",
           "option": null
         },
         {
           "name": "ExpectedNetDelay",
-          "index": 81,
+          "index": 82,
           "severity": "Error",
           "message": "invalid net delay; expected min:typ:max or single expression",
           "option": null
         },
         {
           "name": "ExprMustBeIntegral",
-          "index": 82,
+          "index": 83,
           "severity": "Error",
           "message": "expression type {} is not integral",
           "option": null
         },
         {
           "name": "ExpressionNotAssignable",
-          "index": 83,
+          "index": 84,
           "severity": "Error",
           "message": "expression is not assignable",
           "option": null
         },
         {
           "name": "ExpressionNotCallable",
-          "index": 84,
+          "index": 85,
           "severity": "Error",
           "message": "expression is not callable",
           "option": null
         },
         {
           "name": "GateUDNTConn",
-          "index": 85,
+          "index": 86,
           "severity": "Error",
           "message": "gate cannot connect to net '{}' with user-defined net type",
           "option": null
         },
         {
           "name": "InOutUWireConn",
-          "index": 86,
+          "index": 87,
           "severity": "Error",
           "message": "'uwire' net '{}' cannot be connected to 'inout' port",
           "option": null
         },
         {
           "name": "InOutVarPortConn",
-          "index": 87,
+          "index": 88,
           "severity": "Error",
           "message": "'{}' cannot be connected to 'inout' port (only nets are allowed)",
           "option": null
         },
         {
           "name": "IncDecNotAllowed",
-          "index": 88,
+          "index": 89,
           "severity": "Error",
           "message": "increment and decrement expressions are not allowed in this context",
           "option": null
         },
         {
           "name": "IndexValueInvalid",
-          "index": 89,
+          "index": 90,
           "severity": "Error",
           "message": "cannot refer to element {} of {}",
           "option": null
         },
         {
           "name": "InterconnectReference",
-          "index": 90,
+          "index": 91,
           "severity": "Error",
           "message": "cannot reference interconnect net '{}' outside of a net port connection",
           "option": null
         },
         {
           "name": "InterfacePortInvalidExpression",
-          "index": 91,
+          "index": 92,
           "severity": "Error",
           "message": "invalid expression for interface port connection",
           "option": null
         },
         {
           "name": "InvalidArgumentExpr",
-          "index": 92,
+          "index": 93,
           "severity": "Error",
           "message": "sequence and property expressions are not valid in this context",
           "option": null
         },
         {
           "name": "InvalidBinsMatches",
-          "index": 93,
+          "index": 94,
           "severity": "Error",
           "message": "'matches' expression is invalid here",
           "option": null
         },
         {
           "name": "InvalidBinsTarget",
-          "index": 94,
+          "index": 95,
           "severity": "Error",
           "message": "binsof target '{}' is not a coverpoint or coverpoint bin",
           "option": null
         },
         {
           "name": "InvalidClassAccess",
-          "index": 95,
+          "index": 96,
           "severity": "Error",
           "message": "cannot access '{}' in {} with '.'",
           "option": null
         },
         {
           "name": "InvalidExtendsDefault",
-          "index": 96,
+          "index": 97,
           "severity": "Error",
           "message": "constructor must use 'default' in its argument list since 'extends' specifies 'default' for its argument list",
           "option": null
         },
         {
           "name": "InvalidMemberAccess",
-          "index": 97,
+          "index": 98,
           "severity": "Error",
           "message": "invalid member access for type {}",
           "option": null
         },
         {
           "name": "InvalidRefArg",
-          "index": 98,
+          "index": 99,
           "severity": "Error",
           "message": "invalid expression for pass by reference; only variables, class properties, and members of unpacked structs and arrays are allowed",
           "option": null
         },
         {
           "name": "InvalidSuperNewDefault",
-          "index": 99,
+          "index": 100,
           "severity": "Error",
           "message": "cannot use 'default' in super.new since the containing constructor does not use 'default' in its argument list",
           "option": null
         },
         {
           "name": "IteratorArgsWithoutWithClause",
-          "index": 100,
+          "index": 101,
           "severity": "Error",
           "message": "cannot provide arguments to '{}' without corresponding 'with' clause",
           "option": null
         },
         {
           "name": "LetHierarchical",
-          "index": 101,
+          "index": 102,
           "severity": "Error",
           "message": "hierarchical references to let declarations are not allowed",
           "option": null
         },
         {
           "name": "LocalVarEventExpr",
-          "index": 102,
+          "index": 103,
           "severity": "Error",
           "message": "local variable '{}' cannot be referenced in an event expression",
           "option": null
         },
         {
           "name": "LocalVarOutputEmptyMatch",
-          "index": 103,
+          "index": 104,
           "severity": "Error",
           "message": "sequence '{}' cannot have an 'inout' or 'output' local variable formal argument because it admits an empty match",
           "option": null
         },
         {
           "name": "MissingConstraintBlock",
-          "index": 104,
+          "index": 105,
           "severity": "Error",
           "message": "missing inline constraint block for 'randomize' call",
           "option": null
         },
         {
           "name": "MissingInvocationParens",
-          "index": 105,
+          "index": 106,
           "severity": "Error",
           "message": "parentheses are required when invoking function '{}'",
           "option": null
         },
         {
           "name": "MissingReturnValue",
-          "index": 106,
+          "index": 107,
           "severity": "Error",
           "message": "must provide a return value for non-void function",
           "option": null
         },
         {
           "name": "MissingReturnValueProd",
-          "index": 107,
+          "index": 108,
           "severity": "Error",
           "message": "must provide a return value for non-void production",
           "option": null
         },
         {
           "name": "MixingOrderedAndNamedArgs",
-          "index": 108,
+          "index": 109,
           "severity": "Error",
           "message": "ordered arguments are not allowed after named arguments",
           "option": null
         },
         {
           "name": "MultipleDefaultDistWeight",
-          "index": 109,
+          "index": 110,
           "severity": "Error",
           "message": "'default' cannot be used more than once in dist item list",
           "option": null
         },
         {
           "name": "NameListWithScopeRandomize",
-          "index": 110,
+          "index": 111,
           "severity": "Error",
           "message": "lookup restriction list not allowed for std::randomize call",
           "option": null
         },
         {
           "name": "NamedArgNotAllowed",
-          "index": 111,
+          "index": 112,
           "severity": "Error",
           "message": "named argument not allowed",
           "option": null
         },
         {
           "name": "NewArrayTarget",
-          "index": 112,
+          "index": 113,
           "severity": "Error",
           "message": "new array expression can only be used in an assignment to a dynamic array type",
           "option": null
         },
         {
           "name": "NewClassTarget",
-          "index": 113,
+          "index": 114,
           "severity": "Error",
           "message": "new class expression can only be used in an assignment to a class type",
           "option": null
         },
         {
           "name": "NewInterfaceClass",
-          "index": 114,
+          "index": 115,
           "severity": "Error",
           "message": "cannot create instance of interface class '{}'",
           "option": null
         },
         {
           "name": "NewVirtualClass",
-          "index": 115,
+          "index": 116,
           "severity": "Error",
           "message": "cannot create instance of virtual class '{}'",
           "option": null
         },
         {
           "name": "NoCommonComparisonType",
-          "index": 116,
+          "index": 117,
           "severity": "Error",
           "message": "{} expression of type {} is not comparable to common type {}",
           "option": null
         },
         {
           "name": "NoImplicitConversion",
-          "index": 117,
+          "index": 118,
           "severity": "Error",
           "message": "no implicit conversion from {} to {}; explicit conversion exists, are you missing a cast?",
           "option": null
         },
         {
           "name": "NonProceduralFuncArg",
-          "index": 118,
+          "index": 119,
           "severity": "Error",
           "message": "cannot call a function with output, inout, or ref arguments outside of a procedural context",
           "option": null
         },
         {
           "name": "NonblockingAssignmentToAuto",
-          "index": 119,
+          "index": 120,
           "severity": "Error",
           "message": "nonblocking assignment to automatic variable '{}' is not allowed",
           "option": null
         },
         {
           "name": "NonblockingDynamicAssign",
-          "index": 120,
+          "index": 121,
           "severity": "Error",
           "message": "nonblocking assignments to elements of dynamically sized arrays are not allowed",
           "option": null
         },
         {
           "name": "NotBooleanConvertible",
-          "index": 121,
+          "index": 122,
           "severity": "Error",
           "message": "value of type {} is not convertible to a boolean predicate",
           "option": null
         },
         {
           "name": "PathPulseInExpr",
-          "index": 122,
+          "index": 123,
           "severity": "Error",
           "message": "PATHPULSE$ specparams cannot be used in expressions",
           "option": null
         },
         {
           "name": "PatternStructTooFew",
-          "index": 123,
+          "index": 124,
           "severity": "Error",
           "message": "structure pattern has too few members for target type {}",
           "option": null
         },
         {
           "name": "PatternStructTooMany",
-          "index": 124,
+          "index": 125,
           "severity": "Error",
           "message": "structure pattern has too many members for target type {}",
           "option": null
         },
         {
           "name": "PatternStructType",
-          "index": 125,
+          "index": 126,
           "severity": "Error",
           "message": "structure pattern type {} is not a struct",
           "option": null
         },
         {
           "name": "PatternTaggedType",
-          "index": 126,
+          "index": 127,
           "severity": "Error",
           "message": "expected pattern type {} is not a tagged union",
           "option": null
         },
         {
           "name": "PortConnArrayMismatch",
-          "index": 127,
+          "index": 128,
           "severity": "Error",
           "message": "cannot connect {} to each port of type {} in '{}'",
           "option": null
         },
         {
           "name": "RangeSelectAssociative",
-          "index": 128,
+          "index": 129,
           "severity": "Error",
           "message": "cannot take a slice of an associative array",
           "option": null
         },
         {
           "name": "RangeWidthOverflow",
-          "index": 129,
+          "index": 130,
           "severity": "Error",
           "message": "select range overflows the bounds of a signed 32-bit integer",
           "option": null
         },
         {
           "name": "RecursiveLet",
-          "index": 130,
+          "index": 131,
           "severity": "Error",
           "message": "let declaration '{}' is recursive",
           "option": null
         },
         {
           "name": "RecursivePropArgExpr",
-          "index": 131,
+          "index": 132,
           "severity": "Error",
           "message": "cannot refer to argument '{}' in an argument to a recursive property unless it is the entire argument expression or bound to a local variable formal argument",
           "option": null
         },
         {
           "name": "RecursivePropNegation",
-          "index": 132,
+          "index": 133,
           "severity": "Error",
           "message": "recursive property instance cannot have the operators 'not', 's_nexttime', 's_eventually', 's_always', 's_until', or 's_until_with' applied to it",
           "option": null
         },
         {
           "name": "RecursivePropTimeAdvance",
-          "index": 133,
+          "index": 134,
           "severity": "Error",
           "message": "recursive property instance must occur after a positive advance in time to avoid infinite recursion",
           "option": null
         },
         {
           "name": "RecursiveSequence",
-          "index": 134,
+          "index": 135,
           "severity": "Error",
           "message": "sequence '{}' is recursive",
           "option": null
         },
         {
           "name": "RefTypeMismatch",
-          "index": 135,
+          "index": 136,
           "severity": "Error",
           "message": "argument of type {} connects to 'ref' port of inequivalent type {}",
           "option": null
         },
         {
           "name": "ReplicationZeroOutsideConcat",
-          "index": 136,
+          "index": 137,
           "severity": "Error",
           "message": "replication constant can only be zero inside of a concatenation",
           "option": null
         },
         {
           "name": "SelectAfterRangeSelect",
-          "index": 137,
+          "index": 138,
           "severity": "Error",
           "message": "cannot chain select expressions after a range select",
           "option": null
         },
         {
           "name": "SelectOfVectoredNet",
-          "index": 138,
+          "index": 139,
           "severity": "Error",
           "message": "bit-selects and part-selects of vectored nets are disallowed",
           "option": null
         },
         {
           "name": "SpecifyPathBadReference",
-          "index": 139,
+          "index": 140,
           "severity": "Error",
           "message": "cannot refer to '{}' in state-dependent path condition expression; only locally defined nets and variables are allowed",
           "option": null
         },
         {
           "name": "SpecparamInConstant",
-          "index": 140,
+          "index": 141,
           "severity": "Error",
           "message": "specparams cannot be used in general constant expressions",
           "option": null
         },
         {
           "name": "TaggedUnionMissingInit",
-          "index": 141,
+          "index": 142,
           "severity": "Error",
           "message": "missing initializer expression for non-void tagged union member '{}'",
           "option": null
         },
         {
           "name": "TaggedUnionTarget",
-          "index": 142,
+          "index": 143,
           "severity": "Error",
           "message": "tagged union expression can only be used in an assignment to a tagged union type",
           "option": null
         },
         {
           "name": "TaskFromFinal",
-          "index": 143,
+          "index": 144,
           "severity": "Error",
           "message": "cannot invoke a task from within a final block",
           "option": null
         },
         {
           "name": "TaskFromFunction",
-          "index": 144,
+          "index": 145,
           "severity": "Error",
           "message": "cannot invoke a task from within a function",
           "option": null
         },
         {
           "name": "TimingControlNotAllowed",
-          "index": 145,
+          "index": 146,
           "severity": "Error",
           "message": "timing control is not allowed in this context",
           "option": null
         },
         {
           "name": "TooFewArguments",
-          "index": 146,
+          "index": 147,
           "severity": "Error",
           "message": "too few arguments for '{}'; expected {} but {} were provided",
           "option": null
         },
         {
           "name": "TooManyArguments",
-          "index": 147,
+          "index": 148,
           "severity": "Error",
           "message": "too many arguments for '{}'; expected {} but {} were provided",
           "option": null
         },
         {
           "name": "UnboundedNotAllowed",
-          "index": 148,
+          "index": 149,
           "severity": "Error",
           "message": "unbounded literal '$' not allowed here",
           "option": null
         },
         {
           "name": "UnconnectedArg",
-          "index": 149,
+          "index": 150,
           "severity": "Error",
           "message": "argument '{}' is missing a value",
           "option": null
         },
         {
           "name": "UnexpectedClockingExpr",
-          "index": 150,
+          "index": 151,
           "severity": "Error",
           "message": "unexpected expression after clocking event",
           "option": null
         },
         {
           "name": "UnexpectedConstraintBlock",
-          "index": 151,
+          "index": 152,
           "severity": "Error",
           "message": "unexpected constraint block",
           "option": null
         },
         {
           "name": "UnexpectedWithClause",
-          "index": 152,
+          "index": 153,
           "severity": "Error",
           "message": "unexpected 'with' clause",
           "option": null
         },
         {
           "name": "UnpackedConcatAssociative",
-          "index": 153,
+          "index": 154,
           "severity": "Error",
           "message": "array concatenations cannot be used for associative arrays",
           "option": null
         },
         {
           "name": "UnpackedConcatSize",
-          "index": 154,
+          "index": 155,
           "severity": "Error",
           "message": "array concatenation for {} requires {} elements but {} were provided",
           "option": null
         },
         {
           "name": "UserDefPartialDriver",
-          "index": 155,
+          "index": 156,
           "severity": "Error",
           "message": "net '{}' with user-defined nettype cannot be partially driven",
           "option": null
         },
         {
           "name": "ValueRangeUnbounded",
-          "index": 156,
+          "index": 157,
           "severity": "Error",
           "message": "value range cannot be unbounded on both sides",
           "option": null
         },
         {
           "name": "VirtualIfaceConfigRule",
-          "index": 157,
+          "index": 158,
           "severity": "Error",
           "message": "interface instance cannot be assigned to a virtual interface because it is the target of config rule",
           "option": null
         },
         {
           "name": "VirtualIfaceDefparam",
-          "index": 158,
+          "index": 159,
           "severity": "Error",
           "message": "interface instance cannot be assigned to a virtual interface because it is the target of a defparam or bind directive",
           "option": null
         },
         {
           "name": "VoidAssignment",
-          "index": 159,
+          "index": 160,
           "severity": "Error",
           "message": "expression of type 'void' cannot be used in assignments",
           "option": null
         },
         {
           "name": "WithClauseNotAllowed",
-          "index": 160,
+          "index": 161,
           "severity": "Error",
           "message": "cannot use 'with' expression with '{}'",
           "option": null
         },
         {
           "name": "WrongNumberAssignmentPatterns",
-          "index": 161,
+          "index": 162,
           "severity": "Error",
           "message": "assignment pattern for {} requires {} elements but {} were provided",
           "option": null
         },
         {
           "name": "NoteConditionalPrecedenceFix",
-          "index": 162,
+          "index": 163,
           "severity": "Note",
           "message": "place parentheses around the '?:' expression to evaluate it first",
           "option": null
         },
         {
           "name": "NoteForPortConn",
-          "index": 163,
+          "index": 164,
           "severity": "Note",
           "message": "for connection to port '{}'",
           "option": null
         },
         {
           "name": "NoteLogicalNotFix",
-          "index": 164,
+          "index": 165,
           "severity": "Note",
           "message": "add parentheses after the '!' to evaluate the {} first",
           "option": null
         },
         {
           "name": "NoteLogicalNotSilence",
-          "index": 165,
+          "index": 166,
           "severity": "Note",
           "message": "add parentheses around left hand side expression to silence this warning",
           "option": null
         },
         {
           "name": "NotePrecedenceBitwiseFirst",
-          "index": 166,
+          "index": 167,
           "severity": "Note",
           "message": "place parentheses around the '{}' expression to evaluate it first",
           "option": null
         },
         {
           "name": "NotePrecedenceSilence",
-          "index": 167,
+          "index": 168,
           "severity": "Note",
           "message": "place parentheses around the '{}' expression to silence this warning",
           "option": null
         },
         {
           "name": "ArithInShift",
-          "index": 168,
+          "index": 169,
           "severity": "Warning",
           "message": "'{}' has lower precedence than '{}'; '{}' will be evaluated first",
           "option": "arith-in-shift"
         },
         {
           "name": "ArithOpMismatch",
-          "index": 169,
+          "index": 170,
           "severity": "Warning",
           "message": "arithmetic between operands of different types ({} and {})",
           "option": "arith-op-mismatch"
         },
         {
           "name": "BitwiseOpMismatch",
-          "index": 170,
+          "index": 171,
           "severity": "Warning",
           "message": "bitwise operation between operands of different types ({} and {})",
           "option": "bitwise-op-mismatch"
         },
         {
           "name": "BitwiseOpParentheses",
-          "index": 171,
+          "index": 172,
           "severity": "Warning",
           "message": "'{}' within '{}'",
           "option": "bitwise-op-parentheses"
         },
         {
           "name": "BitwiseRelPrecedence",
-          "index": 172,
+          "index": 173,
           "severity": "Warning",
           "message": "'{}' has lower precedence than '{}'; '{}' will be evaluated first",
           "option": "bitwise-rel-precedence"
         },
         {
           "name": "CannotIndexScalar",
-          "index": 173,
+          "index": 174,
           "severity": "Warning",
           "message": "scalar type cannot be indexed",
           "option": "cannot-index-scalar"
         },
         {
           "name": "CaseOutsideRange",
-          "index": 174,
+          "index": 175,
           "severity": "Warning",
           "message": "'{}' item with {} bits can never match the {} bit case expression",
           "option": "case-outside-range"
         },
         {
           "name": "CaseTypeMismatch",
-          "index": 175,
+          "index": 176,
           "severity": "Warning",
           "message": "comparison of different types in '{}' statement ({} and {})",
           "option": "case-type"
         },
         {
           "name": "ComparisonMismatch",
-          "index": 176,
+          "index": 177,
           "severity": "Warning",
           "message": "comparison between operands of different types ({} and {})",
           "option": "comparison-mismatch"
         },
         {
           "name": "ConcatWithStringInt",
-          "index": 177,
+          "index": 178,
           "severity": "Warning",
           "message": "cannot mix strings and integers in a concatenation (use a cast if this is desired)",
           "option": "string-int-concat"
         },
         {
           "name": "ConditionalPrecedence",
-          "index": 178,
+          "index": 179,
           "severity": "Warning",
           "message": "operator '?:' has lower precedence than '{}'; '{}' will be evaluated first",
           "option": "conditional-precedence"
         },
         {
           "name": "ConsecutiveComparison",
-          "index": 179,
+          "index": 180,
           "severity": "Warning",
           "message": "comparisons like 'x < y < z' don't have their mathematical meaning",
           "option": "consecutive-comparison"
         },
         {
           "name": "CrossIdentInBinsof",
-          "index": 180,
+          "index": 181,
           "severity": "Warning",
           "message": "binsof target '{}' is a cross coverpoint; only regular coverpoints and coverpoint bins are valid",
           "option": "cross-ident-in-binsof"
         },
         {
           "name": "DivisionByZero",
-          "index": 181,
+          "index": 182,
           "severity": "Warning",
           "message": "division by constant zero",
           "option": "divide-by-zero"
         },
         {
           "name": "DynamicNotProcedural",
-          "index": 182,
+          "index": 183,
           "severity": "Warning",
           "message": "cannot refer to an element or member of a dynamic type outside of a procedural context",
           "option": "dynamic-non-procedural"
         },
         {
           "name": "FloatBoolConv",
-          "index": 183,
+          "index": 184,
           "severity": "Warning",
           "message": "implicit conversion from floating point type {} to boolean value",
           "option": "float-bool-conv"
         },
         {
           "name": "FloatIntConv",
-          "index": 184,
+          "index": 185,
           "severity": "Warning",
           "message": "implicit conversion from {} to {}",
           "option": "float-int-conv"
         },
         {
           "name": "FloatNarrow",
-          "index": 185,
+          "index": 186,
           "severity": "Warning",
           "message": "implicit conversion narrows from {} to {}",
           "option": "float-narrow"
         },
         {
           "name": "FloatWiden",
-          "index": 186,
+          "index": 187,
           "severity": "Warning",
           "message": "implicit conversion widens from {} to {}",
           "option": "float-widen"
         },
         {
           "name": "IgnoredSlice",
-          "index": 187,
+          "index": 188,
           "severity": "Warning",
           "message": "slice size ignored for left-to-right streaming operator",
           "option": "ignored-slice"
         },
         {
           "name": "ImplicitConvert",
-          "index": 188,
+          "index": 189,
           "severity": "Warning",
           "message": "implicit conversion from {} to {}",
           "option": "implicit-conv"
         },
         {
           "name": "IncDecBit",
-          "index": 189,
+          "index": 190,
           "severity": "Warning",
           "message": "increment/decrement of a 1-bit operand",
           "option": "inc-dec-bit"
         },
         {
           "name": "IndexOOB",
-          "index": 190,
+          "index": 191,
           "severity": "Warning",
           "message": "cannot refer to element {} of {}",
           "option": "index-oob"
         },
         {
           "name": "IntBoolConv",
-          "index": 191,
+          "index": 192,
           "severity": "Warning",
           "message": "implicit conversion from {} to boolean value",
           "option": "int-bool-conv"
         },
         {
           "name": "IntFloatConv",
-          "index": 192,
+          "index": 193,
           "severity": "Warning",
           "message": "implicit conversion from {} to {}",
           "option": "int-float-conv"
         },
         {
           "name": "LogicalNotParentheses",
-          "index": 193,
+          "index": 194,
           "severity": "Warning",
           "message": "logical not is only applied to the left hand side of this {}",
           "option": "logical-not-parentheses"
         },
         {
           "name": "LogicalOpParentheses",
-          "index": 194,
+          "index": 195,
           "severity": "Warning",
           "message": "'{}' within '{}'",
           "option": "logical-op-parentheses"
         },
         {
           "name": "NegativeTimingLimit",
-          "index": 195,
+          "index": 196,
           "severity": "Warning",
           "message": "timing check limit value '{}' should not be negative",
           "option": "negative-timing-limit"
         },
         {
           "name": "NonblockingInFinal",
-          "index": 196,
+          "index": 197,
           "severity": "Warning",
           "message": "nonblocking assignments in final blocks have no effect",
           "option": "nonblocking-final"
         },
         {
           "name": "NonstandardStringConcat",
-          "index": 197,
+          "index": 198,
           "severity": "Warning",
           "message": "string concatenation using '+' operator is non-standard",
           "option": "nonstandard-string-concat"
         },
         {
           "name": "PackedArrayConv",
-          "index": 198,
+          "index": 199,
           "severity": "Warning",
           "message": "implicit conversion from {} to {}",
           "option": "packed-array-conv"
         },
         {
           "name": "PortWidthExpand",
-          "index": 199,
+          "index": 200,
           "severity": "Warning",
           "message": "implicit conversion of port connection expands from {} to {} bits",
           "option": "port-width-expand"
         },
         {
           "name": "PortWidthTruncate",
-          "index": 200,
+          "index": 201,
           "severity": "Warning",
           "message": "implicit conversion of port connection truncates from {} to {} bits",
           "option": "port-width-trunc"
         },
         {
           "name": "RangeOOB",
-          "index": 201,
+          "index": 202,
           "severity": "Warning",
           "message": "cannot select range of [{}:{}] from {}",
           "option": "range-oob"
         },
         {
           "name": "RangeSelectReversed",
-          "index": 202,
+          "index": 203,
           "severity": "Warning",
           "message": "range of selection [{}:{}] from {} is reversed",
           "option": "range-select-reversed"
         },
         {
           "name": "RangeWidthOOB",
-          "index": 203,
+          "index": 204,
           "severity": "Warning",
           "message": "cannot select range of {} elements from {}",
           "option": "range-width-oob"
         },
         {
           "name": "RealCaseEq",
-          "index": 204,
+          "index": 205,
           "severity": "Warning",
           "message": "a real operand has no x or z bits so '{}' acts as ordinary {}",
           "option": "real-case-eq"
         },
         {
           "name": "RefArgForkJoin",
-          "index": 205,
+          "index": 206,
           "severity": "Warning",
           "message": "cannot refer to 'ref' argument '{}' inside fork-join_any or fork-join_none block",
           "option": "ref-arg-in-fork-join"
         },
         {
           "name": "ReversedValueRange",
-          "index": 206,
+          "index": 207,
           "severity": "Warning",
           "message": "reversed range will behave as if it were empty",
           "option": "reversed-range"
         },
         {
           "name": "ShiftCountNegative",
-          "index": 207,
+          "index": 208,
           "severity": "Warning",
           "message": "shift count of '{}' is negative",
           "option": "shift-count-negative"
         },
         {
           "name": "ShiftCountOverflow",
-          "index": 208,
+          "index": 209,
           "severity": "Warning",
           "message": "shift count of '{}' overflows {}-bit operand",
           "option": "shift-count-overflow"
         },
         {
           "name": "SignCompare",
-          "index": 209,
+          "index": 210,
           "severity": "Warning",
           "message": "comparison of differently signed types ({} and {})",
           "option": "sign-compare"
         },
         {
           "name": "SignConversion",
-          "index": 210,
+          "index": 211,
           "severity": "Warning",
           "message": "implicit conversion changes signedness from {} to {}",
           "option": "sign-conversion"
         },
         {
           "name": "SignedLogicalShift",
-          "index": 211,
+          "index": 212,
           "severity": "Warning",
           "message": "logical right shift of signed type {} may have been intended to be an arithmetic shift",
           "option": "signed-logical-shift"
         },
         {
           "name": "SpecifyBlockParam",
-          "index": 212,
+          "index": 213,
           "severity": "Warning",
           "message": "parameters cannot be used in specify blocks",
           "option": "specify-param"
         },
         {
           "name": "SpecifyPathConditionExpr",
-          "index": 213,
+          "index": 214,
           "severity": "Warning",
           "message": "expression is not valid in a state-dependent path condition",
           "option": "specify-condition-expr"
         },
         {
           "name": "UnsignedArithShift",
-          "index": 214,
+          "index": 215,
           "severity": "Warning",
           "message": "arithmetic right shift of unsigned type {} will always shift in zeros (use logical shift if that is intended)",
           "option": "unsigned-arith-shift"
         },
         {
           "name": "UnsizedInConcat",
-          "index": 215,
+          "index": 216,
           "severity": "Warning",
           "message": "unsized integer in concat; using a width of {}",
           "option": "unsized-concat"
         },
         {
           "name": "UselessCast",
-          "index": 216,
+          "index": 217,
           "severity": "Warning",
           "message": "useless cast from {} to the same type",
           "option": "useless-cast"
         },
         {
           "name": "WidthExpand",
-          "index": 217,
+          "index": 218,
           "severity": "Warning",
           "message": "implicit conversion expands from {} to {} bits",
           "option": "width-expand"
         },
         {
           "name": "WidthTruncate",
-          "index": 218,
+          "index": 219,
           "severity": "Warning",
           "message": "implicit conversion truncates from {} to {} bits",
           "option": "width-trunc"
@@ -9169,5 +9176,5 @@
       ]
     }
   ],
-  "modelHash": "6e2a7885c720bfdbfa5a468d2ceb2a00d0ba7d784880385dfc1e675efeea588d"
+  "modelHash": "39d03621784b29d931c5aca1fd2efa7f222a5d844d21e85a7b6b87fdb4961d3e"
 }

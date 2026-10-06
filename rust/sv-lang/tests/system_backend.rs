@@ -30,7 +30,7 @@ fn linked_library_passes_the_abi_probe() {
         "linked slang-c syntax-model hash must match the generated kind tables"
     );
     let v = sv_lang::slang_version();
-    assert!(v.starts_with("11."), "unexpected slang version: {v:?}");
+    assert!(v.starts_with("12."), "unexpected slang version: {v:?}");
 }
 
 #[test]

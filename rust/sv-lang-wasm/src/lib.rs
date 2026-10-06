@@ -12,7 +12,7 @@
 //!
 //! ```no_run
 //! let mut slang = sv_lang_wasm::Slang::new()?;
-//! assert!(slang.version().starts_with("11.") || slang.version().starts_with("12."));
+//! assert!(slang.version().starts_with("12."));
 //!
 //! let tree = slang.parse("module top; endmodule\n")?;
 //! assert_eq!(slang.root_kind_name(&tree)?, "CompilationUnit");

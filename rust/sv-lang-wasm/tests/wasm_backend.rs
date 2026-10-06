@@ -253,7 +253,7 @@ fn diagnostics_are_visible_in_the_sandbox() {
 fn version_and_kinds() {
     let mut slang = Slang::new().expect("load wasm");
     let v = slang.version();
-    assert!(v.starts_with("11."), "version = {v:?}");
+    assert!(v.starts_with("12."), "version = {v:?}");
 
     assert!(slang.syntax_kind_count() > 500);
     assert_eq!(slang.syntax_kind_name(0).unwrap(), "Unknown");

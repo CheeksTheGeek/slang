@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1022 functions generated, 48 skipped (callbacks / struct out-params).
+//! is written on top. 1026 functions generated, 48 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -3567,6 +3567,91 @@ impl Slang {
             Some(Val::I32(n)) => *n as u32,
             _ => 0,
         })
+    }
+    /// Raw marshalling for `slang_instance_port_connection_attribute_count`.
+    pub fn raw_slang_instance_port_connection_attribute_count(
+        &mut self,
+        instance: &[u8],
+        index: u32,
+    ) -> Result<u32, Error> {
+        let __p_instance = self.malloc(16)?;
+        self.write(__p_instance, &instance[..16])?;
+        let __r = self.call(
+            "slang_instance_port_connection_attribute_count",
+            &[Val::I32(__p_instance as i32), Val::I32(index as i32)],
+        );
+        self.free(__p_instance);
+        let __v = __r?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_instance_port_connection_attribute`.
+    pub fn raw_slang_instance_port_connection_attribute(
+        &mut self,
+        instance: &[u8],
+        index: u32,
+        attr_index: u32,
+    ) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_instance = self.malloc(16)?;
+        self.write(__p_instance, &instance[..16])?;
+        let __r = self.call(
+            "slang_instance_port_connection_attribute",
+            &[
+                Val::I32(__sret as i32),
+                Val::I32(__p_instance as i32),
+                Val::I32(index as i32),
+                Val::I32(attr_index as i32),
+            ],
+        );
+        self.free(__p_instance);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_ast_attribute_count`.
+    pub fn raw_slang_ast_attribute_count(&mut self, node: &[u8]) -> Result<u32, Error> {
+        let __p_node = self.malloc(16)?;
+        self.write(__p_node, &node[..16])?;
+        let __r = self.call("slang_ast_attribute_count", &[Val::I32(__p_node as i32)]);
+        self.free(__p_node);
+        let __v = __r?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_ast_attribute_at`.
+    pub fn raw_slang_ast_attribute_at(
+        &mut self,
+        node: &[u8],
+        index: u32,
+    ) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_node = self.malloc(16)?;
+        self.write(__p_node, &node[..16])?;
+        let __r = self.call(
+            "slang_ast_attribute_at",
+            &[
+                Val::I32(__sret as i32),
+                Val::I32(__p_node as i32),
+                Val::I32(index as i32),
+            ],
+        );
+        self.free(__p_node);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
     }
     /// Raw marshalling for `slang_symbol_instance_body_parent_instance`.
     pub fn raw_slang_symbol_instance_body_parent_instance(

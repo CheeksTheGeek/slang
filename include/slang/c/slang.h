@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 4
+#define SLANG_C_VERSION_MINOR 5
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -1912,6 +1912,34 @@ SLANG_C_API bool slang_instance_port_connection_is_implicit(slang_ast instance, 
 /// `index` is out of range or `instance` is not an Instance symbol. Mirrors
 /// slang::ast::PortConnection::isWildcard.
 SLANG_C_API bool slang_instance_port_connection_is_wildcard(slang_ast instance, uint32_t index);
+
+/// Number of `(* name = value *)` attribute instances on the i'th port
+/// connection of an Instance symbol. 0 if `index` is out of range or
+/// `instance` is not an Instance symbol. Mirrors
+/// slang::ast::Compilation::getAttributes(const PortConnection&).
+/// history: since 1.5.
+SLANG_C_API uint32_t slang_instance_port_connection_attribute_count(slang_ast instance,
+                                                                    uint32_t index);
+
+/// The attr_index'th attribute (an AttributeSymbol, domain SLANG_AST_SYMBOL)
+/// on the i'th port connection; use slang_symbol_name and
+/// slang_symbol_attribute_value to read it. A null node if either index is out
+/// of range or `instance` is not an Instance symbol. history: since 1.5.
+SLANG_C_API slang_ast slang_instance_port_connection_attribute(slang_ast instance, uint32_t index,
+                                                               uint32_t attr_index);
+
+/// Number of `(* name = value *)` attribute instances attached to an AST node
+/// (a Symbol, Statement, or Expression — the node kinds the SV grammar lets
+/// attributes decorate, IEEE 1800-2023 5.12 / 37.83). 0 for a null node, a
+/// node of any other domain, or one with no attributes. Mirrors
+/// slang::ast::Compilation::getAttributes. history: since 1.5.
+SLANG_C_API uint32_t slang_ast_attribute_count(slang_ast node);
+
+/// The index'th attribute instance on `node` (an AttributeSymbol, domain
+/// SLANG_AST_SYMBOL); read it with slang_symbol_name and
+/// slang_symbol_attribute_value. A null node if `index` is out of range or the
+/// node carries no attributes. history: since 1.5.
+SLANG_C_API slang_ast slang_ast_attribute_at(slang_ast node, uint32_t index);
 
 /// For an InstanceBody symbol: the InstanceSymbol that owns it, as a node of
 /// domain SLANG_AST_SYMBOL; a null node if it has none (e.g. a body created

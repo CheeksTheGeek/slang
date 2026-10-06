@@ -22,7 +22,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// `SLANG_C_VERSION_MAJOR` the declarations in this crate were generated for.
 pub const SLANG_C_VERSION_MAJOR: u32 = 1;
 /// `SLANG_C_VERSION_MINOR` the declarations in this crate were generated for.
-pub const SLANG_C_VERSION_MINOR: u32 = 4;
+pub const SLANG_C_VERSION_MINOR: u32 = 5;
 /// Encoded as by `SLANG_C_VERSION_ENCODE`.
 pub const SLANG_C_VERSION: u32 = SLANG_C_VERSION_MAJOR * 10000 + SLANG_C_VERSION_MINOR;
 
@@ -1759,6 +1759,14 @@ unsafe extern "C" {
     pub fn slang_instance_port_connection_expression(instance: slang_ast, index: u32) -> slang_ast;
     pub fn slang_instance_port_connection_is_implicit(instance: slang_ast, index: u32) -> bool;
     pub fn slang_instance_port_connection_is_wildcard(instance: slang_ast, index: u32) -> bool;
+    pub fn slang_instance_port_connection_attribute_count(instance: slang_ast, index: u32) -> u32;
+    pub fn slang_instance_port_connection_attribute(
+        instance: slang_ast,
+        index: u32,
+        attr_index: u32,
+    ) -> slang_ast;
+    pub fn slang_ast_attribute_count(node: slang_ast) -> u32;
+    pub fn slang_ast_attribute_at(node: slang_ast, index: u32) -> slang_ast;
     pub fn slang_symbol_instance_body_parent_instance(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_instance_body_definition(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_instance_body_port_count(sym: slang_ast) -> u32;

@@ -116,6 +116,34 @@ static const Statement* stmtOf(slang_ast node) {
     return fromC<Statement>(node, SLANG_AST_STATEMENT);
 }
 
+// The `(* name = value *)` attribute instances attached to a Symbol,
+// Statement, or Expression node. slang keeps these in a pointer-keyed map on
+// the Compilation, populated as each node is bound; ELABORATE_ALL forces that
+// binding for the whole design, so this is a pure read on a frozen design.
+// Nodes of other domains (no attributes in the SV source grammar) yield empty.
+static std::span<const ast::AttributeSymbol* const> attributesOf(slang_ast node) {
+    if (!node.compilation || !node.ptr)
+        return {};
+    auto& c = *node.compilation->comp;
+    switch (node.domain) {
+        case SLANG_AST_SYMBOL:
+            if (auto s = symbolOf(node))
+                return c.getAttributes(*s);
+            break;
+        case SLANG_AST_EXPRESSION:
+            if (auto e = exprOf(node))
+                return c.getAttributes(*e);
+            break;
+        case SLANG_AST_STATEMENT:
+            if (auto s = stmtOf(node))
+                return c.getAttributes(*s);
+            break;
+        default:
+            break;
+    }
+    return {};
+}
+
 static void ensureRoot(slang_compilation comp) {
     comp->comp->getRoot();
 }
@@ -2468,6 +2496,43 @@ bool slang_instance_port_connection_is_wildcard(slang_ast instance, uint32_t ind
     SLANG_C_ACCESS(false, {
         auto conn = instancePortConnection(instance, index);
         return conn && conn->isWildcard;
+    });
+}
+
+uint32_t slang_instance_port_connection_attribute_count(slang_ast instance, uint32_t index) {
+    SLANG_C_ACCESS(0u, {
+        auto conn = instancePortConnection(instance, index);
+        if (!conn)
+            return 0u;
+        return (uint32_t)instance.compilation->comp->getAttributes(*conn).size();
+    });
+}
+
+slang_ast slang_instance_port_connection_attribute(slang_ast instance, uint32_t index,
+                                                   uint32_t attr_index) {
+    SLANG_C_ACCESS(noAst(instance.compilation), {
+        auto conn = instancePortConnection(instance, index);
+        if (!conn)
+            return noAst(instance.compilation);
+        auto attrs = instance.compilation->comp->getAttributes(*conn);
+        if (attr_index >= attrs.size())
+            return noAst(instance.compilation);
+        return capi::toC(attrs[attr_index], instance.compilation);
+    });
+}
+
+// ---- Attributes on any AST node ---------------------------------------------
+
+uint32_t slang_ast_attribute_count(slang_ast node) {
+    SLANG_C_ACCESS(0u, { return (uint32_t)attributesOf(node).size(); });
+}
+
+slang_ast slang_ast_attribute_at(slang_ast node, uint32_t index) {
+    SLANG_C_ACCESS(noAst(node.compilation), {
+        auto attrs = attributesOf(node);
+        if (index >= attrs.size())
+            return noAst(node.compilation);
+        return capi::toC(attrs[index], node.compilation);
     });
 }
 

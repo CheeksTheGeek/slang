@@ -4762,6 +4762,22 @@ fn wrap<'d, T: Handle<'d>>(raw: sys::slang_ast) -> Option<T> {
     (!raw.ptr.is_null()).then(|| T::from_raw(raw))
 }
 
+/// Shared body of `Symbol`/`Statement`/`Expression::attributes()`: the
+/// `(* name = value *)` attribute instances attached to an AST node, each an
+/// `AttributeSymbol` (so [`Symbol::name`] and [`Symbol::attribute_value`] read
+/// its key and value). A pure read on a frozen design — slang binds attributes
+/// during elaboration, which the freeze sweep forces.
+fn ast_attributes<'d>(raw: sys::slang_ast) -> impl Iterator<Item = Symbol<'d>> {
+    // SAFETY: `raw` is a valid node (or null → count 0); a count read on a
+    // frozen design does not allocate.
+    let count = unsafe { sys::slang_ast_attribute_count(raw) };
+    (0..count).filter_map(move |i| {
+        // SAFETY: `i < count`; the returned node is an AttributeSymbol or null.
+        let ast = unsafe { sys::slang_ast_attribute_at(raw, i) };
+        wrap(ast)
+    })
+}
+
 /// One production element within a [`Symbol::randseq_rule_prods`] rule (one
 /// of the four variants ProdItem/CodeBlockProd/IfElseProd/CaseProd of
 /// `slang::ast::RandSeqProductionSymbol::ProdBase`; see [`RandSeqProd::kind`]
@@ -5801,6 +5817,24 @@ impl<'d> PortConnection<'d> {
             sys::slang_instance_port_connection_iface_conn(self.instance_raw, self.index)
         };
         (wrap(conn.instance), wrap(conn.modport))
+    }
+
+    /// The `(* name = value *)` attribute instances on this port connection,
+    /// each an `AttributeSymbol` (read via [`Symbol::name`] and
+    /// [`Symbol::attribute_value`]). Empty if it has none. A pure read on a
+    /// frozen design. Mirrors
+    /// `slang::ast::Compilation::getAttributes(const PortConnection&)`.
+    pub fn attributes(&self) -> impl Iterator<Item = Symbol<'d>> {
+        let instance = self.instance_raw;
+        let index = self.index;
+        // SAFETY: `instance`/`index` were valid when this connection was
+        // constructed; the count is read on a frozen design.
+        let count = unsafe { sys::slang_instance_port_connection_attribute_count(instance, index) };
+        (0..count).filter_map(move |i| {
+            // SAFETY: `i < count`; the node is an AttributeSymbol or null.
+            let ast = unsafe { sys::slang_instance_port_connection_attribute(instance, index, i) };
+            wrap(ast)
+        })
     }
 }
 
@@ -7924,6 +7958,36 @@ impl<'d> Symbol<'d> {
         }
         // SAFETY: `raw` is a valid owned handle (or null); consumed.
         unsafe { crate::ConstantValue::from_raw(raw) }
+    }
+
+    /// The `(* name = value *)` attribute instances attached to this symbol,
+    /// each an `AttributeSymbol` whose [`name`](Self::name) is the key and
+    /// whose [`attribute_value`](Self::attribute_value) is the value. Empty if
+    /// the symbol carries none. Covers every attribute-bearing declaration the
+    /// SV grammar allows (IEEE 1800-2023 5.12 / 37.83): instances, ports, nets,
+    /// variables, parameters, tasks/functions, type and class declarations,
+    /// and so on. A pure read on a frozen design — slang binds attributes
+    /// during elaboration, which the freeze sweep forces. Mirrors
+    /// `slang::ast::Compilation::getAttributes(const Symbol&)`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n  (* keep, depth = 3 *) logic x;\nendmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let attrs: Vec<_> = body.find("x").unwrap().attributes().collect();
+    /// assert_eq!(attrs.len(), 2);
+    /// assert_eq!(attrs[0].name(), "keep");
+    /// assert_eq!(attrs[0].attribute_value().unwrap().as_i64(), Some(1)); // bare = 1
+    /// assert_eq!(attrs[1].name(), "depth");
+    /// assert_eq!(attrs[1].attribute_value().unwrap().as_i64(), Some(3));
+    /// # Ok(()) }
+    /// ```
+    pub fn attributes(&self) -> impl Iterator<Item = Symbol<'d>> {
+        ast_attributes(self.raw)
     }
 
     /// For a `CheckerInstanceBody` symbol: the CheckerInstance symbol this
@@ -16737,6 +16801,15 @@ impl<'d> Expression<'d> {
         ExpressionKind::from_raw(self.raw.kind as u16).unwrap_or(ExpressionKind::Invalid)
     }
 
+    /// The `(* name = value *)` attribute instances attached to this
+    /// expression, each an `AttributeSymbol` (read via [`Symbol::name`] and
+    /// [`Symbol::attribute_value`]). Empty if it has none. A pure read on a
+    /// frozen design. Mirrors
+    /// `slang::ast::Compilation::getAttributes(const Expression&)`.
+    pub fn attributes(&self) -> impl Iterator<Item = Symbol<'d>> {
+        ast_attributes(self.raw)
+    }
+
     /// The type of the expression.
     ///
     /// # Examples
@@ -20783,6 +20856,15 @@ impl<'d> Statement<'d> {
     pub fn kind(&self) -> sv_lang_kinds::StatementKind {
         sv_lang_kinds::StatementKind::from_raw(self.raw.kind as u16)
             .unwrap_or(sv_lang_kinds::StatementKind::Invalid)
+    }
+
+    /// The `(* name = value *)` attribute instances attached to this statement,
+    /// each an `AttributeSymbol` (read via [`Symbol::name`] and
+    /// [`Symbol::attribute_value`]). Empty if it has none. A pure read on a
+    /// frozen design. Mirrors
+    /// `slang::ast::Compilation::getAttributes(const Statement&)`.
+    pub fn attributes(&self) -> impl Iterator<Item = Symbol<'d>> {
+        ast_attributes(self.raw)
     }
 
     /// The immediate semantic children (sub-statements, condition/loop

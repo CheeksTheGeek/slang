@@ -334,6 +334,13 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | Vi
                 t.getPathSource();
                 t.getPathDest();
             }
+            // DefParamSymbol resolves its target + initializer lazily (mutable
+            // `target`/`initializer`, set by resolve() on first read and used to
+            // fold the value); force it here so slang_symbol_defparam_target /
+            // _initializer / _value are pure reads on the frozen, shared &Design.
+            if constexpr (std::is_same_v<T, DefParamSymbol>) {
+                t.getInitializer();
+            }
             // Preemptively force the remaining lazily-resolved memos that no
             // current C accessor reaches but a future one might, so the
             // `Design: Sync` guarantee no longer rests on the accessor surface
@@ -2585,6 +2592,27 @@ slang_ast slang_expression_invalid_child(slang_ast expr) {
         auto child = e->as<InvalidExpression>().child;
         return child ? wrapAst(*child, expr.compilation)
                      : noAst(expr.compilation, SLANG_AST_EXPRESSION);
+    });
+}
+
+// ---- defparam ---------------------------------------------------------------
+
+slang_ast slang_symbol_defparam_target(slang_ast sym) {
+    SLANG_C_ACCESS(noAst(sym.compilation), {
+        auto s = symbolOf(sym);
+        if (!s || s->kind != SymbolKind::DefParam)
+            return noAst(sym.compilation);
+        auto target = s->as<DefParamSymbol>().getTarget();
+        return target ? wrapAst(*target, sym.compilation) : noAst(sym.compilation);
+    });
+}
+
+slang_ast slang_symbol_defparam_initializer(slang_ast sym) {
+    SLANG_C_ACCESS(noAst(sym.compilation, SLANG_AST_EXPRESSION), {
+        auto s = symbolOf(sym);
+        if (!s || s->kind != SymbolKind::DefParam)
+            return noAst(sym.compilation, SLANG_AST_EXPRESSION);
+        return wrapAst(s->as<DefParamSymbol>().getInitializer(), sym.compilation);
     });
 }
 

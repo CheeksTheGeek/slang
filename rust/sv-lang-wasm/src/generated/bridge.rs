@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1030 functions generated, 48 skipped (callbacks / struct out-params).
+//! is written on top. 1032 functions generated, 48 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -3681,6 +3681,42 @@ impl Slang {
             &[Val::I32(__sret as i32), Val::I32(__p_expr as i32)],
         );
         self.free(__p_expr);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_symbol_defparam_target`.
+    pub fn raw_slang_symbol_defparam_target(&mut self, sym: &[u8]) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_sym = self.malloc(16)?;
+        self.write(__p_sym, &sym[..16])?;
+        let __r = self.call(
+            "slang_symbol_defparam_target",
+            &[Val::I32(__sret as i32), Val::I32(__p_sym as i32)],
+        );
+        self.free(__p_sym);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_symbol_defparam_initializer`.
+    pub fn raw_slang_symbol_defparam_initializer(&mut self, sym: &[u8]) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_sym = self.malloc(16)?;
+        self.write(__p_sym, &sym[..16])?;
+        let __r = self.call(
+            "slang_symbol_defparam_initializer",
+            &[Val::I32(__sret as i32), Val::I32(__p_sym as i32)],
+        );
+        self.free(__p_sym);
         __r?;
         let mut __w = Vec::with_capacity(4);
         for __i in 0..4 {

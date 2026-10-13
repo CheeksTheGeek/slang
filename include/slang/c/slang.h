@@ -1956,6 +1956,19 @@ SLANG_C_API slang_ast slang_statement_invalid_child(slang_ast stmt);
 /// sweep descends into this child. history: since 1.6.
 SLANG_C_API slang_ast slang_expression_invalid_child(slang_ast expr);
 
+/// For a DefParam symbol: the Parameter symbol it overrides
+/// (slang::ast::DefParamSymbol::getTarget), as a node of domain
+/// SLANG_AST_SYMBOL. A null node if `sym` is not a DefParam or the target did
+/// not resolve. Forced by the freeze sweep, so a pure read. history: since 1.6.
+SLANG_C_API slang_ast slang_symbol_defparam_target(slang_ast sym);
+
+/// For a DefParam symbol: its right-hand-side value expression
+/// (slang::ast::DefParamSymbol::getInitializer), as a node of domain
+/// SLANG_AST_EXPRESSION; use slang_expression_constant_value for the folded
+/// value (equivalently DefParamSymbol::getValue). A null node if `sym` is not a
+/// DefParam. Forced by the freeze sweep, so a pure read. history: since 1.6.
+SLANG_C_API slang_ast slang_symbol_defparam_initializer(slang_ast sym);
+
 /// For an InstanceBody symbol: the InstanceSymbol that owns it, as a node of
 /// domain SLANG_AST_SYMBOL; a null node if it has none (e.g. a body created
 /// for a virtual-interface placeholder or a default-instantiated definition

@@ -1769,6 +1769,8 @@ unsafe extern "C" {
     pub fn slang_ast_attribute_at(node: slang_ast, index: u32) -> slang_ast;
     pub fn slang_statement_invalid_child(stmt: slang_ast) -> slang_ast;
     pub fn slang_expression_invalid_child(expr: slang_ast) -> slang_ast;
+    pub fn slang_symbol_defparam_target(sym: slang_ast) -> slang_ast;
+    pub fn slang_symbol_defparam_initializer(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_instance_body_parent_instance(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_instance_body_definition(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_instance_body_port_count(sym: slang_ast) -> u32;

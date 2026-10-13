@@ -7348,6 +7348,53 @@ impl<'d> Symbol<'d> {
         result
     }
 
+    /// For a `DefParam` symbol (a `defparam` directive), the `Parameter` symbol
+    /// it overrides (`slang::ast::DefParamSymbol::getTarget`). `None` for any
+    /// other symbol kind, or if the target did not resolve. A pure read on a
+    /// frozen design (the defparam's target/initializer are forced by the
+    /// freeze sweep).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source(
+    ///     "module inner; parameter W = 1; endmodule\n\
+    ///      module top;\n  inner u();\n  defparam u.W = 7;\nendmodule\n",
+    /// )?;
+    /// let d = comp.compile()?;
+    /// let top = d.top_instances().next().unwrap().instance_body().unwrap();
+    /// let dp = top.members().find(|s| s.kind() == SymbolKind::DefParam).unwrap();
+    /// assert_eq!(dp.defparam_target().unwrap().name(), "W");
+    /// assert_eq!(dp.defparam_value().unwrap().as_i64(), Some(7));
+    /// # Ok(()) }
+    /// ```
+    pub fn defparam_target(&self) -> Option<Symbol<'d>> {
+        // SAFETY: the symbol is valid; the target is forced by the freeze sweep.
+        let ast = unsafe { sys::slang_symbol_defparam_target(self.raw) };
+        wrap(ast)
+    }
+
+    /// For a `DefParam` symbol, its right-hand-side value expression
+    /// (`slang::ast::DefParamSymbol::getInitializer`). `None` for any other
+    /// symbol kind. A pure read on a frozen design.
+    pub fn defparam_initializer(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; the initializer is forced by the sweep.
+        let ast = unsafe { sys::slang_symbol_defparam_initializer(self.raw) };
+        wrap(ast)
+    }
+
+    /// For a `DefParam` symbol, its overriding value as a structured
+    /// [`ConstantValue`](crate::ConstantValue) (`slang::ast::DefParamSymbol::
+    /// getValue`) — the folded constant of its [`defparam_initializer`]. `None`
+    /// for any other symbol kind, or an unfoldable value. A pure read on a
+    /// frozen design.
+    pub fn defparam_value(&self) -> Option<crate::ConstantValue> {
+        self.defparam_initializer()?.constant_value()
+    }
+
     /// True if `self` (a `Parameter` or `TypeParameter` symbol) is a
     /// `localparam`. False for any other symbol kind, or a non-local
     /// parameter. A direct field read

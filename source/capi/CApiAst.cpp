@@ -272,7 +272,15 @@ namespace {
 
 // The freeze sweep: visits every reachable AST node, forcing lazy elaboration
 // along the way, and optionally constant-folds every expression it meets.
-struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood> {
+// AllGood | Bad: the Bad flag is required so the visitor actually dispatches
+// invalid nodes to handle() (without it, ASTVisitor::visit returns early on
+// t.bad() and the InvalidStatement/InvalidExpression overloads below are dead
+// code). This makes the freeze sweep descend into invalid subtrees — reachable
+// from a frozen &Design via slang_statement_invalid_child / the
+// sem_child_all collector — so their memos are forced pre-seal. `bad()` is
+// kind==Invalid for both statements and expressions, so the only nodes this
+// newly reaches are Invalid* ones, which the overloads handle explicitly.
+struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | VisitFlags::Bad> {
     slang_freeze_report& report;
     bool prefold;
     const Scope* currentScope = nullptr;
@@ -600,6 +608,26 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood> {
         else {
             visitDefault(t);
         }
+    }
+
+    // VisitFlags::AllGood skips bad nodes, so the wrapped child of an invalid
+    // node (e.g. a ConditionalStatement demoted to InvalidStatement because one
+    // statically-dead arm was bad) is never reached by the default traversal.
+    // slang_statement_invalid_child / slang_expression_invalid_child expose
+    // that child for reading, so we MUST descend into it here and force its
+    // subtree's memos pre-seal — otherwise a read accessor into the dead arm
+    // could hit an unforced canonical type and race on a shared &Design.
+    void handle(const InvalidStatement& t) {
+        if (t.child)
+            t.child->visit(*this);
+    }
+
+    void handle(const InvalidExpression& t) {
+        // Force this node's own type canonical, as the generic Expression path
+        // does (type is not_null), then descend into the wrapped child.
+        t.type->getCanonicalType();
+        if (t.child)
+            t.child->visit(*this);
     }
 
     void fold(const Expression& expr) {
@@ -2536,6 +2564,30 @@ slang_ast slang_ast_attribute_at(slang_ast node, uint32_t index) {
     });
 }
 
+// ---- Invalid-node children --------------------------------------------------
+
+slang_ast slang_statement_invalid_child(slang_ast stmt) {
+    SLANG_C_ACCESS(noAst(stmt.compilation, SLANG_AST_STATEMENT), {
+        auto s = stmtOf(stmt);
+        if (!s || s->kind != StatementKind::Invalid)
+            return noAst(stmt.compilation, SLANG_AST_STATEMENT);
+        auto child = s->as<InvalidStatement>().child;
+        return child ? wrapAst(*child, stmt.compilation)
+                     : noAst(stmt.compilation, SLANG_AST_STATEMENT);
+    });
+}
+
+slang_ast slang_expression_invalid_child(slang_ast expr) {
+    SLANG_C_ACCESS(noAst(expr.compilation, SLANG_AST_EXPRESSION), {
+        auto e = exprOf(expr);
+        if (!e || e->kind != ExpressionKind::Invalid)
+            return noAst(expr.compilation, SLANG_AST_EXPRESSION);
+        auto child = e->as<InvalidExpression>().child;
+        return child ? wrapAst(*child, expr.compilation)
+                     : noAst(expr.compilation, SLANG_AST_EXPRESSION);
+    });
+}
+
 slang_ast slang_symbol_instance_body_parent_instance(slang_ast sym) {
     SLANG_C_ACCESS(noAst(sym.compilation), {
         auto s = symbolOf(sym);
@@ -3887,19 +3939,24 @@ namespace {
 // node's own visit(): the root is seen at depth 0 (where we descend exactly one
 // level via visitDefault) and each direct child at depth 1 (where we record it
 // without recursing further).
-struct SemChildCollector : ASTVisitor<SemChildCollector, VisitFlags::AllGood> {
+// Templated on the visit flags: the default (AllGood) collector skips bad
+// children; the AllGood|Bad instantiation additionally yields Invalid nodes
+// (slang_ast_sem_child_all) so a consumer can cross into a statically-dead /
+// failed subtree and then unwrap it with slang_statement_invalid_child.
+template<VisitFlags Flags>
+struct SemChildCollectorT : ASTVisitor<SemChildCollectorT<Flags>, Flags> {
     slang_compilation comp;
     std::vector<slang_ast>& out;
     int depth = 0;
 
-    SemChildCollector(slang_compilation comp, std::vector<slang_ast>& out) :
+    SemChildCollectorT(slang_compilation comp, std::vector<slang_ast>& out) :
         comp(comp), out(out) {}
 
     template<typename T>
     void handle(const T& t) {
         if (depth == 0) {
             depth++;
-            visitDefault(t);
+            this->visitDefault(t);
             depth--;
         }
         else {
@@ -3908,11 +3965,12 @@ struct SemChildCollector : ASTVisitor<SemChildCollector, VisitFlags::AllGood> {
     }
 };
 
-std::vector<slang_ast> collectSemChildren(slang_ast node) {
+template<VisitFlags Flags>
+std::vector<slang_ast> collectSemChildrenT(slang_ast node) {
     std::vector<slang_ast> out;
     if (!node.ptr)
         return out;
-    SemChildCollector c(node.compilation, out);
+    SemChildCollectorT<Flags> c(node.compilation, out);
     switch ((slang_ast_domain)node.domain) {
         case SLANG_AST_SYMBOL:
             static_cast<const Symbol*>(node.ptr)->visit(c);
@@ -3942,6 +4000,14 @@ std::vector<slang_ast> collectSemChildren(slang_ast node) {
     return out;
 }
 
+std::vector<slang_ast> collectSemChildren(slang_ast node) {
+    return collectSemChildrenT<VisitFlags::AllGood>(node);
+}
+
+std::vector<slang_ast> collectSemChildrenAll(slang_ast node) {
+    return collectSemChildrenT<VisitFlags::AllGood | VisitFlags::Bad>(node);
+}
+
 } // namespace
 
 slang_ast slang_symbol_body(slang_ast sym_node) {
@@ -3967,6 +4033,19 @@ uint32_t slang_ast_sem_child_count(slang_ast node) {
 slang_ast slang_ast_sem_child(slang_ast node, uint32_t index) {
     SLANG_C_ACCESS(noAst(node.compilation), {
         auto children = collectSemChildren(node);
+        if (index >= children.size())
+            return noAst(node.compilation);
+        return children[index];
+    });
+}
+
+uint32_t slang_ast_sem_child_all_count(slang_ast node) {
+    SLANG_C_ACCESS(0u, { return (uint32_t)collectSemChildrenAll(node).size(); });
+}
+
+slang_ast slang_ast_sem_child_all(slang_ast node, uint32_t index) {
+    SLANG_C_ACCESS(noAst(node.compilation), {
+        auto children = collectSemChildrenAll(node);
         if (index >= children.size())
             return noAst(node.compilation);
         return children[index];

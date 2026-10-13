@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1026 functions generated, 48 skipped (callbacks / struct out-params).
+//! is written on top. 1030 functions generated, 48 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -3645,6 +3645,42 @@ impl Slang {
             ],
         );
         self.free(__p_node);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_statement_invalid_child`.
+    pub fn raw_slang_statement_invalid_child(&mut self, stmt: &[u8]) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_stmt = self.malloc(16)?;
+        self.write(__p_stmt, &stmt[..16])?;
+        let __r = self.call(
+            "slang_statement_invalid_child",
+            &[Val::I32(__sret as i32), Val::I32(__p_stmt as i32)],
+        );
+        self.free(__p_stmt);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_expression_invalid_child`.
+    pub fn raw_slang_expression_invalid_child(&mut self, expr: &[u8]) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_expr = self.malloc(16)?;
+        self.write(__p_expr, &expr[..16])?;
+        let __r = self.call(
+            "slang_expression_invalid_child",
+            &[Val::I32(__sret as i32), Val::I32(__p_expr as i32)],
+        );
+        self.free(__p_expr);
         __r?;
         let mut __w = Vec::with_capacity(4);
         for __i in 0..4 {
@@ -9153,6 +9189,47 @@ impl Slang {
         self.write(__p_node, &node[..16])?;
         let __r = self.call(
             "slang_ast_sem_child",
+            &[
+                Val::I32(__sret as i32),
+                Val::I32(__p_node as i32),
+                Val::I32(index as i32),
+            ],
+        );
+        self.free(__p_node);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_ast_sem_child_all_count`.
+    pub fn raw_slang_ast_sem_child_all_count(&mut self, node: &[u8]) -> Result<u32, Error> {
+        let __p_node = self.malloc(16)?;
+        self.write(__p_node, &node[..16])?;
+        let __r = self.call(
+            "slang_ast_sem_child_all_count",
+            &[Val::I32(__p_node as i32)],
+        );
+        self.free(__p_node);
+        let __v = __r?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_ast_sem_child_all`.
+    pub fn raw_slang_ast_sem_child_all(
+        &mut self,
+        node: &[u8],
+        index: u32,
+    ) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_node = self.malloc(16)?;
+        self.write(__p_node, &node[..16])?;
+        let __r = self.call(
+            "slang_ast_sem_child_all",
             &[
                 Val::I32(__sret as i32),
                 Val::I32(__p_node as i32),

@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 5
+#define SLANG_C_VERSION_MINOR 6
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -1940,6 +1940,21 @@ SLANG_C_API uint32_t slang_ast_attribute_count(slang_ast node);
 /// slang_symbol_attribute_value. A null node if `index` is out of range or the
 /// node carries no attributes. history: since 1.5.
 SLANG_C_API slang_ast slang_ast_attribute_at(slang_ast node, uint32_t index);
+
+/// The wrapped child of an Invalid statement (slang::ast::InvalidStatement::
+/// child) — the real statement that was demoted to Invalid because a part of it
+/// (often a statically-dead if/case arm) failed to bind. Lets a consumer
+/// recover and walk the surviving statement (e.g. a ConditionalStatement whose
+/// live arm is fine). A null node if `stmt` is not an Invalid statement or has
+/// no child. The freeze sweep descends into this child, so reading into it is a
+/// pure, race-free read on a frozen design. history: since 1.6.
+SLANG_C_API slang_ast slang_statement_invalid_child(slang_ast stmt);
+
+/// The wrapped child of an Invalid expression (slang::ast::InvalidExpression::
+/// child), the expression analogue of slang_statement_invalid_child. A null
+/// node if `expr` is not an Invalid expression or has no child. The freeze
+/// sweep descends into this child. history: since 1.6.
+SLANG_C_API slang_ast slang_expression_invalid_child(slang_ast expr);
 
 /// For an InstanceBody symbol: the InstanceSymbol that owns it, as a node of
 /// domain SLANG_AST_SYMBOL; a null node if it has none (e.g. a body created
@@ -4522,6 +4537,19 @@ SLANG_C_API slang_ast slang_ast_sem_child(slang_ast node, uint32_t index);
 /// children once, so enumerating an N-child node is O(N) rather than the
 /// O(N^2) of calling slang_ast_sem_child in a loop. history: since 1.2.
 SLANG_C_API uint32_t slang_ast_sem_children(slang_ast node, slang_ast* out, uint32_t cap);
+
+/// Like slang_ast_sem_child_count, but also counts semantic children that are
+/// Invalid nodes (which the default enumeration skips). history: since 1.6.
+SLANG_C_API uint32_t slang_ast_sem_child_all_count(slang_ast node);
+
+/// The i'th immediate semantic child of `node` INCLUDING Invalid children — the
+/// opt-in counterpart of slang_ast_sem_child. Lets a consumer cross into a
+/// statically-dead or otherwise failed subtree (e.g. the bad arm of a
+/// conditional demoted to InvalidStatement), which it then unwraps with
+/// slang_statement_invalid_child / slang_expression_invalid_child. The freeze
+/// sweep forces these subtrees, so reading into them is race-free on a frozen
+/// design. Returns a null ast if out of range. history: since 1.6.
+SLANG_C_API slang_ast slang_ast_sem_child_all(slang_ast node, uint32_t index);
 
 /// The BinaryOperator of a BinaryOp expression, as its enum ordinal (0 for a
 /// non-binary node). Ordinals follow slang's BinaryOperator enum.

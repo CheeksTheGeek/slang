@@ -16810,6 +16810,20 @@ impl<'d> Expression<'d> {
         ast_attributes(self.raw)
     }
 
+    /// For an `Invalid` expression, the real expression it wraps
+    /// (`slang::ast::InvalidExpression::child`) — the expression analogue of
+    /// [`Statement::invalid_child`](Statement::invalid_child). `None` for any
+    /// non-`Invalid` expression, or an `Invalid` with no child. **Opt-in**:
+    /// [`operands`](Self::operands) and the visitors do not descend into it. The
+    /// freeze sweep forces this subtree, so it is a pure read on a frozen
+    /// design. Mirrors `slang::ast::InvalidExpression::child`.
+    pub fn invalid_child(&self) -> Option<Expression<'d>> {
+        // SAFETY: the expression is valid; the child is forced by the freeze
+        // sweep, so this is a pure read.
+        let ast = unsafe { sys::slang_expression_invalid_child(self.raw) };
+        wrap(ast)
+    }
+
     /// The type of the expression.
     ///
     /// # Examples
@@ -18311,6 +18325,14 @@ impl<'d> Expression<'d> {
     /// ```
     pub fn children(&self) -> Vec<SemNode<'d>> {
         sem_children(self.raw)
+    }
+
+    /// Like [`children`](Self::children) but also includes `Invalid` child
+    /// nodes, which `children` skips. Use when crossing into a failed subtree
+    /// (then [`invalid_child`](Self::invalid_child) to unwrap). Opt-in; a pure
+    /// read on a frozen design.
+    pub fn children_with_invalid(&self) -> Vec<SemNode<'d>> {
+        sem_children_all(self.raw)
     }
 
     /// This expression as a generic [`SemNode`] (for uniform tree walking).
@@ -20408,6 +20430,17 @@ fn sem_children<'d>(raw: sys::slang_ast) -> Vec<SemNode<'d>> {
     }
 }
 
+/// The opt-in counterpart of [`sem_children`]: the immediate semantic children
+/// INCLUDING `Invalid` nodes (which [`sem_children`] skips). Invalid children
+/// are rare, so the simple count-then-index form is used despite being O(N²).
+fn sem_children_all<'d>(raw: sys::slang_ast) -> Vec<SemNode<'d>> {
+    // SAFETY: `raw` is a valid node of this design; the count bounds the index.
+    let count = unsafe { sys::slang_ast_sem_child_all_count(raw) };
+    (0..count)
+        .filter_map(|i| wrap::<SemNode>(unsafe { sys::slang_ast_sem_child_all(raw, i) }))
+        .collect()
+}
+
 /// A node in the elaborated *behavioral* tree — a statement, an expression, or
 /// another AST node (timing control, constraint, pattern, ...). Obtained from
 /// [`Statement::children`], [`Expression::children`], or [`Symbol::body`].
@@ -20551,6 +20584,14 @@ impl<'d> SemNode<'d> {
     /// ```
     pub fn children(&self) -> Vec<SemNode<'d>> {
         sem_children(self.raw)
+    }
+
+    /// Like [`children`](Self::children) but also includes `Invalid` child
+    /// nodes, which `children` skips. Walk with this and unwrap each `Invalid`
+    /// via [`Statement::invalid_child`]/[`Expression::invalid_child`] to recover
+    /// statically-dead subtrees. Opt-in; a pure read on a frozen design.
+    pub fn children_with_invalid(&self) -> Vec<SemNode<'d>> {
+        sem_children_all(self.raw)
     }
 }
 
@@ -20867,6 +20908,53 @@ impl<'d> Statement<'d> {
         ast_attributes(self.raw)
     }
 
+    /// For an `Invalid` statement, the real statement it wraps
+    /// (`slang::ast::InvalidStatement::child`) — the statement that was demoted
+    /// to `Invalid` because a part of it failed to bind, most commonly a
+    /// statically-dead `if`/`case` arm (e.g. `y[i +: CL]` with `CL = 0` in an
+    /// arm that is never taken). The surviving statement (e.g. a
+    /// `ConditionalStatement` whose live arm is fine) can then be walked and its
+    /// constant-folded live arm lowered.
+    ///
+    /// `None` for any non-`Invalid` statement, or an `Invalid` with no child.
+    /// This is **opt-in**: [`children`](Self::children) and the visitors do not
+    /// descend into it, so existing traversals are unchanged. The freeze sweep
+    /// *does* force this subtree's memos, so it is a pure read on a frozen
+    /// design. Mirrors `slang::ast::InvalidStatement::child`.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{StatementKind, SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// // CL = 0, so the `if (CL)` arm (with the `+: 0` select) is statically dead
+    /// // and the whole always_comb body is demoted to Invalid.
+    /// comp.add_source(
+    ///     "module m #(parameter CL = 0)(input logic [7:0] y, output logic [7:0] x);\n\
+    ///        logic [7:0] q;\n\
+    ///        always_comb begin if (CL) q = y[0 +: CL]; else q = y; end\n\
+    ///        assign x = q;\n\
+    ///      endmodule\n",
+    /// )?;
+    /// let d = comp.compile()?;
+    /// let body = d.top_instances().next().unwrap().instance_body().unwrap();
+    /// let proc = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = proc.body().unwrap();
+    /// assert_eq!(stmt.kind(), StatementKind::Invalid);
+    /// // The real always_comb block is recoverable through invalid_child();
+    /// // the conditional (and its live arm) is reachable by walking it.
+    /// let inner = stmt.invalid_child().unwrap();
+    /// assert_eq!(inner.kind(), StatementKind::Block);
+    /// # Ok(()) }
+    /// ```
+    pub fn invalid_child(&self) -> Option<Statement<'d>> {
+        // SAFETY: the statement is valid; the child is forced by the freeze
+        // sweep, so this is a pure read.
+        let ast = unsafe { sys::slang_statement_invalid_child(self.raw) };
+        wrap(ast)
+    }
+
     /// The immediate semantic children (sub-statements, condition/loop
     /// expressions, timing controls), in slang's own order.
     ///
@@ -20887,6 +20975,15 @@ impl<'d> Statement<'d> {
     /// ```
     pub fn children(&self) -> Vec<SemNode<'d>> {
         sem_children(self.raw)
+    }
+
+    /// Like [`children`](Self::children) but also includes `Invalid` child
+    /// nodes, which `children` skips — the key path for recovering a
+    /// statically-dead if/case arm that was demoted to `Invalid`: walk with
+    /// this, then [`invalid_child`](Self::invalid_child) to unwrap. Opt-in; a
+    /// pure read on a frozen design.
+    pub fn children_with_invalid(&self) -> Vec<SemNode<'d>> {
+        sem_children_all(self.raw)
     }
 
     /// The immediate child statements (e.g. the branches of an `if`, a loop

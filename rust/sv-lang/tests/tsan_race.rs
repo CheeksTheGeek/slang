@@ -36,6 +36,14 @@ module m;
     byte_t a; word_t b; arr_t c; e_t e;
     myreal nt;
     localparam int Q = P + 1;
+    localparam int CL = 0;
+    // A statically-dead arm (CL == 0): `a[7:8-CL]` is a reversed select that is
+    // suppressed because the arm is never taken, so the whole always_comb body
+    // is demoted to InvalidStatement. The freeze sweep (VisitFlags::Bad) must
+    // still force the dead arm's type memos; the hammer reaches them via
+    // children_with_invalid()/invalid_child(), so the totalized side must stay
+    // race-free here too.
+    always_comb begin if (CL) b = a[7:8-CL]; else b = a; end
     sub #(.W(5)) u (.i('0), .o());
     function automatic int g(int x);
         typedef logic [3:0] local_t;
@@ -68,15 +76,34 @@ fn walk_sem(n: SemNode<'_>) {
             e.operands(),
             e.expr_type(),
         );
+        // First-touch the canonical of a (possibly dead-arm) expression's type,
+        // the R-A1 race surface; the freeze sweep must have forced it.
+        if let Some(t) = e.expr_type() {
+            let _ = t.canonical();
+        }
+        if let Some(c) = e.invalid_child() {
+            walk_sem(c.as_sem_node());
+        }
     }
-    for c in n.children() {
+    if let Some(s) = n.as_statement()
+        && let Some(c) = s.invalid_child()
+    {
+        walk_sem(c.as_sem_node());
+    }
+    // children_with_invalid() crosses into statically-dead subtrees whose
+    // types/memos are reachable from a shared &Design — so the totalized side
+    // must stay race-free here too (the gate for the invalid_child fix).
+    for c in n.children_with_invalid() {
         walk_sem(c);
     }
 }
 
 fn walk_stmt(s: Statement<'_>) {
     let _ = s.kind();
-    for c in s.children() {
+    if let Some(c) = s.invalid_child() {
+        walk_sem(c.as_sem_node());
+    }
+    for c in s.children_with_invalid() {
         walk_sem(c);
     }
 }

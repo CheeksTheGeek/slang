@@ -8196,6 +8196,61 @@ impl<'d> Symbol<'d> {
         unsafe { sys::slang_symbol_assertion_port_is_local_var(self.raw) }
     }
 
+    /// For a `Sequence`, `Property`, or `LetDecl` declaration: its body bound
+    /// in the declaration's own scope, without needing an instantiation. For a
+    /// sequence or property this is an `AssertionInstance` expression whose
+    /// [`children`](Expression::children) yield the body
+    /// [`AssertionExpr`]; for a `let` it is the body expression itself.
+    /// Formals that have a default are bound to it in context; formals without
+    /// one are untyped placeholders. `None` for any other symbol.
+    ///
+    /// This mirrors `slang::ast::AssertionInstanceExpression::makeDefault`,
+    /// which slang runs during elaboration (to check uninstantiated
+    /// declarations) and discards; the freeze sweep keeps it, so this is a pure
+    /// read on a frozen design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::ExpressionKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source(
+    ///     "module m;\n\
+    ///        logic a, b;\n\
+    ///        sequence s(x = a); x ##1 b; endsequence\n\
+    ///        let twice(v = 4) = v * 2;\n\
+    ///      endmodule\n",
+    /// )?;
+    /// let d = comp.compile()?;
+    /// let body = d.top_instances().next().unwrap().instance_body().unwrap();
+    /// let seq = body.find("s").unwrap().bound_body().unwrap();
+    /// assert_eq!(seq.kind(), ExpressionKind::AssertionInstance);
+    /// assert!(seq.children()[0].as_assertion_expr().is_some()); // the body
+    /// let let_body = body.find("twice").unwrap().bound_body().unwrap();
+    /// assert_eq!(let_body.constant_value().unwrap().as_i64(), Some(8)); // v = 4
+    /// # Ok(()) }
+    /// ```
+    pub fn bound_body(&self) -> Option<Expression<'d>> {
+        // SAFETY: the symbol is valid; a lookup into the pre-seal side table.
+        wrap(unsafe { sys::slang_symbol_bound_body(self.raw) })
+    }
+
+    /// For an `AssertionPort` (a sequence / property / let / checker formal),
+    /// its default value as a syntax node in `tree`
+    /// (`slang::ast::AssertionPortSymbol::defaultValueSyntax`). The bound form,
+    /// in context, appears inside the owning declaration's
+    /// [`bound_body`](Self::bound_body). `None` if the formal has no default,
+    /// the symbol is not a formal, or the syntax is not in `tree`.
+    pub fn assertion_port_default_syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the symbol is valid.
+        let node = unsafe { sys::slang_symbol_assertion_port_default_syntax(self.raw) };
+        if node.ptr.is_null() || node.tree != tree.raw() {
+            return None;
+        }
+        Some(Node::from_raw_node(node))
+    }
+
     /// For an `Attribute` symbol (`(* name = expr *)`): its bound,
     /// constant-folded value. `None` on error (including a non-Attribute
     /// symbol, or a value that failed to fold). The underlying memo is

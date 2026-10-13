@@ -12,6 +12,7 @@
 #include <fmt/format.h>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "slang/analysis/AnalysisManager.h"
@@ -85,6 +86,14 @@ struct slang_compilation_t {
     slang_source_manager sm = nullptr;
     bool sealed = false;
     bool elaboratedAll = false;
+    // The default instance (slang::ast::AssertionInstanceExpression::makeDefault)
+    // of every sequence / property / let declaration: its body bound in the
+    // declaration's own scope with formals mapped to their defaults or
+    // placeholders. slang builds exactly this during elaboration but discards
+    // it; the freeze sweep rebuilds it pre-seal and keeps it here. Written only
+    // while unsealed (exclusive access), read-only afterward — so concurrent
+    // reads on a frozen &Design are plain const lookups.
+    std::unordered_map<const slang::ast::Symbol*, const slang::ast::Expression*> defaultInstances;
 
     explicit slang_compilation_t(const slang::Bag& options) :
         comp(std::make_shared<slang::ast::Compilation>(options)) {}

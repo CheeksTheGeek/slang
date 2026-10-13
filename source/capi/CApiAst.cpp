@@ -283,9 +283,11 @@ namespace {
 struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | VisitFlags::Bad> {
     slang_freeze_report& report;
     bool prefold;
+    slang_compilation owner;
     const Scope* currentScope = nullptr;
 
-    FreezeVisitor(slang_freeze_report& report, bool prefold) : report(report), prefold(prefold) {}
+    FreezeVisitor(slang_freeze_report& report, bool prefold, slang_compilation owner) :
+        report(report), prefold(prefold), owner(owner) {}
 
     template<typename T>
     void handle(const T& t) {
@@ -340,6 +342,23 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | Vi
             // _initializer / _value are pure reads on the frozen, shared &Design.
             if constexpr (std::is_same_v<T, DefParamSymbol>) {
                 t.getInitializer();
+            }
+            // Sequence / property / let declarations: build the default
+            // instance (body bound in the declaration's own scope, formals ->
+            // defaults or placeholders) that slang computes during elaboration
+            // but discards, and keep it in the compilation's side table for
+            // slang_symbol_bound_body. getAllDiagnostics() is already cached
+            // above and this is the very binding elaboration performed, so it
+            // adds no visible diagnostics. Then sweep the result like any other
+            // expression so its memos are forced before the seal.
+            if constexpr (std::is_same_v<T, SequenceSymbol> ||
+                          std::is_same_v<T, PropertySymbol> ||
+                          std::is_same_v<T, LetDeclSymbol>) {
+                if (owner && !owner->defaultInstances.contains(&t)) {
+                    auto& inst = AssertionInstanceExpression::makeDefault(t);
+                    owner->defaultInstances.emplace(&t, &inst);
+                    inst.visit(*this);
+                }
             }
             // Preemptively force the remaining lazily-resolved memos that no
             // current C accessor reaches but a future one might, so the
@@ -728,7 +747,7 @@ void slang_compilation_freeze(slang_compilation comp, uint32_t flags, slang_free
         comp->comp->getUnsignedIntType();
 
         if (flags & (SLANG_FREEZE_ELABORATE_ALL | SLANG_FREEZE_PREFOLD)) {
-            FreezeVisitor visitor(r, (flags & SLANG_FREEZE_PREFOLD) != 0);
+            FreezeVisitor visitor(r, (flags & SLANG_FREEZE_PREFOLD) != 0, comp);
             comp->comp->getRoot().visit(visitor);
             if (flags & SLANG_FREEZE_ELABORATE_ALL)
                 comp->elaboratedAll = true;
@@ -2696,6 +2715,35 @@ bool slang_symbol_parameter_is_from_genvar(slang_ast sym) {
     SLANG_C_ACCESS(false, {
         auto s = symbolOf(sym);
         return s && s->kind == SymbolKind::Parameter && s->as<ParameterSymbol>().isFromGenvar();
+    });
+}
+
+// ---- sequence / property / let bodies bound in their own scope -------------
+
+slang_ast slang_symbol_bound_body(slang_ast sym) {
+    SLANG_C_ACCESS(noAst(sym.compilation, SLANG_AST_EXPRESSION), {
+        auto s = symbolOf(sym);
+        if (!s || !sym.compilation)
+            return noAst(sym.compilation, SLANG_AST_EXPRESSION);
+        // A const lookup into the side table the freeze sweep filled pre-seal.
+        auto& table = sym.compilation->defaultInstances;
+        auto it = table.find(s);
+        if (it == table.end() || !it->second)
+            return noAst(sym.compilation, SLANG_AST_EXPRESSION);
+        return wrapAst(*it->second, sym.compilation);
+    });
+}
+
+slang_node slang_symbol_assertion_port_default_syntax(slang_ast sym) {
+    SLANG_C_ACCESS(noNode(nullptr), {
+        auto s = symbolOf(sym);
+        if (!s || !sym.compilation || s->kind != SymbolKind::AssertionPort)
+            return noNode(nullptr);
+        auto syn = s->as<AssertionPortSymbol>().defaultValueSyntax;
+        if (!syn)
+            return noNode(nullptr);
+        auto tree = findTree(sym.compilation, *syn);
+        return tree ? capi::toC(syn, tree) : noNode(nullptr);
     });
 }
 

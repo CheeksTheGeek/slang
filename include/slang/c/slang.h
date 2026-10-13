@@ -1978,6 +1978,23 @@ SLANG_C_API slang_ast slang_symbol_defparam_initializer(slang_ast sym);
 /// no default. history: since 1.6.
 SLANG_C_API slang_node slang_symbol_parameter_default_syntax(slang_ast sym);
 
+/// For a Sequence, Property, or LetDecl symbol: its body bound in the
+/// declaration's own scope, as a node of domain SLANG_AST_EXPRESSION — for a
+/// sequence/property an AssertionInstance expression whose semantic children
+/// are the body assertion expression; for a let, the body expression itself.
+/// Formals with a default are bound to it in context; formals without one are
+/// untyped placeholders (slang::ast::AssertionInstanceExpression::makeDefault).
+/// Built pre-seal by the freeze sweep, so a pure read. A null node for any
+/// other symbol. history: since 1.6.
+SLANG_C_API slang_ast slang_symbol_bound_body(slang_ast sym);
+
+/// For an AssertionPort symbol (a sequence/property/let/checker formal): its
+/// default value as CST (slang::ast::AssertionPortSymbol::defaultValueSyntax).
+/// Its bound form, in context, appears inside slang_symbol_bound_body of the
+/// owning declaration. A null node if the formal has no default. history: since
+/// 1.6.
+SLANG_C_API slang_node slang_symbol_assertion_port_default_syntax(slang_ast sym);
+
 /// How a parameter's value/type was supplied (VPI vpiConnByName and friends).
 typedef enum slang_param_assignment {
     /// Not overridden: the declaration's own default applies.

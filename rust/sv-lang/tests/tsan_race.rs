@@ -44,6 +44,10 @@ module m;
     // children_with_invalid()/invalid_child(), so the totalized side must stay
     // race-free here too.
     always_comb begin if (CL) b = a[7:8-CL]; else b = a; end
+    // Declaration bodies bound in their own scope (bound_body): built pre-seal
+    // into a side table and swept, so concurrent reads must stay race-free.
+    sequence sq(x = a[0]); x ##1 a[1]; endsequence
+    let lt(v = 3) = v + Q;
     sub #(.W(5)) u (.i('0), .o());
     function automatic int g(int x);
         typedef logic [3:0] local_t;
@@ -136,6 +140,9 @@ fn touch_all(design: &Design) {
             }
             if let Some(root) = m.body() {
                 walk_stmt(root);
+            }
+            if let Some(bb) = m.bound_body() {
+                walk_sem(bb.as_sem_node());
             }
             for p in m.parameters() {
                 let _ = p.parameter_value();

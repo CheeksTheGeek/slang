@@ -1776,6 +1776,8 @@ unsafe extern "C" {
     pub fn slang_expression_invalid_child(expr: slang_ast) -> slang_ast;
     pub fn slang_symbol_defparam_target(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_defparam_initializer(sym: slang_ast) -> slang_ast;
+    pub fn slang_symbol_bound_body(sym: slang_ast) -> slang_ast;
+    pub fn slang_symbol_assertion_port_default_syntax(sym: slang_ast) -> slang_node;
     pub fn slang_symbol_parameter_assignment(sym: slang_ast) -> u32;
     pub fn slang_symbol_parameter_is_from_genvar(sym: slang_ast) -> bool;
     pub fn slang_symbol_parameter_default_syntax(sym: slang_ast) -> slang_node;

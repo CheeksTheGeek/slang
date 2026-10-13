@@ -7493,8 +7493,9 @@ impl<'d> Symbol<'d> {
     }
 
     /// For a `DefParam` symbol, its overriding value as a structured
-    /// [`ConstantValue`](crate::ConstantValue) (`slang::ast::DefParamSymbol::
-    /// getValue`) — the folded constant of its [`defparam_initializer`]. `None`
+    /// [`ConstantValue`](crate::ConstantValue)
+    /// (`slang::ast::DefParamSymbol::getValue`) — the folded constant of its
+    /// [`defparam_initializer`](Self::defparam_initializer). `None`
     /// for any other symbol kind, or an unfoldable value. A pure read on a
     /// frozen design.
     pub fn defparam_value(&self) -> Option<crate::ConstantValue> {
@@ -20796,7 +20797,10 @@ fn sem_children_all<'d>(raw: sys::slang_ast) -> Vec<SemNode<'d>> {
     // SAFETY: `raw` is a valid node of this design; the count bounds the index.
     let count = unsafe { sys::slang_ast_sem_child_all_count(raw) };
     (0..count)
-        .filter_map(|i| wrap::<SemNode>(unsafe { sys::slang_ast_sem_child_all(raw, i) }))
+        .filter_map(|i| {
+            // SAFETY: `raw` is valid and `i < count`; a null node maps to None.
+            wrap::<SemNode>(unsafe { sys::slang_ast_sem_child_all(raw, i) })
+        })
         .collect()
 }
 

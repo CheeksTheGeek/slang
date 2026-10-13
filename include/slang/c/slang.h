@@ -1969,6 +1969,40 @@ SLANG_C_API slang_ast slang_symbol_defparam_target(slang_ast sym);
 /// DefParam. Forced by the freeze sweep, so a pure read. history: since 1.6.
 SLANG_C_API slang_ast slang_symbol_defparam_initializer(slang_ast sym);
 
+/// The declaration's own default for a Parameter (the declarator's initializer
+/// expression) or TypeParameter (the default type), as CST — present even when
+/// an override replaced the applied value. slang deliberately never binds an
+/// overridden default (it may depend on other, conflictingly-overridden
+/// parameters), so it is exposed as syntax only; for a non-overridden parameter
+/// the bound initializer/type already is the default. A null node if there is
+/// no default. history: since 1.6.
+SLANG_C_API slang_node slang_symbol_parameter_default_syntax(slang_ast sym);
+
+/// How a parameter's value/type was supplied (VPI vpiConnByName and friends).
+typedef enum slang_param_assignment {
+    /// Not overridden: the declaration's own default applies.
+    SLANG_PARAM_ASSIGN_NONE = 0,
+    /// Supplied positionally by the instantiation's #(...) list.
+    SLANG_PARAM_ASSIGN_ORDERED = 1,
+    /// Supplied by name, `#(.NAME(...))`.
+    SLANG_PARAM_ASSIGN_NAMED = 2,
+    /// Supplied by a config block (value parameters only).
+    SLANG_PARAM_ASSIGN_CONFIG = 3,
+} slang_param_assignment;
+
+/// For a Parameter or TypeParameter in an instance body: how its applied
+/// value/type was supplied (a slang_param_assignment). SLANG_PARAM_ASSIGN_NONE
+/// for a non-overridden parameter or any other symbol. The applied value is the
+/// symbol's initializer/constant (or, for a type parameter, its type); the
+/// declared default is slang_symbol_parameter_default_syntax. Pure syntax and
+/// flag reads. history: since 1.6.
+SLANG_C_API uint32_t slang_symbol_parameter_assignment(slang_ast sym);
+
+/// True if a Parameter is the implicit localparam slang creates for a
+/// generate-loop genvar inside each generated block
+/// (slang::ast::ParameterSymbol::isFromGenvar). history: since 1.6.
+SLANG_C_API bool slang_symbol_parameter_is_from_genvar(slang_ast sym);
+
 /// For an InstanceBody symbol: the InstanceSymbol that owns it, as a node of
 /// domain SLANG_AST_SYMBOL; a null node if it has none (e.g. a body created
 /// for a virtual-interface placeholder or a default-instantiated definition

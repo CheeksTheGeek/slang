@@ -163,6 +163,61 @@ impl BuiltinType {
     }
 }
 
+/// How a parameter's applied value (or type) was supplied — see
+/// [`Symbol::parameter_assignment`]. Maps onto VPI's `vpiConnByName`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ParameterAssignment {
+    /// Not overridden: the declaration's own default applies.
+    None,
+    /// Supplied positionally by the instantiation's `#(...)` list.
+    Ordered,
+    /// Supplied by name, `#(.NAME(...))`.
+    Named,
+    /// Supplied by a `config` block (value parameters only).
+    Config,
+}
+
+impl ParameterAssignment {
+    fn from_raw(raw: u32) -> Self {
+        match raw {
+            sys::SLANG_PARAM_ASSIGN_ORDERED => ParameterAssignment::Ordered,
+            sys::SLANG_PARAM_ASSIGN_NAMED => ParameterAssignment::Named,
+            sys::SLANG_PARAM_ASSIGN_CONFIG => ParameterAssignment::Config,
+            _ => ParameterAssignment::None,
+        }
+    }
+}
+
+/// One `#(...)` parameter override applied to an instance — see
+/// [`Symbol::instance_parameter_overrides`]. The applied value is read off the
+/// overridden [`parameter`](Self::parameter) symbol itself.
+#[derive(Clone, Copy, Debug)]
+pub struct ParameterOverride<'d> {
+    /// The overridden `Parameter` or `TypeParameter` symbol in the instance
+    /// body (the VPI target parameter).
+    pub parameter: Symbol<'d>,
+    /// How it was supplied (by name, by position, or by a config).
+    pub assignment: ParameterAssignment,
+}
+
+impl<'d> ParameterOverride<'d> {
+    /// For a value parameter, the applied right-hand-side expression (bound in
+    /// the instantiating context); `None` for a type parameter.
+    pub fn value_expr(&self) -> Option<Expression<'d>> {
+        self.parameter.initializer()
+    }
+
+    /// For a type parameter, the applied type; `None` for a value parameter.
+    pub fn value_type(&self) -> Option<Type<'d>> {
+        if self.parameter.kind() == SymbolKind::TypeParameter {
+            self.parameter.declared_type()
+        } else {
+            None
+        }
+    }
+}
+
 impl Compilation {
     /// Creates an empty compilation.
     ///
@@ -7393,6 +7448,134 @@ impl<'d> Symbol<'d> {
     /// frozen design.
     pub fn defparam_value(&self) -> Option<crate::ConstantValue> {
         self.defparam_initializer()?.constant_value()
+    }
+
+    /// The declaration's own default for a `Parameter` (its initializer
+    /// expression) or `TypeParameter` (its default type), as a syntax node in
+    /// `tree` — present even when an override replaced the applied value.
+    /// `None` if there is no default, the symbol is not a parameter, or the
+    /// syntax is not in `tree`.
+    ///
+    /// Pair with [`parameter_is_overridden`](Self::parameter_is_overridden) /
+    /// [`type_parameter_is_overridden`](Self::type_parameter_is_overridden):
+    /// when overridden, [`initializer`](Self::initializer) /
+    /// [`constant_value`](Self::constant_value) describe the *applied* value
+    /// and this returns the declared default. It is syntax, not a bound
+    /// [`Expression`], by design: slang never binds an overridden default
+    /// because it may depend on other parameters that were overridden in
+    /// conflicting ways. For a non-overridden parameter the bound initializer
+    /// already is the default.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let session = sv_lang::Session::new();
+    /// let tree = session.parse(
+    ///     "module inner #(parameter int W = 1 + 2, parameter type T = logic);\n\
+    ///      endmodule\n\
+    ///      module top; inner #(.W(42), .T(bit)) u(); endmodule\n",
+    /// )?;
+    /// let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add(&tree)?;
+    /// let d = comp.compile()?;
+    /// let top = d.top_instances().next().unwrap().instance_body().unwrap();
+    /// let body = top.members().find(|s| s.name() == "u").unwrap().instance_body().unwrap();
+    /// let w = body.find("W").unwrap();
+    /// assert!(w.parameter_is_overridden());
+    /// assert_eq!(w.constant_value().unwrap().as_i64(), Some(42)); // applied
+    /// assert_eq!(w.parameter_default_syntax(&tree).unwrap().text().trim(), "1 + 2");
+    /// let t = body.find("T").unwrap();
+    /// assert!(t.type_parameter_is_overridden());
+    /// assert_eq!(t.parameter_default_syntax(&tree).unwrap().text().trim(), "logic");
+    /// # Ok(()) }
+    /// ```
+    pub fn parameter_default_syntax<'t>(&self, tree: &'t SyntaxTree) -> Option<Node<'t>> {
+        // SAFETY: the symbol is valid.
+        let node = unsafe { sys::slang_symbol_parameter_default_syntax(self.raw) };
+        if node.ptr.is_null() || node.tree != tree.raw() {
+            return None;
+        }
+        Some(Node::from_raw_node(node))
+    }
+
+    /// For a `Parameter`/`TypeParameter` in an instance body, how its applied
+    /// value (or type) was supplied: by name (`#(.W(4))`), by position
+    /// (`#(4)`), by a config, or not at all (the default applies). Maps onto
+    /// VPI's `vpiConnByName`. [`ParameterAssignment::None`] for any other
+    /// symbol. Pure syntax and flag reads.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ParameterAssignment;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source(
+    ///     "module inner #(parameter A = 1, parameter B = 2); endmodule\n\
+    ///      module top; inner #(10) u1(); inner #(.B(20)) u2(); endmodule\n",
+    /// )?;
+    /// let d = comp.compile()?;
+    /// let top = d.top_instances().next().unwrap().instance_body().unwrap();
+    /// let body = |n: &str| top.members().find(|s| s.name() == n).unwrap().instance_body().unwrap();
+    /// let (u1, u2) = (body("u1"), body("u2"));
+    /// assert_eq!(u1.find("A").unwrap().parameter_assignment(), ParameterAssignment::Ordered);
+    /// assert_eq!(u1.find("B").unwrap().parameter_assignment(), ParameterAssignment::None);
+    /// assert_eq!(u2.find("A").unwrap().parameter_assignment(), ParameterAssignment::None);
+    /// assert_eq!(u2.find("B").unwrap().parameter_assignment(), ParameterAssignment::Named);
+    /// # Ok(()) }
+    /// ```
+    pub fn parameter_assignment(&self) -> ParameterAssignment {
+        // SAFETY: the symbol is valid; syntax and flag reads only.
+        ParameterAssignment::from_raw(unsafe { sys::slang_symbol_parameter_assignment(self.raw) })
+    }
+
+    /// True if this `Parameter` is the implicit `localparam` slang creates for a
+    /// generate-loop `genvar` inside each generated block
+    /// (`slang::ast::ParameterSymbol::isFromGenvar`) — its value is that
+    /// iteration's index. False for any other symbol. A pure field read.
+    pub fn parameter_is_from_genvar(&self) -> bool {
+        // SAFETY: the symbol is valid; a field read.
+        unsafe { sys::slang_symbol_parameter_is_from_genvar(self.raw) }
+    }
+
+    /// For an `Instance`, its `#(...)` parameter overrides: every body
+    /// parameter whose value (or type) was supplied by the instantiation (or a
+    /// config), each with how it was supplied. The applied value is
+    /// [`ParameterOverride::value_expr`] / [`ParameterOverride::value_type`];
+    /// the declared default is the parameter's
+    /// [`parameter_default_syntax`](Self::parameter_default_syntax). Empty for a
+    /// non-instance or an instance with no overrides.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ParameterAssignment;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source(
+    ///     "module inner #(parameter W = 1, parameter type T = logic); endmodule\n\
+    ///      module top; inner #(.W(8), .T(bit)) u(); endmodule\n",
+    /// )?;
+    /// let d = comp.compile()?;
+    /// let top = d.top_instances().next().unwrap().instance_body().unwrap();
+    /// let u = top.members().find(|s| s.name() == "u").unwrap();
+    /// let ovs: Vec<_> = u.instance_parameter_overrides().collect();
+    /// assert_eq!(ovs.len(), 2);
+    /// let w = ovs.iter().find(|o| o.parameter.name() == "W").unwrap();
+    /// assert_eq!(w.assignment, ParameterAssignment::Named);
+    /// assert_eq!(w.value_expr().unwrap().constant_value().unwrap().as_i64(), Some(8));
+    /// let t = ovs.iter().find(|o| o.parameter.name() == "T").unwrap();
+    /// assert_eq!(t.value_type().unwrap().to_sv_string(), "bit");
+    /// # Ok(()) }
+    /// ```
+    pub fn instance_parameter_overrides(&self) -> impl Iterator<Item = ParameterOverride<'d>> {
+        self.parameters().filter_map(|p| {
+            let assignment = p.parameter_assignment();
+            (assignment != ParameterAssignment::None).then_some(ParameterOverride {
+                parameter: p,
+                assignment,
+            })
+        })
     }
 
     /// True if `self` (a `Parameter` or `TypeParameter` symbol) is a

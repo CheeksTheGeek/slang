@@ -2607,6 +2607,98 @@ slang_ast slang_symbol_defparam_target(slang_ast sym) {
     });
 }
 
+// ---- parameter declared default (vs. applied override) ----------------------
+
+slang_node slang_symbol_parameter_default_syntax(slang_ast sym) {
+    SLANG_C_ACCESS(noNode(nullptr), {
+        auto s = symbolOf(sym);
+        if (!s || !sym.compilation)
+            return noNode(nullptr);
+        // The declaration's own default, which an override replaces in the
+        // bound initializer but never in the syntax. slang deliberately does not
+        // bind an overridden default (it may depend on other parameters that
+        // were overridden in conflicting ways), so this is returned as CST.
+        const syntax::SyntaxNode* syn = nullptr;
+        if (s->kind == SymbolKind::Parameter) {
+            auto dv = s->as<ParameterSymbol>().defaultValSyntax;
+            if (!dv)
+                dv = s->getSyntax();
+            if (dv && dv->kind == syntax::SyntaxKind::Declarator) {
+                auto& decl = dv->as<syntax::DeclaratorSyntax>();
+                if (decl.initializer)
+                    syn = decl.initializer->expr;
+            }
+        }
+        else if (s->kind == SymbolKind::TypeParameter) {
+            syn = s->as<TypeParameterSymbol>().defaultValSyntax;
+            if (!syn) {
+                auto own = s->getSyntax();
+                if (own && own->kind == syntax::SyntaxKind::TypeAssignment) {
+                    auto& ta = own->as<syntax::TypeAssignmentSyntax>();
+                    if (ta.assignment)
+                        syn = ta.assignment->type;
+                }
+            }
+        }
+        if (!syn)
+            return noNode(nullptr);
+        auto tree = findTree(sym.compilation, *syn);
+        return tree ? capi::toC(syn, tree) : noNode(nullptr);
+    });
+}
+
+uint32_t slang_symbol_parameter_assignment(slang_ast sym) {
+    SLANG_C_ACCESS((uint32_t)SLANG_PARAM_ASSIGN_NONE, {
+        auto s = symbolOf(sym);
+        if (!s)
+            return (uint32_t)SLANG_PARAM_ASSIGN_NONE;
+        bool overridden = false;
+        if (s->kind == SymbolKind::Parameter) {
+            auto& p = s->as<ParameterSymbol>();
+            overridden = p.isOverridden();
+            if (overridden && p.isFromConfig())
+                return (uint32_t)SLANG_PARAM_ASSIGN_CONFIG;
+        }
+        else if (s->kind == SymbolKind::TypeParameter) {
+            overridden = s->as<TypeParameterSymbol>().isOverridden();
+        }
+        if (!overridden)
+            return (uint32_t)SLANG_PARAM_ASSIGN_NONE;
+
+        // An override is set only from the instantiation's #() assignment map
+        // or a config (handled above), so: named if the #() list has a
+        // `.NAME(...)` for this parameter, otherwise positional. Pure syntax
+        // reads; the instance is the body's parentInstance.
+        auto scope = s->getParentScope();
+        auto& bodySym = scope ? scope->asSymbol() : *s;
+        if (bodySym.kind == SymbolKind::InstanceBody) {
+            if (auto inst = bodySym.as<InstanceBodySymbol>().parentInstance) {
+                auto isyn = inst->getSyntax();
+                auto hier = isyn ? isyn->parent : nullptr;
+                if (hier && hier->kind == syntax::SyntaxKind::HierarchyInstantiation) {
+                    auto pva = hier->as<syntax::HierarchyInstantiationSyntax>().parameters;
+                    if (pva) {
+                        for (auto pa : pva->parameters) {
+                            if (pa->kind == syntax::SyntaxKind::NamedParamAssignment &&
+                                pa->as<syntax::NamedParamAssignmentSyntax>().name.valueText() ==
+                                    s->name)
+                                return (uint32_t)SLANG_PARAM_ASSIGN_NAMED;
+                        }
+                    }
+                }
+            }
+        }
+        return (uint32_t)SLANG_PARAM_ASSIGN_ORDERED;
+    });
+}
+
+bool slang_symbol_parameter_is_from_genvar(slang_ast sym) {
+    SLANG_C_ACCESS(false, {
+        auto s = symbolOf(sym);
+        return s && s->kind == SymbolKind::Parameter && s->as<ParameterSymbol>().isFromGenvar();
+    });
+}
+
 slang_ast slang_symbol_defparam_initializer(slang_ast sym) {
     SLANG_C_ACCESS(noAst(sym.compilation, SLANG_AST_EXPRESSION), {
         auto s = symbolOf(sym);

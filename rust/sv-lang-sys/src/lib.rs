@@ -326,6 +326,11 @@ pub struct slang_svint_flat {
     pub has_unknown: bool,
 }
 
+pub type slang_param_assignment = c_uint;
+pub const SLANG_PARAM_ASSIGN_NONE: slang_param_assignment = 0;
+pub const SLANG_PARAM_ASSIGN_ORDERED: slang_param_assignment = 1;
+pub const SLANG_PARAM_ASSIGN_NAMED: slang_param_assignment = 2;
+pub const SLANG_PARAM_ASSIGN_CONFIG: slang_param_assignment = 3;
 pub type slang_constant_kind = c_uint;
 pub const SLANG_CONSTANT_BAD: slang_constant_kind = 0;
 pub const SLANG_CONSTANT_INTEGER: slang_constant_kind = 1;
@@ -1771,6 +1776,9 @@ unsafe extern "C" {
     pub fn slang_expression_invalid_child(expr: slang_ast) -> slang_ast;
     pub fn slang_symbol_defparam_target(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_defparam_initializer(sym: slang_ast) -> slang_ast;
+    pub fn slang_symbol_parameter_assignment(sym: slang_ast) -> u32;
+    pub fn slang_symbol_parameter_is_from_genvar(sym: slang_ast) -> bool;
+    pub fn slang_symbol_parameter_default_syntax(sym: slang_ast) -> slang_node;
     pub fn slang_symbol_instance_body_parent_instance(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_instance_body_definition(sym: slang_ast) -> slang_ast;
     pub fn slang_symbol_instance_body_port_count(sym: slang_ast) -> u32;

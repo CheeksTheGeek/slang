@@ -3,6 +3,12 @@
 
 #include "Test.h"
 
+#include "slang/ast/TimingControl.h"
+#include "slang/ast/statements/MiscStatements.h"
+#include "slang/ast/symbols/BlockSymbols.h"
+#include "slang/ast/symbols/CheckerSymbols.h"
+#include "slang/ast/symbols/CompilationUnitSymbols.h"
+
 TEST_CASE("Checker declarations") {
     auto tree = SyntaxTree::fromText(R"(
 checker my_check1 (logic test_sig, event clock);
@@ -1131,6 +1137,51 @@ endmodule
     auto& diags = compilation.getAllDiagnostics();
     REQUIRE(diags.size() == 1);
     CHECK(diags[0].code == diag::InvalidStmtInChecker);
+}
+
+TEST_CASE("Checker event formal keeps use-site iff") {
+    // `@(clock iff y)` where `clock` is an event formal expands to the actual's
+    // clocking event; the use-site `iff` must still gate it (LRM 16.14.7 / 17.4).
+    auto tree = SyntaxTree::fromText(R"(
+checker c(event clock = $inferred_clock, logic y);
+    logic [3:0] m = 0;
+    always_ff @(clock iff y) m <= m + 1;
+endchecker
+
+module top;
+    logic clk, y, z;
+    default clocking @(posedge clk); endclocking
+    c c1(posedge clk, y);
+    c c2(.y(y));
+    c c3(posedge clk iff z, y);
+    c c4(posedge clk or negedge clk, y);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+
+    auto timingOf = [&](std::string_view name) -> const TimingControl& {
+        auto& inst = compilation.getRoot().lookupName<CheckerInstanceSymbol>(name);
+        auto& block = *inst.body.membersOfType<ProceduralBlockSymbol>().begin();
+        return block.getBody().as<TimedStatement>().timing;
+    };
+
+    // Explicit event actual and the $inferred_clock default both keep the iff.
+    for (auto name : {"top.c1", "top.c2"})
+        CHECK(timingOf(name).as<SignalEventControl>().iffCondition);
+
+    // The actual's own iff is conjoined with the use-site iff.
+    auto& both = timingOf("top.c3").as<SignalEventControl>();
+    REQUIRE(both.iffCondition);
+    CHECK(both.iffCondition->kind == ExpressionKind::BinaryOp);
+
+    // An event-list actual: every event is gated.
+    auto& list = timingOf("top.c4").as<EventListControl>();
+    REQUIRE(list.events.size() == 2);
+    for (auto ev : list.events)
+        CHECK(ev->as<SignalEventControl>().iffCondition);
 }
 
 TEST_CASE("Checker instance array exceeds maximum size") {

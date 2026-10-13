@@ -12,6 +12,7 @@
 #include "slang/ast/Compilation.h"
 #include "slang/ast/Expression.h"
 #include "slang/ast/expressions/MiscExpressions.h"
+#include "slang/ast/expressions/OperatorExpressions.h"
 #include "slang/ast/types/Type.h"
 #include "slang/diagnostics/ExpressionsDiags.h"
 #include "slang/diagnostics/StatementsDiags.h"
@@ -349,16 +350,40 @@ TimingControl& SignalEventControl::fromSyntax(Compilation& compilation,
     return fromExpr(compilation, EdgeKind::None, expr, nullptr, context, syntax.sourceRange());
 }
 
-static TimingControl& cloneClockingEvent(Compilation& comp, const TimingControl& timing) {
+// Clones a clocking event that a sequence/property/checker formal expanded to.
+// `outerIff` is the `iff` written at the use site (`@(clock iff y)`): it must
+// gate every event of the expansion, so it is attached to each cloned signal
+// event, conjoined with any `iff` the actual already carried.
+static TimingControl& cloneClockingEvent(Compilation& comp, const TimingControl& timing,
+                                         const Expression* outerIff) {
     if (timing.kind == TimingControlKind::SignalEvent) {
         auto& sec = timing.as<SignalEventControl>();
-        return *comp.emplace<SignalEventControl>(sec.edge, sec.expr, sec.iffCondition,
-                                                 sec.sourceRange);
+        const Expression* iff = sec.iffCondition;
+        if (outerIff) {
+            if (!iff) {
+                iff = outerIff;
+            }
+            else {
+                // Both the actual and the use site have an `iff`: the event
+                // fires only when both hold. Built directly (both operands are
+                // already bound and boolean-convertible) so no new diagnostics
+                // are produced; typed like `&&`.
+                auto& type = (iff->type->isFourState() || outerIff->type->isFourState())
+                                 ? comp.getLogicType()
+                                 : comp.getBitType();
+                iff = comp.emplace<BinaryExpression>(BinaryOperator::LogicalAnd, type,
+                                                     *const_cast<Expression*>(iff),
+                                                     *const_cast<Expression*>(outerIff),
+                                                     outerIff->sourceRange,
+                                                     outerIff->sourceRange);
+            }
+        }
+        return *comp.emplace<SignalEventControl>(sec.edge, sec.expr, iff, sec.sourceRange);
     }
     else if (timing.kind == TimingControlKind::EventList) {
         SmallVector<TimingControl*> events;
         for (auto& event : timing.as<EventListControl>().events) {
-            events.push_back(&cloneClockingEvent(comp, *event));
+            events.push_back(&cloneClockingEvent(comp, *event, outerIff));
             if (events.back()->bad())
                 return *comp.emplace<InvalidTimingControl>(&timing);
         }
@@ -408,10 +433,11 @@ TimingControl& SignalEventControl::fromExpr(Compilation& compilation, EdgeKind e
 
     // If our expression is a reference to another clocking event due to
     // a sequence or property argument expansion we need to unwrap to the
-    // target timing control and use that instead.
+    // target timing control and use that instead -- keeping any `iff` written
+    // here, which must still gate the expanded event(s).
     if (expr.kind == ExpressionKind::ClockingEvent) {
         auto& cee = expr.as<ClockingEventExpression>();
-        return cloneClockingEvent(compilation, cee.timingControl);
+        return cloneClockingEvent(compilation, cee.timingControl, iffCondition);
     }
 
     // Warn if the expression is constant, since it'll never change to trigger off.

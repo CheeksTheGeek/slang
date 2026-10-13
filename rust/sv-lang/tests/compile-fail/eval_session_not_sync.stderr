@@ -6,11 +6,11 @@ error[E0277]: `Cell<()>` cannot be shared between threads safely
   |
   = help: within `EvalSession<'static>`, the trait `Sync` is not implemented for `Cell<()>`
   = note: if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock`
-note: required because it appears within the type `PhantomData<Cell<()>>`
- --> $RUST/core/src/marker.rs
+note: required because it appears within the type `sv_lang::ast::NotSyncMarker`
+ --> src/ast.rs
   |
-  | pub struct PhantomData<T: PointeeSized>;
-  |            ^^^^^^^^^^^
+  | struct NotSyncMarker(core::cell::Cell<()>);
+  |        ^^^^^^^^^^^^^
 note: required because it appears within the type `EvalSession<'static>`
  --> src/ast.rs
   |

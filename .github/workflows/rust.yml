@@ -42,7 +42,9 @@ jobs:
     - name: Codegen is up to date
       run: cargo xtask codegen --check
     - name: API coverage gate
-      run: python3 scripts/api_coverage.py --check
+      # The job's default working directory is rust/; the script lives at the
+      # repo root's scripts/.
+      run: python3 ../scripts/api_coverage.py --check
     - name: Docs (deny warnings)
       run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
       shell: bash

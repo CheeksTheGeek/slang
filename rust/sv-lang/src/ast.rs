@@ -1991,7 +1991,7 @@ impl Design {
     pub fn eval_session(&mut self) -> EvalSession<'_> {
         EvalSession {
             design: self,
-            _not_sync: PhantomData,
+            _not_sync: NotSyncMarker::default(),
         }
     }
 
@@ -2102,10 +2102,18 @@ impl UnfreezeGuard<'_> {
 /// so a shared `&EvalSession` must never be used from two threads at once.
 pub struct EvalSession<'d> {
     design: &'d mut Design,
-    // Cell<()> is Send but not Sync: it makes EvalSession non-Sync so the
-    // interior mutation in `eval(&self)` cannot be shared across threads.
-    _not_sync: PhantomData<core::cell::Cell<()>>,
+    // Makes EvalSession non-Sync so the interior mutation in `eval(&self)`
+    // cannot be shared across threads (while staying Send).
+    _not_sync: NotSyncMarker,
 }
+
+/// A zero-sized marker that is `Send` but not `Sync` (it holds a `Cell<()>`).
+/// Held directly rather than as `PhantomData<Cell<()>>` so the compiler's
+/// `!Sync` explanation points at this crate's own source instead of std's — the
+/// `compile-fail` golden then renders the same whether or not the toolchain has
+/// the `rust-src` component installed.
+#[derive(Default)]
+struct NotSyncMarker(core::cell::Cell<()>);
 
 /// The kind of an evaluated array dimension (see [`EvaluatedDimension`]).
 /// Mirrors `slang::ast::DimensionKind`.

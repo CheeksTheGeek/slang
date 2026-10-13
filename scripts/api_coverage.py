@@ -54,7 +54,7 @@ KEYWORD_TOKENS = {
     # `operator bool()` / `operator uintN_t()` cast ops and int-type trailing
     # returns my decl-scan captures as a bare type token, never a method.
     "bool", "uint32_t", "uint64_t", "int32_t", "int64_t", "size_t", "char",
-    "double", "float", "string", "string_view",
+    "double", "float", "string", "string_view", "void",
 }
 
 
@@ -132,8 +132,10 @@ def enumerate_targets():
     return targets
 
 
+# `slang::ast::Class::method` and the single-level `slang::Class::method` used
+# for classes in the bare `slang` namespace (ConstantValue, SVInt, TimeScale...).
 MIRROR_RE = re.compile(
-    r"slang::(?:ast|syntax|parsing|analysis|numeric|[A-Za-z0-9_]+)::"
+    r"slang::(?:(?:ast|syntax|parsing|analysis|numeric|driver)::)?"
     r"([A-Za-z_]\w*)::([A-Za-z_]\w*)"
 )
 RUST_SRC = REPO / "rust"
@@ -166,19 +168,117 @@ def _snake(name):
     return s[4:] if s.startswith("get_") else s
 
 
-def rust_api_names():
-    """Snake-case identifiers the Rust + sys layers actually expose, so a
-    camelCase C++ accessor bound under a renamed form (isClass -> is_class,
-    getCanonicalType -> canonical) is not counted as a false-negative gap."""
-    names = set()
-    for p in (RUST_SRC / "sv-lang" / "src").rglob("*.rs"):
-        t = p.read_text(errors="replace")
-        for m in re.finditer(r"\bpub fn\s+([a-z_]\w*)", t):
-            names.add(m.group(1))
+def _flat(s):
+    return s.replace("_", "").lower()
+
+
+def class_tokens(cls):
+    """Name fragments a binding for `cls` carries: the full class name and the
+    class name minus its family suffix (DefParamSymbol -> defparam,
+    BinaryExpression -> binary), plus the C API's family abbreviations."""
+    toks = {_flat(cls)}
+    for suf in ("Symbol", "Expression", "Statement", "Type", "Expr", "Control"):
+        if cls.endswith(suf) and len(cls) > len(suf):
+            toks.add(_flat(cls[: -len(suf)]))
+    if cls == "Expression":
+        toks.add("expr")
+    if cls == "Statement":
+        toks.add("stmt")
+    # C-API spellings that differ from the slang class name.
+    toks |= {
+        "ConstantValue": {"constant"},
+        "SVInt": {"svint"},
+        "logic_t": {"logicvalue"},
+    }.get(cls, set())
+    return {t for t in toks if len(t) >= 3}
+
+
+def capi_fn_names():
+    """Flattened names of every C function the sys crate declares."""
     sysrs = (RUST_SRC / "sv-lang-sys" / "src" / "lib.rs").read_text(errors="replace")
-    for m in re.finditer(r"\bfn\s+slang_([a-z0-9_]+)\s*\(", sysrs):
-        names.add(m.group(1))
-    return names
+    return {_flat(m.group(1)) for m in re.finditer(r"\bfn\s+(slang_[a-z0-9_]+)\s*\(", sysrs)}
+
+
+def rust_methods():
+    """(rust_type, method) for every `pub fn` in the sv-lang crate, keyed by the
+    `impl` block it sits in, so base-class style names (`Symbol::name`) only
+    match their own class instead of every class with a `name`."""
+    out = set()
+    for p in (RUST_SRC / "sv-lang" / "src").rglob("*.rs"):
+        cur = None
+        for line in p.read_text(errors="replace").splitlines():
+            im = re.match(r"^impl(?:<[^>]*>)?\s+(\w+)(?:<[^>]*>)?\s*\{", line)
+            if im:
+                cur = im.group(1)
+                continue
+            fm = re.match(r"^\s+pub fn\s+([a-z_]\w*)", line)
+            if fm and cur:
+                out.add((cur, fm.group(1)))
+    return out
+
+
+def rust_family(cls):
+    """The Rust handle type a slang class's accessors live on. The bindings
+    collapse each AST family into one handle (every *Expression subclass is an
+    `Expression`, every *Symbol a `Symbol`, ...), so a subclass method such as
+    BinaryExpression::left is bound as the family's generic `Expression::left`."""
+    renamed = {
+        "DeclaredType": "Symbol",  # declared_type_* accessors live on Symbol
+        "logic_t": "Bit",  # slang's 4-state bit is sv_lang::Bit
+        "ValueDriver": "DriverInfo",  # analysis drivers are sv_lang::DriverInfo
+        "DFAResults": "AnalyzedProcedure",  # per-procedure dataflow results
+    }
+    if cls in renamed:
+        return renamed[cls]
+    for suf, fam in (
+        ("Expression", "Expression"),
+        ("Statement", "Statement"),
+        ("AssertionExpr", "AssertionExpr"),
+        ("BinsSelectExpr", "BinsSelectExpr"),
+        ("Constraint", "Constraint"),
+        ("Pattern", "Pattern"),
+        ("Control", "TimingControl"),
+        ("Symbol", "Symbol"),
+        ("Type", "Type"),
+    ):
+        if cls.endswith(suf):
+            return fam
+    if cls == "Scope":
+        return "Symbol"
+    return cls
+
+
+def make_bound_by_name():
+    """Class-aware 'is (cls, meth) bound under a renamed form?'. A previous
+    version matched snake-case names GLOBALLY (any `*_value` function counted
+    DefParamSymbol::getValue as bound), which hid real gaps; now a C function
+    only counts if its name, minus the method suffix, carries the class token,
+    and a Rust method only if it sits in the class's own impl or carries the
+    token as a prefix."""
+    cfns = capi_fn_names()
+    rmeth = rust_methods()
+
+    def bound(cls, meth):
+        m = _flat(_snake(meth))
+        if not m:
+            return False
+        toks = class_tokens(cls)
+        for f in cfns:
+            if f.endswith(m) and any(t in f[: -len(m)] for t in toks):
+                return True
+        fam = rust_family(cls)
+        for rtype, rfn in rmeth:
+            f = _flat(rfn)
+            # Exact name on the class's own Rust handle (or its `as_` view,
+            # e.g. ConstantValue::integer -> as_integer). Never a bare suffix:
+            # `*_value` on Symbol must not count as DefParamSymbol::getValue.
+            if rtype in (cls, fam) and (f == m or f == "as" + m):
+                return True
+            if f.endswith(m) and len(f) > len(m) and any(t in f[: -len(m)] for t in toks):
+                return True
+        return False
+
+    return bound
 
 
 # Structural categories that are legitimately NOT part of the read-accessor
@@ -229,6 +329,10 @@ NAME_RULE = [
     (re.compile(r"^note[A-Z]|^issue|^report"), "diagnostic/bookkeeping internal"),
     (re.compile(r"^alloc|^reset$|^cache|^resolveAt$|^forceResolveAt$|^mergeImplicitPort$"),
      "elaboration internal"),
+    (re.compile(r"^bad$"), "invalid-node predicate (kind()==Invalid / the Bad variant)"),
+    (re.compile(r"^isEvaluating$"), "elaboration-in-progress flag (always false once frozen)"),
+    (re.compile(r"^equals$|^next$"), "equality/iterator-protocol internal"),
+    (re.compile(r"^asSymbol$"), "upcast (Rust scope handles are already Symbols)"),
 ]
 # Classes that are builder/infrastructure, not an AST read surface. Methods on
 # these are mirrored selectively (Compilation/DiagnosticEngine/SourceManager/
@@ -292,22 +396,12 @@ def main():
     covered, called = covered_methods()
     classified = load_allow()
 
-    covered_names = {m for (_, m) in covered}
-    rust_names = rust_api_names()
-
-    def bound_by_name(meth):
-        if (meth in covered_names and meth in called):
-            return True
-        snake = _snake(meth)
-        if snake in rust_names:
-            return True
-        # suffix match: Type::isClass -> slang_type_is_class -> "..._is_class"
-        return any(n == snake or n.endswith("_" + snake) for n in rust_names)
+    bound_by_name = make_bound_by_name()
 
     n_covered = n_rule = n_allow = 0
     missing = []
     for (cls, meth), path in sorted(targets.items()):
-        if (cls, meth) in covered or bound_by_name(meth):
+        if (cls, meth) in covered or bound_by_name(cls, meth):
             n_covered += 1
             continue
         if (cls, meth) in classified:
@@ -318,6 +412,18 @@ def main():
             continue
         missing.append((cls, meth, path))
 
+    # The other direction: an allow-list entry that is no longer a target, or is
+    # now bound / rule-classified, is stale and must be removed — otherwise the
+    # ledger silently overstates the backlog and could mask a regression.
+    stale = []
+    for key, _reason in sorted(classified.items()):
+        if key not in targets:
+            stale.append((key, "not a public target"))
+        elif key in covered or bound_by_name(*key):
+            stale.append((key, "now bound"))
+        elif classify_by_rule(key[0], key[1], targets[key]):
+            stale.append((key, "now rule-classified"))
+
     total = len(targets)
     gaps = len(missing)
     print(f"TARGETS (public SLANG_EXPORT member fns):   {total}")
@@ -325,6 +431,9 @@ def main():
     print(f"  classified by structural rule:            {n_rule}")
     print(f"  classified in allow-list:                 {n_allow}")
     print(f"  RESIDUAL AST read-accessor gaps:          {gaps}")
+    print(f"STALE allow-list entries:                   {len(stale)}")
+    for (cls, meth), why in stale:
+        print(f"  stale: {cls}::{meth} ({why})")
 
     if verbose or check:
         by_cls = {}
@@ -333,6 +442,10 @@ def main():
         for cls in sorted(by_cls, key=lambda c: -len(by_cls[c])):
             print(f"  {cls}: {', '.join(sorted(by_cls[cls]))}")
 
+    if check and stale:
+        print(f"\nFAIL: {len(stale)} stale allow-list entries; remove them from "
+              "scripts/api_coverage_allow.txt.")
+        return 1
     if check and gaps:
         print(f"\nFAIL: {gaps} public API methods are neither bound nor classified.")
         print("Classify each in scripts/api_coverage_allow.txt (reachable-by-"

@@ -1085,6 +1085,20 @@ impl Drop for OwnedSVInt {
 }
 
 /// A structured constant value.
+///
+/// The variants replace slang's `ConstantValue` kind predicates and
+/// accessors: `Integer` covers `slang::ConstantValue::integer`, `Real` covers
+/// `slang::ConstantValue::real` and `slang::ConstantValue::shortReal` (widened
+/// to `f64`), `String` covers `slang::ConstantValue::isString` and
+/// `slang::ConstantValue::str`, `Unbounded` covers
+/// `slang::ConstantValue::isUnbounded`, `Union` covers
+/// `slang::ConstantValue::isUnion`, `Bad` covers `slang::ConstantValue::bad`,
+/// and `Array` covers `slang::ConstantValue::elements`,
+/// `slang::ConstantValue::at`, `slang::ConstantValue::size` and
+/// `slang::ConstantValue::queue` (unpacked arrays and queues share `Array`, so
+/// queue-ness itself is not distinguished). `Display` mirrors
+/// `slang::ConstantValue::toString`; an integer's unknown bits are
+/// `slang::ConstantValue::hasUnknown` via [`SVInt::has_unknown`].
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ConstantValue {

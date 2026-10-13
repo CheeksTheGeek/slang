@@ -13,8 +13,6 @@ AssertionExpr::canSucceedVacuously  # internal/niche; triage
 AssertionExpr::computeSequenceLength  # internal/niche; triage
 AssertionExpr::isParenthesized  # TODO-BIND or false-neg; triage
 AssignmentExpression::isBlocking  # TODO-BIND candidate accessor
-AssignmentExpression::isLValueArg  # TODO-BIND candidate accessor
-AssignmentExpression::isNonBlocking  # TODO-BIND candidate accessor
 AssociativeArrayType::hasWildcardIndexType  # TODO-BIND candidate accessor
 CallExpression::getIteratorInfo  # TODO-BIND candidate accessor
 CallExpression::getKnownSystemName  # TODO-BIND candidate accessor
@@ -79,7 +77,6 @@ MultiPortSymbol::hasInitializer  # TODO-BIND candidate accessor
 NewArrayExpression::initExpr  # internal/niche; triage
 PackageSymbol::resolveExports  # TODO-BIND candidate accessor
 ParameterSymbol::isFromConfig  # TODO-BIND candidate accessor
-ParameterSymbol::isFromGenvar  # TODO-BIND candidate accessor
 ParameterSymbolBase::allMatching  # internal/niche; triage
 PortSymbol::getNetRanges  # TODO-BIND candidate accessor
 PortSymbol::getNetTypes  # TODO-BIND candidate accessor
@@ -125,3 +122,37 @@ TypeParameterSymbol::getTypeAlias  # TODO-BIND candidate accessor
 ValueSymbol::getNextBackreference  # TODO-BIND candidate accessor
 logic_t::exactlyEqual  # internal/niche; triage
 logic_t::toChar  # internal/niche; triage
+
+# --- surfaced 2026-10-13 when bound_by_name became class-aware ---------------
+# The previous matcher counted any same-named function in ANY class as a
+# binding, hiding these. Each is now classified honestly.
+MinTypMaxExpression::min  # reachable via children() (min, typ, max order); TODO-BIND named accessor
+MinTypMaxExpression::typ  # reachable via children(); TODO-BIND named accessor
+MinTypMaxExpression::max  # reachable via children(); TODO-BIND named accessor
+CallExpression::arguments  # reachable via children() (the call's argument expressions); TODO-BIND named accessor
+CallExpression::hasOutputArgs  # TODO-BIND candidate accessor (niche)
+CopyClassExpression::sourceExpr  # reachable via children(); TODO-BIND named accessor
+MemberAccessExpression::value  # reachable via children(); TODO-BIND named accessor
+ConfigBlockSymbol::getDefaultLiblist  # TODO-BIND candidate accessor (config reflection)
+ConfigBlockSymbol::getTopCells  # TODO-BIND candidate accessor (config reflection)
+CovergroupType::getBody  # TODO-BIND candidate accessor
+NetType::getDataType  # TODO-BIND candidate accessor
+TypeAliasType::getFirstForwardDecl  # TODO-BIND candidate accessor (niche)
+StatementBlockSymbol::getStatement  # TODO-BIND candidate accessor (niche)
+ParameterSymbol::isImplicitString  # TODO-BIND candidate accessor (niche)
+DFAResults::getAssertions  # TODO-BIND per-procedure assertions (manager-level Analysis::assertions exists)
+ConstantValue::isQueue  # approximated: queues and unpacked arrays share ConstantValue::Array; TODO-BIND to distinguish
+ConstantValue::getEffectiveWidth  # niche value-width helper; TODO-BIND on request
+DeclaredType::getFlags  # internal DeclaredTypeFlags bitset; niche
+DeclaredType::getDimensionSyntax  # niche; the declared-type syntax is reachable via declared_type_syntax()
+AssertionExpr::isEquivalentTo  # structural-equivalence helper (bound for Expression only); niche
+Constraint::isEquivalentTo  # structural-equivalence helper; niche
+Pattern::isEquivalentTo  # structural-equivalence helper; niche
+TimingControl::isEquivalentTo  # structural-equivalence helper; niche
+ForeachLoopStatement::isEquivalentTo  # structural-equivalence helper; niche
+DiagGroup::getDiags  # diagnostics model is surfaced via sv-lang-kinds generated tables
+DiagGroup::getName  # diagnostics model is surfaced via sv-lang-kinds generated tables
+DiagCode::valid  # diagnostics model is surfaced via sv-lang-kinds generated tables (DiagCode)
+HierarchicalReference::join  # internal (reference builder)
+LValue::resolve  # internal (evaluation)
+SystemSubroutine::getEffectiveWidth  # internal (evaluation helper)

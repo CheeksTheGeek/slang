@@ -2928,6 +2928,9 @@ impl<'d> EvalSession<'d> {
     /// assert_eq!(x.name(), "x");
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::Scope::lookupName` (exclusive access: it parses the
+    /// name into the compilation arena, so it is not on the shared `&Design`).
     pub fn lookup_name(&self, context_scope: Symbol<'_>, name: &str) -> Option<Symbol<'_>> {
         assert!(
             context_scope.raw.compilation == self.design.raw_compilation(),
@@ -4463,6 +4466,34 @@ pub struct TimeScaleValue {
     pub magnitude: u8,
 }
 
+/// Renders the unit suffix exactly as slang's `timeUnitToSuffix` (`ns`, `ps`, ...).
+impl core::fmt::Display for TimeUnit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            TimeUnit::Seconds => f.write_str("s"),
+            TimeUnit::Milliseconds => f.write_str("ms"),
+            TimeUnit::Microseconds => f.write_str("us"),
+            TimeUnit::Nanoseconds => f.write_str("ns"),
+            TimeUnit::Picoseconds => f.write_str("ps"),
+            TimeUnit::Femtoseconds => f.write_str("fs"),
+            TimeUnit::Other(v) => write!(f, "<unit {v}>"),
+        }
+    }
+}
+
+/// Renders like slang's `slang::TimeScaleValue::toString`, e.g. `10ns`.
+///
+/// ```
+/// use sv_lang::{TimeScaleValue, TimeUnit};
+/// let v = TimeScaleValue { unit: TimeUnit::Nanoseconds, magnitude: 10 };
+/// assert_eq!(v.to_string(), "10ns");
+/// ```
+impl core::fmt::Display for TimeScaleValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}{}", self.magnitude, self.unit)
+    }
+}
+
 impl TimeScaleValue {
     fn from_raw(v: sys::slang_time_scale_value) -> Self {
         TimeScaleValue {
@@ -4584,6 +4615,22 @@ pub struct TimeScale {
     pub base: TimeScaleValue,
     /// The precision, e.g. the `1ps` of `` `timescale 1ns/1ps``.
     pub precision: TimeScaleValue,
+}
+
+/// Renders like slang's `slang::TimeScale::toString`, e.g. `1ns / 1ps`.
+///
+/// ```
+/// use sv_lang::{TimeScale, TimeScaleValue, TimeUnit};
+/// let ts = TimeScale {
+///     base: TimeScaleValue { unit: TimeUnit::Nanoseconds, magnitude: 1 },
+///     precision: TimeScaleValue { unit: TimeUnit::Picoseconds, magnitude: 1 },
+/// };
+/// assert_eq!(ts.to_string(), "1ns / 1ps");
+/// ```
+impl core::fmt::Display for TimeScale {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} / {}", self.base, self.precision)
+    }
 }
 
 impl TimeScale {
@@ -7323,6 +7370,10 @@ impl<'d> Symbol<'d> {
     /// assert_eq!(w.constant_value().unwrap().as_i64(), Some(42));
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::ParameterSymbol::getValue`,
+    /// `slang::ast::EnumValueSymbol::getValue` and
+    /// `slang::ast::SpecparamSymbol::getValue`.
     pub fn constant_value(&self) -> Option<crate::ConstantValue> {
         let mut err = ffi::error();
         // SAFETY: the symbol is valid; out-error checked.
@@ -14503,6 +14554,8 @@ impl<'d> Type<'d> {
     /// assert_eq!(names, ["A", "B", "C"]);
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::EnumType::values`.
     pub fn enum_members(&self) -> impl Iterator<Item = Symbol<'d>> {
         let raw = self.raw;
         // SAFETY: the type is valid; count is 0 for a non-enum.
@@ -17380,6 +17433,8 @@ impl<'d> Expression<'d> {
     /// assert_eq!(init.constant_bitstream_width(), Some(16));
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ConstantValue::getBitstreamWidth` on the folded constant.
     pub fn constant_bitstream_width(&self) -> Option<u64> {
         let raw = self.folded_constant_raw()?;
         // SAFETY: `raw` is valid; pure read, no allocation.
@@ -17409,6 +17464,8 @@ impl<'d> Expression<'d> {
     /// assert_eq!(low_nibble.as_i64(), Some(0xB));
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ConstantValue::getSlice` on the folded constant.
     pub fn constant_slice(&self, upper: i32, lower: i32) -> Option<crate::ConstantValue> {
         let raw = self.folded_constant_raw()?;
         let mut err = ffi::error();
@@ -18876,6 +18933,9 @@ impl<'d> Expression<'d> {
     /// assert_eq!(sel.select_value().unwrap().referenced_symbol().unwrap().name(), "v");
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::ElementSelectExpression::value` and
+    /// `slang::ast::RangeSelectExpression::value`.
     pub fn select_value(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-select.
         wrap(unsafe { sys::slang_expr_select_value(self.raw) })
@@ -18943,6 +19003,8 @@ impl<'d> Expression<'d> {
     /// assert_eq!(sel.range_selection_kind(), Some(0)); // Simple
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::RangeSelectExpression::getSelectionKind`.
     pub fn range_selection_kind(&self) -> Option<u32> {
         // SAFETY: the expression is valid.
         (self.kind() == ExpressionKind::RangeSelect)
@@ -19242,6 +19304,8 @@ impl<'d> Expression<'d> {
     /// assert!(new_array.new_array_init().is_none());
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::NewArrayExpression::sizeExpr`.
     pub fn new_array_size(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for a non-NewArray node.
         wrap(unsafe { sys::slang_expr_new_array_size(self.raw) })
@@ -19470,6 +19534,8 @@ impl<'d> Expression<'d> {
     /// assert_eq!(elems.len(), 3);
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::AssignmentPatternExpressionBase::elements`.
     pub fn pattern_elements(&self) -> Vec<Expression<'d>> {
         // SAFETY: the expression is valid.
         let count = unsafe { sys::slang_expr_pattern_element_count(self.raw) };
@@ -19500,6 +19566,8 @@ impl<'d> Expression<'d> {
     /// assert_eq!(init.pattern_elements().len(), 1);
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::ReplicatedAssignmentPatternExpression::count`.
     pub fn replicated_pattern_count(&self) -> Option<Expression<'d>> {
         // SAFETY: the expression is valid; a null node for any other kind.
         wrap(unsafe { sys::slang_expr_replicated_pattern_count(self.raw) })
@@ -19648,6 +19716,8 @@ impl<'d> Expression<'d> {
     /// assert_eq!(stream.streaming_is_fixed_size(), Some(true));
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::StreamingConcatenationExpression::getBitstreamWidth`.
     pub fn streaming_bitstream_width(&self) -> Option<u64> {
         (self.kind() == ExpressionKind::Streaming)
             // SAFETY: the expression is valid and is a Streaming node.
@@ -19674,6 +19744,8 @@ impl<'d> Expression<'d> {
     /// assert_eq!(stream.streaming_slice_size(), Some(8));
     /// # Ok(()) }
     /// ```
+    ///
+    /// Mirrors `slang::ast::StreamingConcatenationExpression::getSliceSize`.
     pub fn streaming_slice_size(&self) -> Option<u64> {
         (self.kind() == ExpressionKind::Streaming)
             // SAFETY: the expression is valid and is a Streaming node.
@@ -19685,6 +19757,8 @@ impl<'d> Expression<'d> {
     /// dynamic array stream operand). `None` for any other node.
     /// See [`streaming_bitstream_width`](Self::streaming_bitstream_width) for
     /// an example.
+    ///
+    /// Mirrors `slang::ast::StreamingConcatenationExpression::isFixedSize`.
     pub fn streaming_is_fixed_size(&self) -> Option<bool> {
         (self.kind() == ExpressionKind::Streaming)
             // SAFETY: the expression is valid and is a Streaming node.
@@ -22490,6 +22564,18 @@ pub struct ConstantRange {
     pub left: i32,
     /// The right (declared-second) bound.
     pub right: i32,
+}
+
+/// Renders like slang's `slang::ConstantRange::toString`, e.g. `[7:0]`.
+///
+/// ```
+/// let r = sv_lang::ConstantRange { left: 7, right: 0 };
+/// assert_eq!(r.to_string(), "[7:0]");
+/// ```
+impl core::fmt::Display for ConstantRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "[{}:{}]", self.left, self.right)
+    }
 }
 
 impl ConstantRange {

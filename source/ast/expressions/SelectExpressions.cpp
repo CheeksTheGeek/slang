@@ -538,8 +538,16 @@ Expression& RangeSelectExpression::fromSyntax(Compilation& comp, Expression& val
                 validateRange(selectionRange);
         }
         else {
-            if (!context.requireGtZero(rv, right.sourceRange))
+            // Mirror the reversed-range handling above: in a statically-dead
+            // (unevaluated) arm a non-positive part-select width is bad but not
+            // a hard error, so the enclosing statement can be recovered.
+            if (context.inUnevaluatedBranch()) {
+                if (!rv || *rv <= 0)
+                    return badExpr(comp, result);
+            }
+            else if (!context.requireGtZero(rv, right.sourceRange)) {
                 return badExpr(comp, result);
+            }
 
             // If the lhs is a known constant, we can check that now too.
             ConstantValue leftVal;
@@ -617,8 +625,15 @@ Expression& RangeSelectExpression::fromSyntax(Compilation& comp, Expression& val
             }
         }
         else {
-            if (!context.requireGtZero(rv, right.sourceRange))
+            // As above: suppress the hard "must be positive" error in an
+            // unevaluated (statically-dead) arm; the select is still bad.
+            if (context.inUnevaluatedBranch()) {
+                if (!rv || *rv <= 0)
+                    return badExpr(comp, result);
+            }
+            else if (!context.requireGtZero(rv, right.sourceRange)) {
                 return badExpr(comp, result);
+            }
 
             selectionRange.left = 0;
             selectionRange.right = *rv - 1;

@@ -32,6 +32,17 @@ fn invalid_statement_exposes_its_child() {
     comp.add_source(DEAD_ARM).unwrap();
     let d = comp.compile().unwrap();
 
+    // With the dead-arm `+: 0` width error suppressed in unevaluated branches,
+    // this design (like the reversed-range one) now compiles with ZERO errors.
+    let errs: Vec<_> = d
+        .diagnostics()
+        .items()
+        .iter()
+        .filter(|x| x.is_error())
+        .map(|x| format!("{}: {}", x.code_name(), x.message))
+        .collect();
+    assert!(errs.is_empty(), "expected zero errors, got: {errs:?}");
+
     let stmt = proc_body(&d);
     // Confirms the symptom: the whole body is Invalid, with no normal children.
     assert_eq!(stmt.kind(), StatementKind::Invalid);

@@ -57,6 +57,7 @@ pub struct Options {
     flags: u32,
     prefold: bool,
     max_instance_depth: Option<u32>,
+    language_version: Option<crate::LanguageVersion>,
 }
 
 impl Default for Options {
@@ -65,6 +66,7 @@ impl Default for Options {
             flags: 0,
             prefold: true,
             max_instance_depth: None,
+            language_version: None,
         }
     }
 }
@@ -140,6 +142,28 @@ impl Options {
     /// ```
     pub fn with_max_instance_depth(mut self, depth: u32) -> Self {
         self.max_instance_depth = Some(depth);
+        self
+    }
+
+    /// Sets the language version the compilation elaborates under (slang's
+    /// `CompilationOptions::languageVersion`; default 1800-2017). Parse the
+    /// trees under the same version with
+    /// [`Session::with_language_version`](crate::Session::with_language_version).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{LanguageVersion, Options, Session};
+    /// let session = Session::new().with_language_version(LanguageVersion::V1800_2023);
+    /// let opts = Options::new().with_language_version(LanguageVersion::V1800_2023);
+    /// let mut comp = sv_lang::Compilation::new_with(&session, opts)?;
+    /// comp.add_source("module top; endmodule\n")?;
+    /// let design = comp.compile()?;
+    /// assert_eq!(design.options().language_version, 2);
+    /// # Ok(()) }
+    /// ```
+    pub fn with_language_version(mut self, version: crate::LanguageVersion) -> Self {
+        self.language_version = Some(version);
         self
     }
 }
@@ -288,6 +312,9 @@ impl Compilation {
             sys::slang_options_set_compilation_flags(opts, flags);
             if let Some(depth) = options.max_instance_depth {
                 sys::slang_options_set_max_instance_depth(opts, depth);
+            }
+            if let Some(v) = options.language_version {
+                sys::slang_options_set_language_version(opts, v.to_raw());
             }
             let comp = sys::slang_compilation_create(opts, &mut err);
             sys::slang_options_destroy(opts);

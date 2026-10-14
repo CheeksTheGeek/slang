@@ -1119,10 +1119,45 @@ pub enum ConstantValue {
     /// since the string form alone can't tell — see
     /// [`empty`](Self::empty)).
     Map(String, bool),
-    /// A tagged union (not expanded here; use the string form).
+    /// An unpacked union with no active member (slang's `SVUnion` with an
+    /// empty `activeMember`); only the string form is available. A union with
+    /// an active member is a [`TaggedUnion`](Self::TaggedUnion).
     Union(String),
     /// Not a constant / could not be evaluated.
     Bad,
+    /// An unpacked (e.g. `tagged`) union with an active member
+    /// (`slang::SVUnion`): which member, and that member's value.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::ConstantValue;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m;\n\
+    /// #     typedef union tagged { int a; bit [7:0] b; } U;\n\
+    /// #     localparam U P = tagged b 3;\n\
+    /// #     endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let ConstantValue::TaggedUnion { member, value, .. } =
+    ///     body.find("P").unwrap().constant_value().unwrap()
+    /// else {
+    ///     panic!("expected a tagged union")
+    /// };
+    /// assert_eq!(member, 1); // `b`, in field order
+    /// assert_eq!(value.as_i64(), Some(3));
+    /// # Ok(()) }
+    /// ```
+    TaggedUnion {
+        /// Index of the active member in the union type's field order
+        /// (`slang::SVUnion::activeMember`).
+        member: u32,
+        /// The active member's value (`slang::SVUnion::value`).
+        value: Box<ConstantValue>,
+        /// slang's string form of the whole union (what `Display` prints).
+        text: String,
+    },
 }
 
 impl ConstantValue {
@@ -1175,6 +1210,7 @@ impl ConstantValue {
             | ConstantValue::Null
             | ConstantValue::Unbounded
             | ConstantValue::Union(_)
+            | ConstantValue::TaggedUnion { .. }
             | ConstantValue::Bad => true,
         }
     }
@@ -1202,6 +1238,7 @@ impl ConstantValue {
             | ConstantValue::Array(_)
             | ConstantValue::Map(..)
             | ConstantValue::Union(_)
+            | ConstantValue::TaggedUnion { .. }
             | ConstantValue::Bad => false,
         }
     }
@@ -1221,6 +1258,7 @@ impl ConstantValue {
             | ConstantValue::Array(_)
             | ConstantValue::Map(..)
             | ConstantValue::Union(_)
+            | ConstantValue::TaggedUnion { .. }
             | ConstantValue::Bad => false,
         }
     }
@@ -1294,7 +1332,26 @@ impl ConstantValue {
             }
             sys::SLANG_CONSTANT_UNION => {
                 // SAFETY: `raw` is valid; returns an owned slang_str.
-                ConstantValue::Union(unsafe { ffi::owned_str(sys::slang_constant_to_string(raw)) })
+                let text = unsafe { ffi::owned_str(sys::slang_constant_to_string(raw)) };
+                // SAFETY: `raw` is valid; pure read (-1 = no active member).
+                let member = unsafe { sys::slang_constant_union_active_member(raw) };
+                let value = if member >= 0 {
+                    let mut err = ffi::error();
+                    // SAFETY: returns a new owned handle (or null), consumed below.
+                    let v = unsafe { sys::slang_constant_union_value(raw, &mut err) };
+                    // SAFETY: `v` is a valid owned handle (or null), consumed.
+                    unsafe { ConstantValue::from_raw(v) }
+                } else {
+                    None
+                };
+                match (u32::try_from(member), value) {
+                    (Ok(member), Some(value)) => ConstantValue::TaggedUnion {
+                        member,
+                        value: Box::new(value),
+                        text,
+                    },
+                    _ => ConstantValue::Union(text),
+                }
             }
             _ => ConstantValue::Bad,
         }
@@ -1319,7 +1376,9 @@ impl core::fmt::Display for ConstantValue {
                 }
                 f.write_str("}")
             }
-            ConstantValue::Map(s, _) | ConstantValue::Union(s) => f.write_str(s),
+            ConstantValue::Map(s, _)
+            | ConstantValue::Union(s)
+            | ConstantValue::TaggedUnion { text: s, .. } => f.write_str(s),
             ConstantValue::Bad => f.write_str("<bad>"),
         }
     }

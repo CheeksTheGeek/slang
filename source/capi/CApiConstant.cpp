@@ -310,6 +310,32 @@ slang_constant slang_constant_element(slang_constant c, uint64_t index, slang_er
     return nullptr;
 }
 
+int64_t slang_constant_union_active_member(slang_constant c) {
+    SLANG_C_ACCESS(int64_t(-1), {
+        if (!c)
+            return int64_t(-1);
+        const ConstantValue& v = valueOf(c);
+        if (!v.isUnion())
+            return int64_t(-1);
+        auto& u = *v.unionVal();
+        return u.activeMember ? int64_t(*u.activeMember) : int64_t(-1);
+    });
+}
+
+slang_constant slang_constant_union_value(slang_constant c, slang_error* err) {
+    if (!checkEntry(err))
+        return nullptr;
+    SLANG_C_GUARD(err, {
+        if (!c)
+            return (slang_constant) nullptr;
+        const ConstantValue& v = valueOf(c);
+        if (!v.isUnion())
+            return (slang_constant) nullptr;
+        return new slang_constant_t{v.unionVal()->value};
+    });
+    return nullptr;
+}
+
 slang_str slang_constant_to_string(slang_constant c) {
     SLANG_C_ACCESS(borrowed(""), {
         if (!c)

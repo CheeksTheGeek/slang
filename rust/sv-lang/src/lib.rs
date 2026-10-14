@@ -171,6 +171,67 @@ pub fn slang_has_assertions() -> bool {
 #[derive(Clone)]
 pub struct Session {
     inner: Arc<SessionInner>,
+    /// The language version trees parsed through this handle use (`None` =
+    /// slang's default, 1800-2017). Per handle: see
+    /// [`with_language_version`](Session::with_language_version).
+    language_version: Option<LanguageVersion>,
+}
+
+/// A SystemVerilog / Verilog language standard (`slang::LanguageVersion`).
+/// Language features gated on a newer standard (e.g. `covergroup ... extends`,
+/// 1800-2023) are rejected by the parser and elaborator under an older one.
+///
+/// # Examples
+/// ```
+/// # fn main() -> Result<(), sv_lang::Error> {
+/// use sv_lang::{LanguageVersion, Session};
+/// let session = Session::new().with_language_version(LanguageVersion::V1800_2023);
+/// assert_eq!(session.language_version(), Some(LanguageVersion::V1800_2023));
+/// # Ok(()) }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LanguageVersion {
+    /// IEEE 1364-2005 (Verilog).
+    V1364_2005,
+    /// IEEE 1800-2017 (slang's default).
+    V1800_2017,
+    /// IEEE 1800-2023.
+    V1800_2023,
+}
+
+impl LanguageVersion {
+    pub(crate) fn to_raw(self) -> sys::slang_language_version {
+        match self {
+            LanguageVersion::V1364_2005 => sys::SLANG_LANGUAGE_1364_2005,
+            LanguageVersion::V1800_2017 => sys::SLANG_LANGUAGE_1800_2017,
+            LanguageVersion::V1800_2023 => sys::SLANG_LANGUAGE_1800_2023,
+        }
+    }
+}
+
+/// An owned, transient `slang_options` handle, destroyed on drop.
+pub(crate) struct RawOptions(pub(crate) sys::slang_options);
+
+impl RawOptions {
+    /// Options carrying only `version`, or `None` (pass NULL) for the default.
+    pub(crate) fn for_version(version: Option<LanguageVersion>) -> Result<Option<Self>, Error> {
+        let Some(v) = version else { return Ok(None) };
+        let mut err = ffi::error();
+        // SAFETY: out-error checked; the handle is owned by the returned guard.
+        let raw = unsafe { sys::slang_options_create(&mut err) };
+        ffi::check(&err)?;
+        // SAFETY: `raw` is a live options handle.
+        unsafe { sys::slang_options_set_language_version(raw, v.to_raw()) };
+        Ok(Some(RawOptions(raw)))
+    }
+}
+
+impl Drop for RawOptions {
+    fn drop(&mut self) {
+        // SAFETY: we own the handle.
+        unsafe { sys::slang_options_destroy(self.0) };
+    }
 }
 
 struct SessionInner {
@@ -294,7 +355,39 @@ impl Session {
                 sm,
                 backing: SessionBacking::Owned,
             }),
+            language_version: None,
         }
+    }
+
+    /// This handle, parsing under `version` (preprocessor, lexer and parser),
+    /// e.g. to match a compilation's `--std` /
+    /// [`Options::with_language_version`](crate::Options::with_language_version).
+    /// Per handle: other clones of the session (sharing its source manager)
+    /// keep their own version.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{LanguageVersion, Session};
+    /// let src = "class B; endclass\n\
+    ///            class C; covergroup cg; endgroup endclass\n\
+    ///            class D extends C; covergroup extends cg; endgroup endclass\n";
+    /// // `covergroup extends` is 1800-2023 only.
+    /// assert!(Session::new().parse(src)?.diagnostics().has_errors());
+    /// let s23 = Session::new().with_language_version(LanguageVersion::V1800_2023);
+    /// assert!(!s23.parse(src)?.diagnostics().has_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn with_language_version(mut self, version: LanguageVersion) -> Session {
+        self.language_version = Some(version);
+        self
+    }
+
+    /// The language version set by
+    /// [`with_language_version`](Self::with_language_version), or `None` for
+    /// slang's default (1800-2017).
+    pub fn language_version(&self) -> Option<LanguageVersion> {
+        self.language_version
     }
 
     /// Wraps a source manager owned by `keepalive` (a [`Driver`]) without taking
@@ -310,6 +403,7 @@ impl Session {
                 sm,
                 backing: SessionBacking::Borrowed(keepalive),
             }),
+            language_version: None,
         }
     }
 
@@ -357,7 +451,9 @@ impl Session {
         let (t, tl) = ffi::as_ptr_len(text);
         let (n, nl) = ffi::as_ptr_len(name);
         let (p, pl) = ffi::as_ptr_len(path);
-        // SAFETY: all pointers are valid for the call; the out-error is checked.
+        let opts = RawOptions::for_version(self.language_version)?;
+        // SAFETY: all pointers are valid for the call (the options handle, if
+        // any, lives until `opts` drops); the out-error is checked.
         let tree = unsafe {
             sys::slang_syntax_tree_from_text(
                 self.inner.sm,
@@ -367,7 +463,7 @@ impl Session {
                 nl,
                 p,
                 pl,
-                core::ptr::null_mut(),
+                opts.as_ref().map_or(core::ptr::null_mut(), |o| o.0),
                 &mut err,
             )
         };
@@ -392,9 +488,17 @@ impl Session {
         let path = path.as_ref().to_string_lossy();
         let mut err = ffi::error();
         let (p, pl) = ffi::as_ptr_len(&path);
-        // SAFETY: `p`/`pl` describe a valid string; the out-error is checked.
+        let opts = RawOptions::for_version(self.language_version)?;
+        // SAFETY: `p`/`pl` describe a valid string and the options handle (if
+        // any) lives until `opts` drops; the out-error is checked.
         let tree = unsafe {
-            sys::slang_syntax_tree_from_file(self.inner.sm, p, pl, core::ptr::null_mut(), &mut err)
+            sys::slang_syntax_tree_from_file(
+                self.inner.sm,
+                p,
+                pl,
+                opts.as_ref().map_or(core::ptr::null_mut(), |o| o.0),
+                &mut err,
+            )
         };
         ffi::check(&err)?;
         Ok(SyntaxTree::from_raw(tree, self.clone()))

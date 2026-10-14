@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1043 functions generated, 48 skipped (callbacks / struct out-params).
+//! is written on top. 1045 functions generated, 48 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -8218,6 +8218,33 @@ impl Slang {
                 Val::I64(index as i64),
                 Val::I32(__err as i32),
             ],
+        );
+        let __chk = self.check_err(__err);
+        self.free(__err);
+        let __v = __r?;
+        __chk?;
+        Ok(match __v.first() {
+            Some(Val::I32(n)) => *n as u32,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_constant_union_active_member`.
+    pub fn raw_slang_constant_union_active_member(&mut self, c: u32) -> Result<u64, Error> {
+        let __r = self.call("slang_constant_union_active_member", &[Val::I32(c as i32)]);
+        let __v = __r?;
+        Ok(match __v.first() {
+            Some(Val::I64(n)) => *n as u64,
+            Some(Val::I32(n)) => *n as u64,
+            _ => 0,
+        })
+    }
+    /// Raw marshalling for `slang_constant_union_value`.
+    pub fn raw_slang_constant_union_value(&mut self, c: u32) -> Result<u32, Error> {
+        let __err = self.malloc(252)?;
+        self.zero(__err, 252)?;
+        let __r = self.call(
+            "slang_constant_union_value",
+            &[Val::I32(c as i32), Val::I32(__err as i32)],
         );
         let __chk = self.check_err(__err);
         self.free(__err);

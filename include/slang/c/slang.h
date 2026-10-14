@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 7
+#define SLANG_C_VERSION_MINOR 8
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -4114,6 +4114,16 @@ SLANG_C_API uint64_t slang_constant_size(slang_constant c);
 /// if out of range).
 SLANG_C_API slang_constant slang_constant_element(slang_constant c, uint64_t index,
                                                   slang_error* err);
+
+/// For an unpacked-union constant (SLANG_CONSTANT_UNION): the index of the
+/// active member in the union type's field order (slang::SVUnion::activeMember),
+/// or -1 if no member is active or `c` is not a union. history: since 1.8.
+SLANG_C_API int64_t slang_constant_union_active_member(slang_constant c);
+
+/// For an unpacked-union constant: the active member's value
+/// (slang::SVUnion::value) as a new owned constant; NULL if `c` is not a union.
+/// history: since 1.8.
+SLANG_C_API slang_constant slang_constant_union_value(slang_constant c, slang_error* err);
 
 /// The constant printed as SystemVerilog (parity with the string API). Owned.
 SLANG_C_API slang_str slang_constant_to_string(slang_constant c);

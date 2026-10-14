@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 6
+#define SLANG_C_VERSION_MINOR 7
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -4670,6 +4670,22 @@ SLANG_C_API slang_ast slang_stmt_timing(slang_ast node);
 /// SignalEvent) — SLANG_EDGE_POSEDGE/NEGEDGE/BOTHEDGES, or SLANG_EDGE_NONE for a
 /// level-sensitive event and for any other node/kind. history: since 1.3.
 SLANG_C_API slang_edge_kind slang_timing_control_edge(slang_ast node);
+
+/// For a BlockEventList timing control (a covergroup block event,
+/// `@@(begin f or end g)`), the number of block events; 0 for any other node.
+/// slang::ast::BlockEventListControl has no visitExprs, so these are not
+/// reachable through slang_ast_sem_child. history: since 1.7.
+SLANG_C_API uint32_t slang_timing_block_event_count(slang_ast node);
+
+/// True if the index'th block event is a `begin` event, false for `end` (or out
+/// of range). Mirrors slang::ast::BlockEventListControl::Event::isBegin.
+/// history: since 1.7.
+SLANG_C_API bool slang_timing_block_event_is_begin(slang_ast node, uint32_t index);
+
+/// The index'th block event's target (the function / task / method reference),
+/// as a node of domain SLANG_AST_EXPRESSION; null if out of range. Swept by the
+/// freeze pass, so a pure read. history: since 1.7.
+SLANG_C_API slang_ast slang_timing_block_event_target(slang_ast node, uint32_t index);
 
 /// The constant expression of a ConstantPattern (`node` a PATTERN of kind
 /// Constant) — an EXPRESSION node, or a null ast for any other pattern kind.

@@ -189,6 +189,17 @@ impl ParameterAssignment {
     }
 }
 
+/// One event of a covergroup block-event control (`@@(begin f or end g)`) —
+/// see [`TimingControl::block_events`]. Mirrors
+/// `slang::ast::BlockEventListControl::Event`.
+#[derive(Clone, Copy, Debug)]
+pub struct BlockEvent<'d> {
+    /// True for a `begin` event, false for an `end` event.
+    pub is_begin: bool,
+    /// The target block: a reference to the function, task, or method.
+    pub target: Expression<'d>,
+}
+
 /// One `#(...)` parameter override applied to an instance — see
 /// [`Symbol::instance_parameter_overrides`]. The applied value is read off the
 /// overridden [`parameter`](Self::parameter) symbol itself.
@@ -21036,6 +21047,55 @@ impl<'d> TimingControl<'d> {
     pub fn edge(&self) -> EdgeKind {
         // SAFETY: the node is valid; returns SLANG_EDGE_NONE for non-signal-event.
         EdgeKind::from_raw(unsafe { sys::slang_timing_control_edge(self.raw) })
+    }
+
+    /// For a [`TimingControlKind::BlockEventList`](sv_lang_kinds::TimingControlKind::BlockEventList)
+    /// control (a covergroup block event, `@@(begin f or end g)`, LRM 19.3):
+    /// its events in source order. Empty for any other kind. A direct field
+    /// read (`slang::ast::BlockEventListControl::events`); the targets are
+    /// also this control's [`children`](Self::children).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::TimingControlKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #     bit x;\n\
+    /// #     task f; endtask\n\
+    /// #     function void g; endfunction\n\
+    /// #     covergroup cg @@(begin f or end g);\n\
+    /// #         coverpoint x;\n\
+    /// #     endgroup\n\
+    /// #     cg cg_inst = new;\n\
+    /// #     endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let ty = body.find("cg_inst").unwrap().value_type().unwrap();
+    /// let tc = ty.covergroup_coverage_event().unwrap().as_timing_control().unwrap();
+    /// assert_eq!(tc.kind(), TimingControlKind::BlockEventList);
+    /// let evs = tc.block_events();
+    /// assert_eq!(evs.len(), 2);
+    /// assert!(evs[0].is_begin && !evs[1].is_begin);
+    /// # Ok(()) }
+    /// ```
+    pub fn block_events(&self) -> Vec<BlockEvent<'d>> {
+        // SAFETY: the node is valid; count is 0 for non-BlockEventList kinds.
+        let n = unsafe { sys::slang_timing_block_event_count(self.raw) };
+        (0..n)
+            .filter_map(|i| {
+                // SAFETY: `i` is in range; the targets are swept by the freeze pass.
+                let target = wrap(unsafe { sys::slang_timing_block_event_target(self.raw, i) })?;
+                Some(BlockEvent {
+                    // SAFETY: `i` is in range.
+                    is_begin: unsafe { sys::slang_timing_block_event_is_begin(self.raw, i) },
+                    target,
+                })
+            })
+            .collect()
     }
 
     /// The immediate semantic children — the event expression(s), delay

@@ -648,6 +648,16 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | Vi
             t.child->visit(*this);
     }
 
+    // BlockEventListControl has no visitExprs, so the default traversal never
+    // reaches its event targets; slang_timing_block_event_target exposes them,
+    // so sweep them here like any other expression (forcing their memos).
+    void handle(const BlockEventListControl& t) {
+        for (auto& ev : t.events) {
+            if (ev.target)
+                ev.target->visit(*this);
+        }
+    }
+
     void handle(const InvalidExpression& t) {
         // Force this node's own type canonical, as the generic Expression path
         // does (type is not_null), then descend into the wrapped child.
@@ -4131,6 +4141,20 @@ struct SemChildCollectorT : ASTVisitor<SemChildCollectorT<Flags>, Flags> {
             out.push_back(wrapAst(t, comp));
         }
     }
+
+    // BlockEventListControl has no visitExprs; its children are its events'
+    // target expressions (also exposed typed via slang_timing_block_event_*).
+    void handle(const BlockEventListControl& t) {
+        if (depth == 0) {
+            for (auto& ev : t.events) {
+                if (ev.target)
+                    out.push_back(wrapAst(*ev.target, comp));
+            }
+        }
+        else {
+            out.push_back(wrapAst(t, comp));
+        }
+    }
 };
 
 template<VisitFlags Flags>
@@ -4414,6 +4438,39 @@ slang_edge_kind slang_timing_control_edge(slang_ast node) {
         if (tc->kind != TimingControlKind::SignalEvent)
             return SLANG_EDGE_NONE;
         return (slang_edge_kind)tc->as<SignalEventControl>().edge;
+    });
+}
+
+// BlockEventListControl (`@@(begin f or end g)`, covergroup block events) has
+// no visitExprs, so its events are reachable only through `events`.
+static const BlockEventListControl* blockEventListOf(slang_ast node) {
+    if (node.domain != SLANG_AST_TIMING_CONTROL || !node.ptr)
+        return nullptr;
+    auto* tc = static_cast<const TimingControl*>(node.ptr);
+    return tc->kind == TimingControlKind::BlockEventList ? &tc->as<BlockEventListControl>()
+                                                         : nullptr;
+}
+
+uint32_t slang_timing_block_event_count(slang_ast node) {
+    SLANG_C_ACCESS(0u, {
+        auto bel = blockEventListOf(node);
+        return bel ? (uint32_t)bel->events.size() : 0u;
+    });
+}
+
+bool slang_timing_block_event_is_begin(slang_ast node, uint32_t index) {
+    SLANG_C_ACCESS(false, {
+        auto bel = blockEventListOf(node);
+        return bel && index < bel->events.size() && bel->events[index].isBegin;
+    });
+}
+
+slang_ast slang_timing_block_event_target(slang_ast node, uint32_t index) {
+    SLANG_C_ACCESS(noAst(node.compilation, SLANG_AST_EXPRESSION), {
+        auto bel = blockEventListOf(node);
+        if (!bel || index >= bel->events.size() || !bel->events[index].target)
+            return noAst(node.compilation, SLANG_AST_EXPRESSION);
+        return wrapAst(*bel->events[index].target, node.compilation);
     });
 }
 

@@ -54,6 +54,11 @@ module m;
         local_t t = x[3:0]; return t;
     endfunction
     always_ff @(posedge a[0]) b <= a;
+    // Covergroup block events: BlockEventListControl has no visitExprs, so the
+    // freeze sweep has a dedicated overload for its targets (block_events()).
+    task tk; endtask
+    covergroup cgb @@(begin tk or end g); coverpoint a; endgroup
+    cgb cgb_i = new;
 endmodule
 ";
 
@@ -131,6 +136,15 @@ fn touch_all(design: &Design) {
                 let _ = (t.is_class(), t.is_integral(), t.is_signed());
                 let _ = (t.is_four_state(), t.is_unpacked_array(), t.bit_width());
                 let _ = t.to_sv_string();
+                if let Some(tc) = t
+                    .covergroup_coverage_event()
+                    .and_then(|ev| ev.as_timing_control())
+                {
+                    for be in tc.block_events() {
+                        walk_sem(be.target.as_sem_node());
+                    }
+                    walk_sem(tc.as_sem_node());
+                }
                 types.push(t);
             }
             if let Some(ex) = m.initializer() {

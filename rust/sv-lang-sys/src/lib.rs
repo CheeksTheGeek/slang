@@ -22,7 +22,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// `SLANG_C_VERSION_MAJOR` the declarations in this crate were generated for.
 pub const SLANG_C_VERSION_MAJOR: u32 = 1;
 /// `SLANG_C_VERSION_MINOR` the declarations in this crate were generated for.
-pub const SLANG_C_VERSION_MINOR: u32 = 6;
+pub const SLANG_C_VERSION_MINOR: u32 = 7;
 /// Encoded as by `SLANG_C_VERSION_ENCODE`.
 pub const SLANG_C_VERSION: u32 = SLANG_C_VERSION_MAJOR * 10000 + SLANG_C_VERSION_MINOR;
 
@@ -2364,6 +2364,9 @@ unsafe extern "C" {
     pub fn slang_stmt_expr(node: slang_ast) -> slang_ast;
     pub fn slang_stmt_timing(node: slang_ast) -> slang_ast;
     pub fn slang_timing_control_edge(node: slang_ast) -> slang_edge_kind;
+    pub fn slang_timing_block_event_count(node: slang_ast) -> u32;
+    pub fn slang_timing_block_event_is_begin(node: slang_ast, index: u32) -> bool;
+    pub fn slang_timing_block_event_target(node: slang_ast, index: u32) -> slang_ast;
     pub fn slang_pattern_expr(node: slang_ast) -> slang_ast;
     pub fn slang_pattern_variable(node: slang_ast) -> slang_ast;
     pub fn slang_assertion_expr_op(node: slang_ast) -> i32;

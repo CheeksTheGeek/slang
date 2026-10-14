@@ -157,6 +157,12 @@ typedef enum slang_status {
     SLANG_ERR_ABI_MISMATCH = 8,
     /// A traversal was cancelled by a callback or a cancellation request.
     SLANG_ERR_CANCELLED = 9,
+    /// slang stopped elaborating because the instance hierarchy exceeded its
+    /// depth limit (a fatal MaxInstanceDepthExceeded / InfinitelyRecursiveHierarchy
+    /// diagnostic): the hierarchy is effectively unbounded and cannot be
+    /// totalized, so slang_compilation_freeze with SLANG_FREEZE_ELABORATE_ALL
+    /// refuses. The message carries slang's rendered diagnostic. history: since 1.7.
+    SLANG_ERR_UNBOUNDED_HIERARCHY = 10,
     /// A C++ exception with no more specific mapping was caught.
     SLANG_ERR_INTERNAL = 100,
 } slang_status;
@@ -506,6 +512,11 @@ typedef enum slang_compilation_flag {
 
 /// Sets the compilation flags (a bitmask of slang_compilation_flag).
 SLANG_C_API void slang_options_set_compilation_flags(slang_options options, uint32_t flags);
+
+/// Sets the maximum depth of nested module/interface/program instances
+/// (slang::ast::CompilationOptions::maxInstanceDepth; slang's default is 128).
+/// history: since 1.7.
+SLANG_C_API void slang_options_set_max_instance_depth(slang_options options, uint32_t depth);
 
 /* ------------------------------------------------------------------------- */
 /* Syntax trees                                                               */
@@ -1514,6 +1525,20 @@ SLANG_C_API slang_ast slang_system_subroutine_check_arguments(slang_ast call, sl
 /// different path than an ordinary ordered argument). history: since 1.3.
 SLANG_C_API slang_ast slang_system_subroutine_bind_argument(slang_ast call, uint32_t arg_index,
                                                              slang_error* err);
+
+/// Binds the expression syntax `expr` (self-determined, as
+/// slang::ast::Expression::bind) in `scope` -- a scope symbol, or an Instance /
+/// CheckerInstance meaning its body -- with names looked up as of member index
+/// `location_index` in that scope (UINT32_MAX = LookupLocation::max, i.e. every
+/// declaration is visible). Returns the newly allocated Expression (domain
+/// SLANG_AST_EXPRESSION), possibly an Invalid one if binding failed; binding
+/// diagnostics go to the compilation (deduplicated by slang; the cached
+/// slang_compilation_diagnostics result is unchanged). `expr` must come from
+/// one of the compilation's own syntax trees (SLANG_ERR_INVALID_ARG otherwise).
+/// Lifts the seal for the call: the caller must hold the compilation
+/// exclusively. history: since 1.7.
+SLANG_C_API slang_ast slang_bind_expression(slang_ast scope, slang_node expr,
+                                            uint32_t location_index, slang_error* err);
 
 /// True if `sub` has output (or ref / inout) arguments (see
 /// slang::ast::SystemSubroutine::hasOutputArgs). A pure, allocation-free field
@@ -3876,6 +3901,13 @@ SLANG_C_API void slang_type_printer_set_options(slang_type_printer printer,
 
 /// The type of an expression.
 SLANG_C_API slang_ast slang_expression_type(slang_ast expr);
+
+/// For a TypeReference expression (`type(T)` / `type(expr)` used as an operand,
+/// e.g. in `type(a) == type(b)`), the referenced type
+/// (slang::ast::TypeReferenceExpression::targetType); the expression's own
+/// type is the internal type-reference type. Null for any other expression.
+/// history: since 1.7.
+SLANG_C_API slang_ast slang_type_reference_target(slang_ast expr);
 
 /// True if the expression is invalid (had errors).
 SLANG_C_API bool slang_expression_is_bad(slang_ast expr);

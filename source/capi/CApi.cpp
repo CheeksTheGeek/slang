@@ -50,6 +50,8 @@ const char* slang_status_name(slang_status status) {
             return "SLANG_ERR_ABI_MISMATCH";
         case SLANG_ERR_CANCELLED:
             return "SLANG_ERR_CANCELLED";
+        case SLANG_ERR_UNBOUNDED_HIERARCHY:
+            return "SLANG_ERR_UNBOUNDED_HIERARCHY";
         case SLANG_ERR_INTERNAL:
             return "SLANG_ERR_INTERNAL";
     }
@@ -382,4 +384,9 @@ void slang_options_add_top_module(slang_options options, const char* name, size_
 void slang_options_set_compilation_flags(slang_options options, uint32_t flags) {
     if (options)
         options->comp.flags = bitmask<ast::CompilationFlags>(ast::CompilationFlags(flags));
+}
+
+void slang_options_set_max_instance_depth(slang_options options, uint32_t depth) {
+    if (options)
+        options->comp.maxInstanceDepth = depth;
 }

@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1040 functions generated, 48 skipped (callbacks / struct out-params).
+//! is written on top. 1043 functions generated, 48 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -554,6 +554,19 @@ impl Slang {
         let __r = self.call(
             "slang_options_set_compilation_flags",
             &[Val::I32(options as i32), Val::I32(flags as i32)],
+        );
+        __r?;
+        Ok(())
+    }
+    /// Raw marshalling for `slang_options_set_max_instance_depth`.
+    pub fn raw_slang_options_set_max_instance_depth(
+        &mut self,
+        options: u32,
+        depth: u32,
+    ) -> Result<(), Error> {
+        let __r = self.call(
+            "slang_options_set_max_instance_depth",
+            &[Val::I32(options as i32), Val::I32(depth as i32)],
         );
         __r?;
         Ok(())
@@ -2504,6 +2517,43 @@ impl Slang {
             ],
         );
         self.free(__p_call);
+        let __chk = self.check_err(__err);
+        self.free(__err);
+        __r?;
+        __chk?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_bind_expression`.
+    pub fn raw_slang_bind_expression(
+        &mut self,
+        scope: &[u8],
+        expr: &[u8],
+        location_index: u32,
+    ) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_scope = self.malloc(16)?;
+        self.write(__p_scope, &scope[..16])?;
+        let __p_expr = self.malloc(16)?;
+        self.write(__p_expr, &expr[..16])?;
+        let __err = self.malloc(252)?;
+        self.zero(__err, 252)?;
+        let __r = self.call(
+            "slang_bind_expression",
+            &[
+                Val::I32(__sret as i32),
+                Val::I32(__p_scope as i32),
+                Val::I32(__p_expr as i32),
+                Val::I32(location_index as i32),
+                Val::I32(__err as i32),
+            ],
+        );
+        self.free(__p_scope);
+        self.free(__p_expr);
         let __chk = self.check_err(__err);
         self.free(__err);
         __r?;
@@ -7810,6 +7860,24 @@ impl Slang {
         self.write(__p_expr, &expr[..16])?;
         let __r = self.call(
             "slang_expression_type",
+            &[Val::I32(__sret as i32), Val::I32(__p_expr as i32)],
+        );
+        self.free(__p_expr);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_type_reference_target`.
+    pub fn raw_slang_type_reference_target(&mut self, expr: &[u8]) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_expr = self.malloc(16)?;
+        self.write(__p_expr, &expr[..16])?;
+        let __r = self.call(
+            "slang_type_reference_target",
             &[Val::I32(__sret as i32), Val::I32(__p_expr as i32)],
         );
         self.free(__p_expr);

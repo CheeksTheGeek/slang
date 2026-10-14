@@ -40,6 +40,13 @@ pub enum Error {
     AbiMismatch(String),
     /// A traversal was cancelled.
     Cancelled,
+    /// [`Compilation::compile`](crate::Compilation::compile) refused: slang
+    /// stopped elaborating because the instance hierarchy hit its depth limit
+    /// (`MaxInstanceDepthExceeded` / `InfinitelyRecursiveHierarchy`, both
+    /// fatal), e.g. unconditional recursive instantiation. Such a hierarchy is
+    /// effectively unbounded and cannot be fully elaborated into a shareable
+    /// [`Design`](crate::Design). The message is slang's rendered diagnostic.
+    UnboundedHierarchy(String),
     /// A C++ exception with no more specific mapping was caught.
     Internal(String),
 }
@@ -56,6 +63,7 @@ impl Error {
             sys::SLANG_ERR_UNSUPPORTED => Error::Unsupported(message),
             sys::SLANG_ERR_ABI_MISMATCH => Error::AbiMismatch(message),
             sys::SLANG_ERR_CANCELLED => Error::Cancelled,
+            sys::SLANG_ERR_UNBOUNDED_HIERARCHY => Error::UnboundedHierarchy(message),
             _ => Error::Internal(message),
         }
     }
@@ -73,6 +81,7 @@ impl fmt::Display for Error {
             Error::Unsupported(m) => write!(f, "unsupported: {m}"),
             Error::AbiMismatch(m) => write!(f, "ABI mismatch: {m}"),
             Error::Cancelled => f.write_str("cancelled"),
+            Error::UnboundedHierarchy(m) => write!(f, "unbounded hierarchy: {m}"),
             Error::Internal(m) => write!(f, "internal error: {m}"),
         }
     }

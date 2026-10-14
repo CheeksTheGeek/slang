@@ -59,6 +59,8 @@ module m;
     task tk; endtask
     covergroup cgb @@(begin tk or end g); coverpoint a; endgroup
     cgb cgb_i = new;
+    // type(T) operands: the freeze sweep forces targetType's canonical.
+    localparam bit SAME_T = type(byte_t) == type(logic [7:0]);
 endmodule
 ";
 
@@ -89,6 +91,9 @@ fn walk_sem(n: SemNode<'_>) {
         // the R-A1 race surface; the freeze sweep must have forced it.
         if let Some(t) = e.expr_type() {
             let _ = t.canonical();
+        }
+        if let Some(t) = e.type_reference_target() {
+            let _ = (t.canonical(), t.bit_width());
         }
         if let Some(c) = e.invalid_child() {
             walk_sem(c.as_sem_node());

@@ -41,6 +41,7 @@ pub const SLANG_ERR_OUT_OF_MEMORY: slang_status = 6;
 pub const SLANG_ERR_UNSUPPORTED: slang_status = 7;
 pub const SLANG_ERR_ABI_MISMATCH: slang_status = 8;
 pub const SLANG_ERR_CANCELLED: slang_status = 9;
+pub const SLANG_ERR_UNBOUNDED_HIERARCHY: slang_status = 10;
 pub const SLANG_ERR_INTERNAL: slang_status = 100;
 
 /// The in/out error record passed as the last parameter of fallible calls.
@@ -1330,6 +1331,7 @@ unsafe extern "C" {
         err: *mut slang_error,
     );
     pub fn slang_options_set_compilation_flags(options: slang_options, flags: u32);
+    pub fn slang_options_set_max_instance_depth(options: slang_options, depth: u32);
 
     // Syntax trees
     pub fn slang_syntax_tree_from_text(
@@ -1663,6 +1665,12 @@ unsafe extern "C" {
     pub fn slang_system_subroutine_bind_argument(
         call: slang_ast,
         arg_index: u32,
+        err: *mut slang_error,
+    ) -> slang_ast;
+    pub fn slang_bind_expression(
+        scope: slang_ast,
+        expr: slang_node,
+        location_index: u32,
         err: *mut slang_error,
     ) -> slang_ast;
     pub fn slang_system_subroutine_eval(call: slang_ast, err: *mut slang_error) -> slang_constant;
@@ -2099,6 +2107,7 @@ unsafe extern "C" {
 
     // AST: expressions
     pub fn slang_expression_type(expr: slang_ast) -> slang_ast;
+    pub fn slang_type_reference_target(expr: slang_ast) -> slang_ast;
     pub fn slang_expression_is_bad(expr: slang_ast) -> bool;
     pub fn slang_expression_symbol(expr: slang_ast) -> slang_ast;
     pub fn slang_expr_symbol_reference(expr: slang_ast, allow_packed: bool) -> slang_ast;

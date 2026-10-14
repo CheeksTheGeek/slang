@@ -524,7 +524,12 @@ impl Driver {
         };
         // SAFETY: we own `comp`; out-error checked.
         unsafe { sys::slang_compilation_freeze(comp, flags, &mut report, &mut freeze_err) }
-        ffi::check(&freeze_err)?;
+        if let Err(e) = ffi::check(&freeze_err) {
+            // No Design took ownership (e.g. Error::UnboundedHierarchy).
+            // SAFETY: we own `comp` and nothing else references it.
+            unsafe { sys::slang_compilation_destroy(comp) };
+            return Err(e);
+        }
         Ok(crate::ast::design_from_raw(
             comp,
             self.session.clone(),

@@ -37,6 +37,8 @@
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/CoverSymbols.h"
 #include "slang/ast/symbols/AttributeSymbol.h"
+#include "slang/diagnostics/CompilationDiags.h"
+#include "slang/diagnostics/DiagnosticEngine.h"
 #include "slang/ast/symbols/CheckerSymbols.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
@@ -629,6 +631,10 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | Vi
             // direct force, not merely by type-interning (a fragile argument).
             // A no-op for non-aliases; never allocates. (type is not_null.)
             t.type->getCanonicalType();
+            // `type(T)` operands: slang_type_reference_target exposes targetType
+            // (a different type from t.type), so force its canonical too.
+            if constexpr (std::is_same_v<T, TypeReferenceExpression>)
+                t.targetType.getCanonicalType();
             visitDefault(t);
         }
         else {
@@ -747,7 +753,46 @@ void slang_compilation_freeze(slang_compilation comp, uint32_t flags, slang_free
         if (wasSealed)
             comp->comp->unfreeze();
 
-        comp->comp->getAllDiagnostics();
+        auto& allDiags = comp->comp->getAllDiagnostics();
+
+        // slang's own elaboration stops at a hierarchy problem (instance depth
+        // limit hit, or infinite recursion): beyond that point the hierarchy is
+        // effectively unbounded (e.g. a binary self-instantiation without a
+        // terminating generate is ~2^maxInstanceDepth instances once instance
+        // caching is off, as ELABORATE_ALL requires). The totalizing sweep below
+        // has no such stop and would never finish, and stopping it early would
+        // leave reachable, unforced memos -- so refuse instead.
+        if (flags & SLANG_FREEZE_ELABORATE_ALL) {
+            SmallVector<Diagnostic> fatal;
+            for (auto& d : allDiags) {
+                if (d.code == diag::MaxInstanceDepthExceeded ||
+                    d.code == diag::InfinitelyRecursiveHierarchy)
+                    fatal.push_back(d);
+            }
+            if (!fatal.empty()) {
+                // Compact `file:line:col: message` (the error record's message
+                // buffer is fixed-size; slang's full rendering leads with an
+                // "in instance:" path that can be ~maxInstanceDepth segments).
+                std::string msg = "slang stopped elaborating";
+                if (auto sm = comp->comp->getSourceManager()) {
+                    DiagnosticEngine engine(*sm);
+                    for (auto& d : fatal) {
+                        auto loc = sm->getFullyOriginalLoc(d.location);
+                        msg += "\n";
+                        if (loc.buffer() != SourceLocation::NoLocation.buffer()) {
+                            msg += std::string(sm->getFileName(loc)) + ":" +
+                                   std::to_string(sm->getLineNumber(loc)) + ":" +
+                                   std::to_string(sm->getColumnNumber(loc)) + ": ";
+                        }
+                        msg += engine.formatMessage(d);
+                    }
+                }
+                if (wasSealed)
+                    comp->comp->freeze();
+                setError(err, SLANG_ERR_UNBOUNDED_HIERARCHY, msg);
+                return;
+            }
+        }
 
         // Compilation::getUnsignedIntType() lazily allocates into
         // vectorTypeCache on first call (a mutable, non-const-method memo, not
@@ -1830,6 +1875,45 @@ slang_ast slang_system_subroutine_bind_argument(slang_ast call_node, uint32_t ar
         return wrapAst(newArg, call_node.compilation);
     });
     return noAst(call_node.compilation, SLANG_AST_EXPRESSION);
+}
+
+slang_ast slang_bind_expression(slang_ast scope_node, slang_node expr, uint32_t location_index,
+                                slang_error* err) {
+    if (!checkEntry(err))
+        return noAst(scope_node.compilation, SLANG_AST_EXPRESSION);
+    SLANG_C_GUARD(err, {
+        auto sym = symbolOf(scope_node);
+        auto scope = sym ? scopeOf(*sym) : nullptr;
+        if (!scope) {
+            setError(err, SLANG_ERR_INVALID_ARG, "scope is not a scope symbol");
+            return noAst(scope_node.compilation, SLANG_AST_EXPRESSION);
+        }
+        auto n = fromC(expr);
+        if (!n || !syntax::ExpressionSyntax::isKind(n->kind)) {
+            setError(err, SLANG_ERR_INVALID_ARG, "node is not an expression syntax node");
+            return noAst(scope_node.compilation, SLANG_AST_EXPRESSION);
+        }
+        // The bound nodes keep pointers into the syntax and its source
+        // locations must resolve against this compilation's source manager, so
+        // only syntax from one of this compilation's own trees is accepted.
+        auto trees = scope_node.compilation->comp->getSyntaxTrees();
+        if (!expr.tree || std::ranges::none_of(trees, [&](auto& t) {
+                return t.get() == expr.tree->tree.get();
+            })) {
+            setError(err, SLANG_ERR_INVALID_ARG,
+                     "expression syntax is not from one of this compilation's trees");
+            return noAst(scope_node.compilation, SLANG_AST_EXPRESSION);
+        }
+
+        SealLift guard(scope_node.compilation);
+        LookupLocation loc = location_index == UINT32_MAX
+                                 ? LookupLocation::max
+                                 : LookupLocation(scope, location_index);
+        ASTContext context(*scope, loc);
+        auto& bound = Expression::bind(n->as<syntax::ExpressionSyntax>(), context);
+        return wrapAst(bound, scope_node.compilation);
+    });
+    return noAst(scope_node.compilation, SLANG_AST_EXPRESSION);
 }
 
 slang_constant slang_system_subroutine_eval(slang_ast call_node, slang_error* err) {
@@ -4002,6 +4086,15 @@ slang_ast slang_expression_type(slang_ast expr) {
     SLANG_C_ACCESS(noAst(expr.compilation), {
         auto e = exprOf(expr);
         return e ? capi::toC(e->type.get(), expr.compilation) : noAst(expr.compilation);
+    });
+}
+
+slang_ast slang_type_reference_target(slang_ast expr) {
+    SLANG_C_ACCESS(noAst(expr.compilation), {
+        auto e = exprOf(expr);
+        if (!e || e->kind != ExpressionKind::TypeReference)
+            return noAst(expr.compilation);
+        return capi::toC(&e->as<TypeReferenceExpression>().targetType, expr.compilation);
     });
 }
 

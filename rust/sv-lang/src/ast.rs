@@ -56,6 +56,7 @@ impl Drop for Compilation {
 pub struct Options {
     flags: u32,
     prefold: bool,
+    max_instance_depth: Option<u32>,
 }
 
 impl Default for Options {
@@ -63,6 +64,7 @@ impl Default for Options {
         Options {
             flags: 0,
             prefold: true,
+            max_instance_depth: None,
         }
     }
 }
@@ -117,6 +119,27 @@ impl Options {
     /// ```
     pub fn with_flags(mut self, flags: u32) -> Self {
         self.flags = flags;
+        self
+    }
+
+    /// Sets the maximum depth of nested module/interface/program instances
+    /// (slang's `maxInstanceDepth`, default 128). Exceeding it is a fatal
+    /// `MaxInstanceDepthExceeded`, on which [`Compilation::compile`] returns
+    /// [`Error::UnboundedHierarchy`].
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let session = sv_lang::Session::new();
+    /// let opts = sv_lang::Options::new().with_max_instance_depth(16);
+    /// let mut comp = sv_lang::Compilation::new_with(&session, opts)?;
+    /// comp.add_source("module top; endmodule\n")?;
+    /// let design = comp.compile()?;
+    /// assert_eq!(design.options().max_instance_depth, 16);
+    /// # Ok(()) }
+    /// ```
+    pub fn with_max_instance_depth(mut self, depth: u32) -> Self {
+        self.max_instance_depth = Some(depth);
         self
     }
 }
@@ -263,6 +286,9 @@ impl Compilation {
         let raw = unsafe {
             let opts = sys::slang_options_create(&mut err);
             sys::slang_options_set_compilation_flags(opts, flags);
+            if let Some(depth) = options.max_instance_depth {
+                sys::slang_options_set_max_instance_depth(opts, depth);
+            }
             let comp = sys::slang_compilation_create(opts, &mut err);
             sys::slang_options_destroy(opts);
             comp
@@ -2436,6 +2462,85 @@ impl<'d> EvalSession<'d> {
         // SAFETY: the assertion above proves exclusive access; out-error checked.
         let raw =
             unsafe { sys::slang_system_subroutine_bind_argument(call.raw, arg_index, &mut err) };
+        if ffi::check(&err).is_err() {
+            return None;
+        }
+        wrap(raw)
+    }
+
+    /// Binds an expression syntax node in `scope` (`slang::ast::Expression::bind`,
+    /// self-determined) with every declaration of the scope visible, returning
+    /// a newly allocated semantic [`Expression`]. Use it to get real expression
+    /// objects for syntax the design never bound itself, e.g. a declaration's
+    /// [`parameter_default_syntax`](Symbol::parameter_default_syntax) or an
+    /// [`assertion_port_default_syntax`](Symbol::assertion_port_default_syntax).
+    ///
+    /// `scope` is a scope symbol (an `Instance` means its body). `syntax` must
+    /// come from one of this design's own syntax trees. `None` if `scope` is not
+    /// a scope or `syntax` is not an expression from this design; an
+    /// expression that fails to bind comes back as an
+    /// [`ExpressionKind::Invalid`] node. Binding diagnostics are not added to
+    /// [`Design::diagnostics`].
+    ///
+    /// The result borrows this session (and the tree `syntax` came from), so it
+    /// cannot outlive the exclusive access that allowed allocating it.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let tree = session.parse("module m #(parameter int W = 4) (); endmodule\n\
+    /// #     module top; m #(.W(8)) u (); endmodule\n")?;
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add(&tree)?;
+    /// # let mut design = comp.compile()?;
+    /// let eval = design.eval_session();
+    /// let top = eval.design().top_instances().next().unwrap();
+    /// let body = top.instance_body().unwrap().find("u").unwrap().instance_body().unwrap();
+    /// let w = body.find("W").unwrap();
+    /// // The default `4` was overridden, so slang never bound it; bind it now.
+    /// let dflt = w.parameter_default_syntax(&tree).unwrap();
+    /// let e = eval.bind_expression(dflt, body).unwrap();
+    /// assert_eq!(eval.eval_constant(e).unwrap().as_i64(), Some(4));
+    /// # Ok(()) }
+    /// ```
+    pub fn bind_expression<'s>(
+        &'s self,
+        syntax: crate::syntax::Node<'s>,
+        scope: Symbol<'_>,
+    ) -> Option<Expression<'s>> {
+        self.bind_raw(syntax, scope.raw, u32::MAX)
+    }
+
+    /// As [`bind_expression`](Self::bind_expression), but with names looked up
+    /// as of `location` (its scope and position), so declarations after that
+    /// point are not visible — e.g. `sym.lookup_location_before()` binds the
+    /// way an initializer of `sym` would.
+    pub fn bind_expression_at<'s>(
+        &'s self,
+        syntax: crate::syntax::Node<'s>,
+        location: LookupLocation<'_>,
+    ) -> Option<Expression<'s>> {
+        self.bind_raw(syntax, location.raw.scope, location.raw.index)
+    }
+
+    fn bind_raw<'s>(
+        &'s self,
+        syntax: crate::syntax::Node<'s>,
+        scope: sys::slang_ast,
+        index: u32,
+    ) -> Option<Expression<'s>> {
+        assert!(
+            scope.compilation == self.design.raw_compilation(),
+            "bind_expression: scope belongs to a different Design than this EvalSession"
+        );
+        let mut err = ffi::error();
+        // SAFETY: the assertion proves the scope belongs to the design this
+        // session holds exclusively (the C call lifts the seal for its
+        // duration); `syntax` is borrowed from a live tree for 's, which bounds
+        // the result; the C side rejects syntax from foreign trees. Out-error
+        // checked.
+        let raw = unsafe { sys::slang_bind_expression(scope, syntax.raw(), index, &mut err) };
         if ffi::check(&err).is_err() {
             return None;
         }
@@ -5315,11 +5420,17 @@ impl<'d> RandSeqProd<'d> {
     }
 }
 
-/// A stable, owned identity for a symbol: its hierarchical path. Unlike a
+/// A stable, owned identity for a symbol: its hierarchical path plus the
+/// member index of the symbol and of each ancestor scope. Unlike a
 /// [`Symbol`] handle — a cursor into one [`Design`] that cannot outlive it — a
 /// `SymbolId` is a plain owned key (`Hash + Eq + Clone`) that survives the
 /// design being dropped and rebuilt, and re-resolves against a design with
 /// [`Design::resolve`].
+///
+/// The path alone is not unique: unnamed `begin`/`end` blocks and the
+/// implicit block of a `for`/`foreach` contribute no path segment, so a
+/// process-local `int k` has the same path as a module-level `k`. The index
+/// chain tells them apart, so distinct symbols get distinct ids.
 ///
 /// It is stable across a rebuild of the *same* source, which is what makes it
 /// useful to an editor server that recompiles between edits and wants to
@@ -5340,26 +5451,64 @@ impl<'d> RandSeqProd<'d> {
 /// # Ok(()) }
 /// ```
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct SymbolId(String);
+pub struct SymbolId {
+    path: String,
+    /// Member index (`Symbol::getIndex`) of the symbol and each ancestor scope,
+    /// innermost first.
+    chain: Vec<u32>,
+}
 
 impl SymbolId {
-    /// The hierarchical path this id is built from.
+    /// The hierarchical path this id is built from. Not unique on its own (see
+    /// [`SymbolId`]).
     pub fn path(&self) -> &str {
-        &self.0
+        &self.path
     }
 }
 
 impl core::fmt::Display for SymbolId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.path)
     }
 }
 
 impl Symbol<'_> {
-    /// This symbol's stable [`SymbolId`] — its hierarchical path — for use as a
-    /// map key or to remember it across a design rebuild (see [`SymbolId`]).
+    /// This symbol's stable, unique [`SymbolId`] — its hierarchical path plus
+    /// its ancestors' member indices — for use as a map key or to remember it
+    /// across a design rebuild (see [`SymbolId`]).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; int k; initial begin int k; k = 1; end endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// use sv_lang::kinds::SymbolKind;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let outer = body.find("k").unwrap();
+    /// let block = body
+    ///     .members()
+    ///     .find(|s| s.kind() == SymbolKind::StatementBlock)
+    ///     .unwrap();
+    /// let inner = block.find("k").unwrap();
+    /// // Same hierarchical path (the unnamed block adds no segment)...
+    /// assert_eq!(outer.hierarchical_path(), inner.hierarchical_path());
+    /// // ...but distinct ids.
+    /// assert_ne!(outer.id(), inner.id());
+    /// # Ok(()) }
+    /// ```
     pub fn id(&self) -> SymbolId {
-        SymbolId(self.hierarchical_path())
+        let mut chain = Vec::new();
+        let mut cur = Some(*self);
+        while let Some(s) = cur {
+            chain.push(s.lookup_location_before().index());
+            cur = s.parent();
+        }
+        SymbolId {
+            path: self.hierarchical_path(),
+            chain,
+        }
     }
 }
 
@@ -5441,11 +5590,40 @@ owned_handle!(OwnedStatement, Statement, "statement");
 
 impl Design {
     /// Re-resolves a [`SymbolId`] to a live [`Symbol`] in this design, or `None`
-    /// if nothing at that path exists. Like [`lookup`](Design::lookup) it parses
-    /// the path (which allocates), hence `&mut`.
+    /// if no symbol with that identity exists. Like [`lookup`](Design::lookup)
+    /// it parses the path (which allocates), hence `&mut`.
+    ///
+    /// When the path names a different symbol (an unnamed-block local whose
+    /// path collides with an outer declaration), the scope that the path's
+    /// prefix names is searched, through nested unnamed scopes, for the symbol
+    /// whose id matches.
     pub fn resolve(&mut self, id: &SymbolId) -> Option<Symbol<'_>> {
-        self.lookup(id.path())
+        if self.lookup(id.path()).is_some_and(|s| s.id() == *id) {
+            return self.lookup(id.path());
+        }
+        // Collision: unnamed blocks add no path segment, so the target lives
+        // somewhere below the scope that the path minus its last segment names.
+        let (prefix, _) = id.path().rsplit_once('.')?;
+        let start = self.lookup(prefix)?;
+        find_id_in(start.instance_body().unwrap_or(start), id)
     }
+}
+
+/// Depth-first search of `scope`'s members (descending into nested scopes but
+/// not into child instances, whose paths would carry their own segment) for
+/// the symbol with identity `id`.
+fn find_id_in<'d>(scope: Symbol<'d>, id: &SymbolId) -> Option<Symbol<'d>> {
+    for m in scope.members() {
+        if m.name() == id.path().rsplit('.').next().unwrap_or_default() && m.id() == *id {
+            return Some(m);
+        }
+        if m.instance_body().is_none()
+            && let Some(hit) = find_id_in(m, id)
+        {
+            return Some(hit);
+        }
+    }
+    None
 }
 
 /// The kind of definition a `Definition` symbol denotes.
@@ -17218,6 +17396,34 @@ impl<'d> Expression<'d> {
     pub fn is_bad(&self) -> bool {
         // SAFETY: the expression is valid.
         unsafe { sys::slang_expression_is_bad(self.raw) }
+    }
+
+    /// For a [`ExpressionKind::TypeReference`](sv_lang_kinds::ExpressionKind::TypeReference)
+    /// expression (`type(T)` / `type(expr)` as an operand, e.g. in
+    /// `type(a) == type(b)`): the referenced type. `None` for any other kind.
+    /// Distinct from [`expr_type`](Self::expr_type), which is slang's internal
+    /// type-reference type. A direct field read
+    /// (`slang::ast::TypeReferenceExpression::targetType`); its canonical is
+    /// forced by the freeze sweep.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; typedef logic [3:0] nib_t; nib_t a;\n\
+    /// #     localparam bit SAME = type(a) == type(logic [3:0]); endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cmp = body.find("SAME").unwrap().initializer().unwrap();
+    /// let lhs = cmp.left().unwrap(); // `type(a)`
+    /// let t = lhs.type_reference_target().unwrap();
+    /// assert_eq!(t.bit_width(), 4);
+    /// # Ok(()) }
+    /// ```
+    pub fn type_reference_target(&self) -> Option<Type<'d>> {
+        // SAFETY: the expression is valid; null for non-TypeReference kinds.
+        wrap(unsafe { sys::slang_type_reference_target(self.raw) })
     }
 
     /// The symbol this expression refers to (name references, member accesses),

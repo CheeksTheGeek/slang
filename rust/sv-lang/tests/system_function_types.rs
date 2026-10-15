@@ -67,3 +67,44 @@ fn builtin_type_still_works_and_converts() {
         SystemFunctionType::Integer
     );
 }
+
+/// Sized packed returns (VPI vpiSizedFunc / vpiSizedSignedFunc, LRM 38.37.1):
+/// the call's self-determined width and signedness follow the registration.
+#[test]
+fn sized_packed_returns() {
+    let (ty, w) = call_type(
+        |c| {
+            c.add_nonconstant_system_function_sized(
+                "$sized48",
+                48,
+                false,
+                &[SystemFunctionType::Int],
+            )
+            .unwrap()
+        },
+        "module m; logic [47:0] probe = $sized48(3); endmodule\n",
+    );
+    assert_eq!((ty.as_str(), w), ("logic[47:0]", 48));
+
+    let (ty, w) = call_type(
+        |c| {
+            c.add_nonconstant_system_function_sized("$sized128s", 128, true, &[])
+                .unwrap()
+        },
+        "module m; logic signed [127:0] probe = $sized128s(); endmodule\n",
+    );
+    assert_eq!((ty.as_str(), w), ("logic signed[127:0]", 128));
+}
+
+#[test]
+fn packed_width_out_of_range_is_rejected() {
+    let s = Session::new();
+    let mut comp = Compilation::new(&s).unwrap();
+    for width in [0, 1 << 24] {
+        let r = comp.add_nonconstant_system_function_sized("$bad", width, false, &[]);
+        assert!(
+            matches!(r, Err(sv_lang::Error::InvalidArgument(_))),
+            "width {width}: {r:?}"
+        );
+    }
+}

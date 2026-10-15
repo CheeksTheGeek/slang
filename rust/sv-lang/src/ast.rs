@@ -193,23 +193,6 @@ pub enum BuiltinType {
     Void,
 }
 
-impl BuiltinType {
-    // Matches the slang_builtin_type ordinals in the C header.
-    fn to_raw(self) -> u32 {
-        match self {
-            BuiltinType::Int => 0,
-            BuiltinType::Logic => 1,
-            BuiltinType::Bit => 2,
-            BuiltinType::Byte => 3,
-            BuiltinType::Integer => 4,
-            BuiltinType::Real => 5,
-            BuiltinType::ShortReal => 6,
-            BuiltinType::String => 7,
-            BuiltinType::Void => 8,
-        }
-    }
-}
-
 /// A built-in type for the return and argument types of a system function
 /// registered with [`Compilation::add_nonconstant_system_function_typed`].
 /// The superset of [`BuiltinType`] (which converts into it), adding the
@@ -247,8 +230,8 @@ pub enum SystemFunctionType {
 
 impl SystemFunctionType {
     // Matches the slang_builtin_type ordinals in the C header.
-    fn to_raw(self) -> u32 {
-        match self {
+    fn to_raw(self) -> sys::slang_system_function_type {
+        let kind = match self {
             SystemFunctionType::Int => 0,
             SystemFunctionType::Logic => 1,
             SystemFunctionType::Bit => 2,
@@ -262,6 +245,11 @@ impl SystemFunctionType {
             SystemFunctionType::Time => 10,
             SystemFunctionType::ShortInt => 11,
             SystemFunctionType::RealTime => 12,
+        };
+        sys::slang_system_function_type {
+            kind,
+            width: 0,
+            is_signed: false,
         }
     }
 }
@@ -481,8 +469,8 @@ impl Compilation {
         return_type: BuiltinType,
         arg_types: &[BuiltinType],
     ) -> Result<(), Error> {
-        let args: Vec<u32> = arg_types.iter().map(|t| t.to_raw()).collect();
-        self.add_nonconstant_system_function_raw(name, return_type.to_raw(), &args)
+        let args: Vec<SystemFunctionType> = arg_types.iter().map(|&t| t.into()).collect();
+        self.add_nonconstant_system_function_typed(name, return_type.into(), &args)
     }
 
     /// As [`add_nonconstant_system_function`](Self::add_nonconstant_system_function),
@@ -507,21 +495,59 @@ impl Compilation {
         return_type: SystemFunctionType,
         arg_types: &[SystemFunctionType],
     ) -> Result<(), Error> {
-        let args: Vec<u32> = arg_types.iter().map(|t| t.to_raw()).collect();
-        self.add_nonconstant_system_function_raw(name, return_type.to_raw(), &args)
+        self.add_nonconstant_system_function_ex(name, return_type.to_raw(), arg_types)
     }
 
-    fn add_nonconstant_system_function_raw(
+    /// As [`add_nonconstant_system_function_typed`](Self::add_nonconstant_system_function_typed),
+    /// returning a packed four-state vector `logic [width-1:0]` (`signed` if
+    /// requested) — e.g. a VPI `vpiSizedFunc` / `vpiSizedSignedFunc` (LRM
+    /// 38.37.1), whose width comes from its `sizetf`. The call then has that
+    /// self-determined width in `$bits` and concatenations. Fails with
+    /// [`Error::InvalidArgument`] for a `width` outside 1 to 16777215.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{Compilation, Session};
+    /// let session = Session::new();
+    /// let mut comp = Compilation::new(&session)?;
+    /// // A vpiSizedSignedFunc whose sizetf reported 48 bits.
+    /// comp.add_nonconstant_system_function_sized("$my_sized", 48, true, &[])?;
+    /// comp.add_source("module m; localparam int W = $bits($my_sized()); endmodule\n")?;
+    /// let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors());
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// assert_eq!(body.find("W").unwrap().constant_value().unwrap().as_i64(), Some(48));
+    /// # Ok(()) }
+    /// ```
+    pub fn add_nonconstant_system_function_sized(
         &mut self,
         name: &str,
-        return_type: u32,
-        args: &[u32],
+        width: u32,
+        signed: bool,
+        arg_types: &[SystemFunctionType],
     ) -> Result<(), Error> {
+        let ret = sys::slang_system_function_type {
+            kind: sys::SLANG_BUILTIN_TYPE_PACKED,
+            width,
+            is_signed: signed,
+        };
+        self.add_nonconstant_system_function_ex(name, ret, arg_types)
+    }
+
+    fn add_nonconstant_system_function_ex(
+        &mut self,
+        name: &str,
+        return_type: sys::slang_system_function_type,
+        arg_types: &[SystemFunctionType],
+    ) -> Result<(), Error> {
+        let args: Vec<sys::slang_system_function_type> =
+            arg_types.iter().map(|t| t.to_raw()).collect();
         let mut err = ffi::error();
         let (n, nl) = ffi::as_ptr_len(name);
         // SAFETY: `n`/`nl` and the args slice are valid for the call; out-error checked.
         unsafe {
-            sys::slang_compilation_add_nonconstant_system_function(
+            sys::slang_compilation_add_nonconstant_system_function_ex(
                 self.raw,
                 n,
                 nl,

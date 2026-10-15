@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 9
+#define SLANG_C_VERSION_MINOR 10
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -828,7 +828,22 @@ typedef enum slang_builtin_type {
     SLANG_BUILTIN_TYPE_SHORTINT = 11,
     /// `realtime`. history: since 1.9.
     SLANG_BUILTIN_TYPE_REALTIME = 12,
+    /// A packed four-state vector `logic [width-1:0]`, signed if requested;
+    /// only valid in a slang_system_function_type (which carries the width).
+    /// history: since 1.10.
+    SLANG_BUILTIN_TYPE_PACKED = 13,
 } slang_builtin_type;
+
+/// A system function return or argument type for
+/// slang_compilation_add_nonconstant_system_function_ex: a slang_builtin_type
+/// `kind`; for SLANG_BUILTIN_TYPE_PACKED, also the vector `width` (1 to
+/// 16777215 bits) and signedness (ignored for every other kind).
+/// history: since 1.10.
+typedef struct slang_system_function_type {
+    uint32_t kind;
+    uint32_t width;
+    bool is_signed;
+} slang_system_function_type;
 
 /// Registers a non-constant system function (slang::ast::NonConstantFunction) so
 /// the elaborator recognizes `name` (e.g. "$fputc") instead of reporting
@@ -839,6 +854,16 @@ typedef enum slang_builtin_type {
 SLANG_C_API void slang_compilation_add_nonconstant_system_function(
     slang_compilation comp, const char* name, size_t name_len, uint32_t return_type,
     const uint32_t* arg_types, size_t n_args, slang_error* err);
+
+/// As slang_compilation_add_nonconstant_system_function, with each type given
+/// as a slang_system_function_type so sized packed types are expressible (e.g.
+/// a VPI vpiSizedFunc / vpiSizedSignedFunc of any width). Errors with
+/// SLANG_ERR_INVALID_ARG for an unknown kind or an out-of-range packed width.
+/// history: since 1.10.
+SLANG_C_API void slang_compilation_add_nonconstant_system_function_ex(
+    slang_compilation comp, const char* name, size_t name_len,
+    slang_system_function_type return_type, const slang_system_function_type* arg_types,
+    size_t n_args, slang_error* err);
 
 /// Destroys a compilation. Every slang_ast from it becomes invalid. Syntax trees
 /// that were added are released (the caller's own retain, if any, remains).

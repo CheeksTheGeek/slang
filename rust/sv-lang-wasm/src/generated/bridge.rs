@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1045 functions generated, 49 skipped (callbacks / struct out-params).
+//! is written on top. 1046 functions generated, 49 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -1169,6 +1169,36 @@ impl Slang {
         self.zero(__err, 252)?;
         let __r = self.call(
             "slang_compilation_add_nonconstant_system_function",
+            &[
+                Val::I32(comp as i32),
+                Val::I32(name as i32),
+                Val::I32(name_len as i32),
+                Val::I32(return_type as i32),
+                Val::I32(arg_types as i32),
+                Val::I32(n_args as i32),
+                Val::I32(__err as i32),
+            ],
+        );
+        let __chk = self.check_err(__err);
+        self.free(__err);
+        __r?;
+        __chk?;
+        Ok(())
+    }
+    /// Raw marshalling for `slang_compilation_add_nonconstant_system_function_ex`.
+    pub fn raw_slang_compilation_add_nonconstant_system_function_ex(
+        &mut self,
+        comp: u32,
+        name: u32,
+        name_len: u32,
+        return_type: u32,
+        arg_types: u32,
+        n_args: u32,
+    ) -> Result<(), Error> {
+        let __err = self.malloc(252)?;
+        self.zero(__err, 252)?;
+        let __r = self.call(
+            "slang_compilation_add_nonconstant_system_function_ex",
             &[
                 Val::I32(comp as i32),
                 Val::I32(name as i32),

@@ -39,6 +39,7 @@
 #include "slang/ast/symbols/AttributeSymbol.h"
 #include "slang/diagnostics/CompilationDiags.h"
 #include "slang/diagnostics/DiagnosticEngine.h"
+#include "slang/util/Function.h"
 #include "slang/ast/symbols/CheckerSymbols.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
@@ -210,40 +211,84 @@ static const ast::Type* builtinTypeOf(ast::Compilation& c, uint32_t kind) {
     }
 }
 
-void slang_compilation_add_nonconstant_system_function(slang_compilation comp, const char* name,
-                                                       size_t name_len, uint32_t return_type,
-                                                       const uint32_t* arg_types, size_t n_args,
-                                                       slang_error* err) {
-    if (!checkEntry(err))
+// Maps a slang_system_function_type to a Type: a built-in kind, or a sized
+// packed four-state vector. Null for an unknown kind or invalid width. Only
+// called before finalization (getType(width, flags) may allocate).
+static const ast::Type* systemFunctionTypeOf(ast::Compilation& c,
+                                             const slang_system_function_type& t) {
+    if (t.kind != SLANG_BUILTIN_TYPE_PACKED)
+        return builtinTypeOf(c, t.kind);
+    if (t.width == 0 || t.width > SVInt::MAX_BITS)
+        return nullptr;
+    bitmask<ast::IntegralFlags> flags = ast::IntegralFlags::FourState;
+    if (t.is_signed)
+        flags |= ast::IntegralFlags::Signed;
+    return &c.getType(t.width, flags);
+}
+
+static void addNonConstantSystemFunction(slang_compilation comp, const char* name,
+                                         size_t name_len, size_t n_args, slang_error* err,
+                                         function_ref<const ast::Type*(size_t)> argType,
+                                         const ast::Type* ret) {
+    if (!ret) {
+        setError(err, SLANG_ERR_INVALID_ARG, "unknown return type kind or invalid width");
         return;
+    }
+    std::vector<const ast::Type*> args;
+    args.reserve(n_args);
+    for (size_t i = 0; i < n_args; i++) {
+        const ast::Type* a = argType(i);
+        if (!a) {
+            setError(err, SLANG_ERR_INVALID_ARG, "unknown argument type kind or invalid width");
+            return;
+        }
+        args.push_back(a);
+    }
+    comp->comp->addSystemSubroutine(std::make_shared<ast::NonConstantFunction>(
+        std::string(name, name_len), *ret, n_args, args));
+}
+
+static bool checkCanRegister(slang_compilation comp, const char* name, size_t n_args,
+                             const void* arg_types, slang_error* err) {
     if (!comp || !name || (n_args && !arg_types)) {
         setError(err, SLANG_ERR_INVALID_ARG, "null argument");
-        return;
+        return false;
     }
     if (comp->comp->isFinalized()) {
         setError(err, SLANG_ERR_INVALID_STATE,
                  "system subroutines must be registered before the compilation is finalized");
-        return;
+        return false;
     }
+    return true;
+}
+
+void slang_compilation_add_nonconstant_system_function(slang_compilation comp, const char* name,
+                                                       size_t name_len, uint32_t return_type,
+                                                       const uint32_t* arg_types, size_t n_args,
+                                                       slang_error* err) {
+    if (!checkEntry(err) || !checkCanRegister(comp, name, n_args, arg_types, err))
+        return;
     SLANG_C_GUARD(err, {
         auto& c = *comp->comp;
-        const ast::Type* ret = builtinTypeOf(c, return_type);
-        if (!ret) {
-            setError(err, SLANG_ERR_INVALID_ARG, "unknown return type kind");
-            return;
-        }
-        std::vector<const ast::Type*> args;
-        args.reserve(n_args);
-        for (size_t i = 0; i < n_args; i++) {
-            const ast::Type* a = builtinTypeOf(c, arg_types[i]);
-            if (!a) {
-                setError(err, SLANG_ERR_INVALID_ARG, "unknown argument type kind");
-                return;
-            }
-            args.push_back(a);
-        }
-        c.addSystemSubroutine(std::make_shared<ast::NonConstantFunction>(
-            std::string(name, name_len), *ret, n_args, args));
+        addNonConstantSystemFunction(
+            comp, name, name_len, n_args, err,
+            [&](size_t i) { return builtinTypeOf(c, arg_types[i]); },
+            builtinTypeOf(c, return_type));
+    });
+}
+
+void slang_compilation_add_nonconstant_system_function_ex(
+    slang_compilation comp, const char* name, size_t name_len,
+    slang_system_function_type return_type, const slang_system_function_type* arg_types,
+    size_t n_args, slang_error* err) {
+    if (!checkEntry(err) || !checkCanRegister(comp, name, n_args, arg_types, err))
+        return;
+    SLANG_C_GUARD(err, {
+        auto& c = *comp->comp;
+        addNonConstantSystemFunction(
+            comp, name, name_len, n_args, err,
+            [&](size_t i) { return systemFunctionTypeOf(c, arg_types[i]); },
+            systemFunctionTypeOf(c, return_type));
     });
 }
 

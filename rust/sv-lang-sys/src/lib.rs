@@ -22,7 +22,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// `SLANG_C_VERSION_MAJOR` the declarations in this crate were generated for.
 pub const SLANG_C_VERSION_MAJOR: u32 = 1;
 /// `SLANG_C_VERSION_MINOR` the declarations in this crate were generated for.
-pub const SLANG_C_VERSION_MINOR: u32 = 9;
+pub const SLANG_C_VERSION_MINOR: u32 = 10;
 /// Encoded as by `SLANG_C_VERSION_ENCODE`.
 pub const SLANG_C_VERSION: u32 = SLANG_C_VERSION_MAJOR * 10000 + SLANG_C_VERSION_MINOR;
 
@@ -429,6 +429,10 @@ const _: () = {
     assert!(size_of::<slang_error>() == 252);
     assert!(size_of::<slang_str>() == 24);
     assert!(size_of::<slang_diag>() == 32);
+    assert!(size_of::<slang_system_function_type>() == 12);
+    assert!(offset_of!(slang_system_function_type, kind) == 0);
+    assert!(offset_of!(slang_system_function_type, width) == 4);
+    assert!(offset_of!(slang_system_function_type, is_signed) == 8);
 
     assert!(offset_of!(slang_node, ptr) == 0);
     assert!(offset_of!(slang_node, tree) == 8);
@@ -782,6 +786,16 @@ pub struct slang_definition_lookup_result {
 
 /// A position within a scope's member list (`slang::ast::LookupLocation`).
 /// Trivially copyable value struct.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct slang_system_function_type {
+    pub kind: u32,
+    pub width: u32,
+    pub is_signed: bool,
+}
+
+pub const SLANG_BUILTIN_TYPE_PACKED: u32 = 13;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct slang_lookup_location {
@@ -1466,6 +1480,15 @@ unsafe extern "C" {
         name_len: usize,
         return_type: u32,
         arg_types: *const u32,
+        n_args: usize,
+        err: *mut slang_error,
+    );
+    pub fn slang_compilation_add_nonconstant_system_function_ex(
+        comp: slang_compilation,
+        name: *const c_char,
+        name_len: usize,
+        return_type: slang_system_function_type,
+        arg_types: *const slang_system_function_type,
         n_args: usize,
         err: *mut slang_error,
     );

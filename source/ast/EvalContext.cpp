@@ -23,6 +23,7 @@ void EvalContext::reset() {
     disableTarget = nullptr;
     queueTarget = nullptr;
     stack.clear();
+    statics.clear();
     lvalStack.clear();
     diags.clear();
     warnings.clear();
@@ -56,9 +57,14 @@ ConstantValue* EvalContext::findLocal(const ValueSymbol* symbol) {
 
     auto& frame = stack.back();
     auto it = frame.temporaries.find(symbol);
-    if (it == frame.temporaries.end())
-        return nullptr;
-    return &it->second;
+    if (it != frame.temporaries.end())
+        return &it->second;
+
+    // Not a frame local; it may be an explicitly static variable, whose storage
+    // is shared across calls.
+    if (auto sit = statics.find(symbol); sit != statics.end())
+        return &sit->second;
+    return nullptr;
 }
 
 void EvalContext::deleteLocal(const ValueSymbol* symbol) {
@@ -66,6 +72,13 @@ void EvalContext::deleteLocal(const ValueSymbol* symbol) {
         auto& frame = stack.back();
         frame.temporaries.erase(symbol);
     }
+}
+
+std::pair<ConstantValue*, bool> EvalContext::getOrCreateStatic(const ValueSymbol* symbol) {
+    auto [it, inserted] = statics.try_emplace(symbol);
+    if (inserted)
+        it->second = symbol->getType().getDefaultValue();
+    return {&it->second, !inserted};
 }
 
 bool EvalContext::pushFrame(const SubroutineSymbol& subroutine, SourceLocation callLocation,

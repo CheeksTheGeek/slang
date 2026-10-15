@@ -701,12 +701,15 @@ endfunction
 ```
 
 -Wstatic-skipped
-A constant function contains a static variable with an initializer. That initializer
-will be skipped during constant evaluation, which could lead to unintuitive results.
+A constant function contains a variable that is static only because the function is
+(no explicit `static` keyword) and that has an initializer. That initializer will be
+skipped during constant evaluation, which could lead to unintuitive results. Variables
+declared with an explicit `static` keyword are initialized once and persist across
+calls within a constant evaluation.
 ```
 localparam int foo = func();
 function int func;
-    static int i = 1;
+    int i = 1;
     return i;
 endfunction
 ```

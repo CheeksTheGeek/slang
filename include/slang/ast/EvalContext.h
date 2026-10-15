@@ -74,6 +74,13 @@ public:
     /// storage will be invalidated.
     void deleteLocal(const ValueSymbol* symbol);
 
+    /// Gets the storage for an explicitly `static` variable declared inside a
+    /// subroutine. Such storage is shared by every call (and every recursion
+    /// level) within this evaluation and persists across calls; it is created
+    /// on first use. Returns the storage and whether it already existed (i.e.
+    /// whether the variable's initializer has already run).
+    std::pair<ConstantValue*, bool> getOrCreateStatic(const ValueSymbol* symbol);
+
     /// Push a new frame onto the call stack.
     [[nodiscard]] bool pushFrame(const SubroutineSymbol& subroutine, SourceLocation callLocation,
                                  LookupLocation lookupLocation);
@@ -196,6 +203,9 @@ private:
     const Symbol* disableTarget = nullptr;
     const ConstantValue* queueTarget = nullptr;
     SmallVector<Frame> stack;
+    // Storage for explicitly `static` subroutine variables (see
+    // getOrCreateStatic). A map so that the values don't move around in memory.
+    std::map<const ValueSymbol*, ConstantValue> statics;
     SmallVector<LValue*> lvalStack;
     Diagnostics diags;
     Diagnostics warnings;

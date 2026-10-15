@@ -1850,7 +1850,7 @@ TEST_CASE("Array query functions") {
     NO_SESSION_ERRORS;
 }
 
-TEST_CASE("Static variables aren't initialized in consteval") {
+TEST_CASE("Explicitly static variables in consteval are initialized once and persist") {
     ScriptSession session;
 
     session.eval(R"(
@@ -1859,13 +1859,32 @@ function int foo;
     return ++j;
 endfunction
 )");
+    // The initializer runs before first use.
     session.eval("localparam int i = foo();");
+    CHECK(session.eval("i").integer() == 2);
 
-    CHECK(session.eval("i").integer() == 1);
+    // Within one evaluation the storage persists across calls: 2 + 3.
+    session.eval("localparam int k = foo() + foo();");
+    CHECK(session.eval("k").integer() == 5);
 
-    auto diags = session.getDiagnostics();
-    REQUIRE(diags.size() == 1);
-    CHECK(diags[0].code == diag::ConstEvalStaticSkipped);
+    // Separate evaluations don't share state.
+    session.eval("localparam int i2 = foo();");
+    CHECK(session.eval("i2").integer() == 2);
+
+    // Locals that are static only because the function is (no `static`
+    // keyword) keep per-call storage, so recursion without `automatic` works.
+    session.eval(R"(
+function int fact(int n);
+    int r;
+    if (n <= 1) return 1;
+    r = n * fact(n - 1);
+    return r;
+endfunction
+)");
+    session.eval("localparam int f5 = fact(5);");
+    CHECK(session.eval("f5").integer() == 120);
+
+    NO_SESSION_ERRORS;
 }
 
 TEST_CASE("Complicated lvalue path") {

@@ -60,10 +60,43 @@ void DisableStatement::serializeTo(ASTSerializer& serializer) const {
     serializer.write("target", target);
 }
 
+// True if the variable's declaration explicitly says `static` (as opposed to
+// being static only because its enclosing subroutine is).
+static bool isExplicitlyStatic(const VariableSymbol& symbol) {
+    auto syntax = symbol.getSyntax();
+    if (!syntax || !syntax->parent || syntax->parent->kind != SyntaxKind::DataDeclaration)
+        return false;
+
+    for (auto mod : syntax->parent->as<DataDeclarationSyntax>().modifiers) {
+        if (mod.kind == TokenKind::StaticKeyword)
+            return true;
+    }
+    return false;
+}
+
 ER VariableDeclStatement::evalImpl(EvalContext& context) const {
     // Check the size limit up front to avoid running out of memory on huge variables.
     if (!context.checkBitCount(symbol.getType().getBitstreamWidth(), sourceRange))
         return ER::Fail;
+
+    // An explicitly static variable has one storage location shared by every
+    // call within this evaluation, and its initializer runs only the first
+    // time the declaration executes (e.g. `static int acc = 1;` accumulates
+    // across calls). Variables that are static only because their subroutine
+    // is keep per-call storage, so recursive constant functions declared
+    // without `automatic` still evaluate as they always have.
+    if (symbol.lifetime == VariableLifetime::Static && isExplicitlyStatic(symbol)) {
+        auto [storage, initialized] = context.getOrCreateStatic(&symbol);
+        if (!initialized) {
+            if (auto initializer = symbol.getInitializer()) {
+                auto initial = initializer->eval(context);
+                if (!initial)
+                    return ER::Fail;
+                *storage = std::move(initial);
+            }
+        }
+        return ER::Success;
+    }
 
     // Figure out the initial value for the variable.
     ConstantValue initial;

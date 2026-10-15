@@ -22,7 +22,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// `SLANG_C_VERSION_MAJOR` the declarations in this crate were generated for.
 pub const SLANG_C_VERSION_MAJOR: u32 = 1;
 /// `SLANG_C_VERSION_MINOR` the declarations in this crate were generated for.
-pub const SLANG_C_VERSION_MINOR: u32 = 8;
+pub const SLANG_C_VERSION_MINOR: u32 = 9;
 /// Encoded as by `SLANG_C_VERSION_ENCODE`.
 pub const SLANG_C_VERSION: u32 = SLANG_C_VERSION_MAJOR * 10000 + SLANG_C_VERSION_MINOR;
 
@@ -2204,6 +2204,7 @@ unsafe extern "C" {
     pub fn slang_svint_as_i64(v: slang_svint, out: *mut i64) -> bool;
     pub fn slang_svint_as_u64(v: slang_svint, out: *mut u64) -> bool;
     pub fn slang_svint_get_bit(v: slang_svint, index: u32) -> u8;
+    pub fn slang_svint_copy_bits(v: slang_svint, out: *mut u8, count: u32) -> u32;
     pub fn slang_svint_to_string(v: slang_svint) -> slang_str;
     pub fn slang_svint_count_leading_ones(v: slang_svint) -> u32;
     pub fn slang_svint_count_leading_zeros(v: slang_svint) -> u32;

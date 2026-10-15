@@ -69,11 +69,11 @@ pub use ast::{
     PulseStyleKind, RandCaseItem, RandMode, RandSeqProd, RandSeqProdKind, RawDiagnostics,
     RawDriverFlags, ReadRange, RepeatKind, ScalarKind, SemNode, SensitivityKind, SensitivityList,
     SourceLibrary, SourceLoc, SourceSpan, Statement, StatementBlockKind, StatementEvalResult,
-    StreamExpr, Symbol, SymbolId, SystemMethod, SystemTimingCheckArg, SystemTimingCheckKind,
-    TimeScale, TimeScaleValue, TimeUnit, TimingControl, TimingPathConnectionKind,
-    TimingPathPolarity, TransRange, TransSet, Type, TypePrinter, TypePrintingOptions, TypeSetter,
-    UnaryOp, UnconnectedDrive, UnfreezeGuard, UniquePriorityCheck, ValueDriver, ValuePath,
-    VariableFlags, VariableLifetime, Visibility, WithClauseMode,
+    StreamExpr, Symbol, SymbolId, SystemFunctionType, SystemMethod, SystemTimingCheckArg,
+    SystemTimingCheckKind, TimeScale, TimeScaleValue, TimeUnit, TimingControl,
+    TimingPathConnectionKind, TimingPathPolarity, TransRange, TransSet, Type, TypePrinter,
+    TypePrintingOptions, TypeSetter, UnaryOp, UnconnectedDrive, UnfreezeGuard, UniquePriorityCheck,
+    ValueDriver, ValuePath, VariableFlags, VariableLifetime, Visibility, WithClauseMode,
 };
 pub use constant::{Bit, ConstantValue, Digit, LiteralBase, OwnedSVInt, SVInt};
 pub use driver::{

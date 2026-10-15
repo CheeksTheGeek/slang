@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 8
+#define SLANG_C_VERSION_MINOR 9
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -820,6 +820,14 @@ typedef enum slang_builtin_type {
     SLANG_BUILTIN_TYPE_SHORTREAL = 6,
     SLANG_BUILTIN_TYPE_STRING = 7,
     SLANG_BUILTIN_TYPE_VOID = 8,
+    /// `longint` (64-bit two-state signed). history: since 1.9.
+    SLANG_BUILTIN_TYPE_LONGINT = 9,
+    /// `time` (64-bit four-state unsigned). history: since 1.9.
+    SLANG_BUILTIN_TYPE_TIME = 10,
+    /// `shortint` (16-bit two-state signed). history: since 1.9.
+    SLANG_BUILTIN_TYPE_SHORTINT = 11,
+    /// `realtime`. history: since 1.9.
+    SLANG_BUILTIN_TYPE_REALTIME = 12,
 } slang_builtin_type;
 
 /// Registers a non-constant system function (slang::ast::NonConstantFunction) so
@@ -4230,6 +4238,10 @@ SLANG_C_API bool slang_svint_as_i64(slang_svint v, int64_t* out);
 SLANG_C_API bool slang_svint_as_u64(slang_svint v, uint64_t* out);
 /// The i'th bit: 0, 1, 2 (x), or 3 (z). Out-of-range returns 0.
 SLANG_C_API uint8_t slang_svint_get_bit(slang_svint v, uint32_t index);
+/// Copies the first min(count, bit width) bits, LSB first, into `out` with the
+/// slang_svint_get_bit encoding (0, 1, 2 = x, 3 = z); returns how many were
+/// written. One call for a value of any width. history: since 1.9.
+SLANG_C_API uint32_t slang_svint_copy_bits(slang_svint v, uint8_t* out, uint32_t count);
 /// The SVInt printed as SystemVerilog (e.g. "8'hff"). Owned.
 SLANG_C_API slang_str slang_svint_to_string(slang_svint v);
 

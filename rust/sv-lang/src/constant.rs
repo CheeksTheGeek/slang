@@ -231,16 +231,13 @@ pub struct SVInt {
     has_unknown: bool,
     as_i64: Option<i64>,
     as_u64: Option<u64>,
-    /// Per-bit values, LSB-first. Populated for widths up to a cap; empty for
-    /// very wide values (use [`to_string`](Self::to_string) then).
+    /// Per-bit values, LSB-first, for the full width (copied in one call).
     bits: Vec<Bit>,
     text: String,
     /// Captured from `slang::ConstantValue::isTrue`/`isFalse` (via
     /// `slang_constant_is_true`/`_is_false`) at construction time, rather
-    /// than re-derived from `bits`: those predicates are slang's own
-    /// three-valued reduction-OR over the *full* value (see
-    /// `SVInt::reductionOr`), which `bits` alone can't reproduce once a
-    /// value is wider than the per-bit expansion cap above.
+    /// than re-derived from `bits`, so they are exactly slang's own
+    /// three-valued reduction-OR over the value (see `SVInt::reductionOr`).
     is_true: bool,
     is_false: bool,
     leading_ones: u32,
@@ -253,9 +250,6 @@ pub struct SVInt {
     zs: u32,
     active_bits: u32,
 }
-
-/// Widths above this are not expanded bit-by-bit (still available via string).
-const MAX_BITS: u32 = 1024;
 
 impl SVInt {
     /// The declared bit width.
@@ -278,11 +272,29 @@ impl SVInt {
     pub fn as_u64(&self) -> Option<u64> {
         self.as_u64
     }
-    /// The i'th bit (LSB = 0), or `None` if out of range or not expanded.
+    /// The i'th bit (LSB = 0), or `None` if out of range.
     pub fn bit(&self, index: usize) -> Option<Bit> {
         self.bits.get(index).copied()
     }
-    /// The expanded per-bit values, LSB-first (empty for very wide values).
+    /// The per-bit values, LSB-first: all [`bit_width`](Self::bit_width) of
+    /// them, at any width.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::Bit;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source("module m; localparam logic [1099:0] W = {550{2'b10}}; endmodule\n")?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let cv = body.find("W").unwrap().constant_value().unwrap();
+    /// let w = cv.as_integer().unwrap();
+    /// assert_eq!(w.bits().len(), 1100);
+    /// assert_eq!(w.bit(0), Some(Bit::Zero));
+    /// assert_eq!(w.bit(1099), Some(Bit::One));
+    /// # Ok(()) }
+    /// ```
     pub fn bits(&self) -> &[Bit] {
         &self.bits
     }
@@ -353,13 +365,10 @@ impl SVInt {
             let as_i64 = sys::slang_svint_as_i64(v, &mut i).then_some(i);
             let mut u = 0u64;
             let as_u64 = sys::slang_svint_as_u64(v, &mut u).then_some(u);
-            let bits = if bit_width <= MAX_BITS {
-                (0..bit_width)
-                    .map(|b| Bit::from_raw(sys::slang_svint_get_bit(v, b)))
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            let mut raw_bits = vec![0u8; bit_width as usize];
+            let n = sys::slang_svint_copy_bits(v, raw_bits.as_mut_ptr(), bit_width);
+            raw_bits.truncate(n as usize);
+            let bits = raw_bits.into_iter().map(Bit::from_raw).collect();
             let text = ffi::owned_str(sys::slang_svint_to_string(v));
             let leading_ones = sys::slang_svint_count_leading_ones(v);
             let leading_zeros = sys::slang_svint_count_leading_zeros(v);

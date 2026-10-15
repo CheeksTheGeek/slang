@@ -511,6 +511,18 @@ uint8_t slang_svint_get_bit(slang_svint v, uint32_t index) {
     });
 }
 
+uint32_t slang_svint_copy_bits(slang_svint v, uint8_t* out, uint32_t count) {
+    SLANG_C_ACCESS(0u, {
+        if (!v || !out)
+            return 0u;
+        auto& sv = svintOf(v);
+        uint32_t n = std::min(count, (uint32_t)sv.getBitWidth());
+        for (uint32_t i = 0; i < n; i++)
+            out[i] = logicToU8(sv[(int32_t)i]);
+        return n;
+    });
+}
+
 slang_str slang_svint_to_string(slang_svint v) {
     SLANG_C_ACCESS(borrowed(""), {
         if (!v)

@@ -210,6 +210,78 @@ impl BuiltinType {
     }
 }
 
+/// A built-in type for the return and argument types of a system function
+/// registered with [`Compilation::add_nonconstant_system_function_typed`].
+/// The superset of [`BuiltinType`] (which converts into it), adding the
+/// 64-bit and other types; `#[non_exhaustive]` so more can be added.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SystemFunctionType {
+    /// `int` (32-bit two-state signed).
+    Int,
+    /// `logic` (single-bit four-state).
+    Logic,
+    /// `bit` (single-bit two-state).
+    Bit,
+    /// `byte` (8-bit two-state signed).
+    Byte,
+    /// `integer` (32-bit four-state signed).
+    Integer,
+    /// `real` (double-precision float).
+    Real,
+    /// `shortreal` (single-precision float).
+    ShortReal,
+    /// `string`.
+    String,
+    /// `void`.
+    Void,
+    /// `longint` (64-bit two-state signed).
+    LongInt,
+    /// `time` (64-bit four-state unsigned), e.g. for `$simtime`-style counters.
+    Time,
+    /// `shortint` (16-bit two-state signed).
+    ShortInt,
+    /// `realtime`.
+    RealTime,
+}
+
+impl SystemFunctionType {
+    // Matches the slang_builtin_type ordinals in the C header.
+    fn to_raw(self) -> u32 {
+        match self {
+            SystemFunctionType::Int => 0,
+            SystemFunctionType::Logic => 1,
+            SystemFunctionType::Bit => 2,
+            SystemFunctionType::Byte => 3,
+            SystemFunctionType::Integer => 4,
+            SystemFunctionType::Real => 5,
+            SystemFunctionType::ShortReal => 6,
+            SystemFunctionType::String => 7,
+            SystemFunctionType::Void => 8,
+            SystemFunctionType::LongInt => 9,
+            SystemFunctionType::Time => 10,
+            SystemFunctionType::ShortInt => 11,
+            SystemFunctionType::RealTime => 12,
+        }
+    }
+}
+
+impl From<BuiltinType> for SystemFunctionType {
+    fn from(t: BuiltinType) -> Self {
+        match t {
+            BuiltinType::Int => SystemFunctionType::Int,
+            BuiltinType::Logic => SystemFunctionType::Logic,
+            BuiltinType::Bit => SystemFunctionType::Bit,
+            BuiltinType::Byte => SystemFunctionType::Byte,
+            BuiltinType::Integer => SystemFunctionType::Integer,
+            BuiltinType::Real => SystemFunctionType::Real,
+            BuiltinType::ShortReal => SystemFunctionType::ShortReal,
+            BuiltinType::String => SystemFunctionType::String,
+            BuiltinType::Void => SystemFunctionType::Void,
+        }
+    }
+}
+
 /// How a parameter's applied value (or type) was supplied — see
 /// [`Symbol::parameter_assignment`]. Maps onto VPI's `vpiConnByName`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -409,16 +481,51 @@ impl Compilation {
         return_type: BuiltinType,
         arg_types: &[BuiltinType],
     ) -> Result<(), Error> {
+        let args: Vec<u32> = arg_types.iter().map(|t| t.to_raw()).collect();
+        self.add_nonconstant_system_function_raw(name, return_type.to_raw(), &args)
+    }
+
+    /// As [`add_nonconstant_system_function`](Self::add_nonconstant_system_function),
+    /// with the wider [`SystemFunctionType`] set — e.g. a 64-bit `time` /
+    /// `longint` return, so values at or above 2^31 aren't truncated.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::{Compilation, Session, SystemFunctionType};
+    /// let session = Session::new();
+    /// let mut comp = Compilation::new(&session)?;
+    /// comp.add_nonconstant_system_function_typed("$simtime", SystemFunctionType::Time, &[])?;
+    /// comp.add_source("module m; time t; initial t = $simtime; endmodule\n")?;
+    /// let design = comp.compile()?;
+    /// assert!(!design.diagnostics().has_errors());
+    /// # Ok(()) }
+    /// ```
+    pub fn add_nonconstant_system_function_typed(
+        &mut self,
+        name: &str,
+        return_type: SystemFunctionType,
+        arg_types: &[SystemFunctionType],
+    ) -> Result<(), Error> {
+        let args: Vec<u32> = arg_types.iter().map(|t| t.to_raw()).collect();
+        self.add_nonconstant_system_function_raw(name, return_type.to_raw(), &args)
+    }
+
+    fn add_nonconstant_system_function_raw(
+        &mut self,
+        name: &str,
+        return_type: u32,
+        args: &[u32],
+    ) -> Result<(), Error> {
         let mut err = ffi::error();
         let (n, nl) = ffi::as_ptr_len(name);
-        let args: Vec<u32> = arg_types.iter().map(|t| t.to_raw()).collect();
         // SAFETY: `n`/`nl` and the args slice are valid for the call; out-error checked.
         unsafe {
             sys::slang_compilation_add_nonconstant_system_function(
                 self.raw,
                 n,
                 nl,
-                return_type.to_raw(),
+                return_type,
                 args.as_ptr(),
                 args.len(),
                 &mut err,
@@ -7617,13 +7724,10 @@ impl<'d> Symbol<'d> {
     /// (see [`constant_value`](Self::constant_value)), as a new
     /// [`ConstantValue`](crate::ConstantValue) of width `msb - lsb + 1`.
     ///
-    /// This is the **wide-value path**: the slice is computed on slang's
-    /// full-width value, so it works for parameters wider than 1024 bits —
-    /// which [`constant_value`](Self::constant_value) reports with the correct
-    /// [`bit_width`](crate::SVInt::bit_width) but, being marshalled through the
-    /// 1024-bit [`SVInt`](crate::SVInt) limit, with an empty
-    /// [`bits`](crate::SVInt::bits). Read such a value in chunks of ≤1024 bits.
-    /// Out-of-range indices come back as x (matching `slang::SVInt::slice`), so
+    /// The slice is computed on slang's full-width value, so it reads a window
+    /// of any parameter without materializing the whole value (which
+    /// [`constant_value`](Self::constant_value) also provides in full, at any
+    /// width, via [`SVInt::bits`](crate::SVInt::bits)). Out-of-range indices come back as x (matching `slang::SVInt::slice`), so
     /// this only fails on `msb < lsb`, a non-integer / absent value, or an
     /// underlying error. Mirrors
     /// [`Expression::constant_bit_slice`](Expression::constant_bit_slice) over

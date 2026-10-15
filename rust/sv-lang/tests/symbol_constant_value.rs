@@ -121,10 +121,9 @@ fn signed_wide_defparam_preserves_sign() {
 
 #[test]
 fn constant_bit_slice_reads_above_1024_bits() {
-    // A parameter wider than SVInt's 1024-bit marshalling cap, overridden by
-    // defparam. constant_value() reports the correct width but empty bits; the
-    // slice accessor reads any window on slang's full-width value, above and
-    // below the 1024-bit line.
+    // A parameter wider than 1024 bits, overridden by defparam. The full value
+    // marshals every bit (the old 1024-bit cap is gone), and the slice accessor
+    // reads any window on slang's full-width value; the two agree.
     let d = compile(
         "module inner; parameter [2047:0] P = 0; endmodule\n\
          module top;\n  inner u();\n\
@@ -134,14 +133,18 @@ fn constant_bit_slice_reads_above_1024_bits() {
     let u = top.members().find(|s| s.name() == "u").unwrap();
     let p = u.instance_body().unwrap().find("P").unwrap();
 
-    // The full value is too wide to marshal: correct width, but no bits cross.
+    // The full value marshals all 2048 bits.
     let full = p.constant_value().unwrap();
     let fi = full.as_integer().unwrap();
     assert_eq!(fi.bit_width(), 2048);
-    assert!(
-        fi.bits().is_empty(),
-        "wide value should not marshal its bits"
-    );
+    assert_eq!(fi.bits().len(), 2048);
+    let word = |lo: usize| {
+        (0..16).fold(0i64, |acc, i| {
+            acc | (i64::from(fi.bit(lo + i) == Some(sv_lang::Bit::One)) << i)
+        })
+    };
+    assert_eq!(word(0), 0xBEEF);
+    assert_eq!(word(1024), 0xCAFE);
 
     // Slices read exact windows regardless of width.
     let low = p.constant_bit_slice(15, 0).unwrap();

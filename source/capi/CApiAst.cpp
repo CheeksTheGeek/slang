@@ -197,6 +197,14 @@ static const ast::Type* builtinTypeOf(ast::Compilation& c, uint32_t kind) {
             return &c.getStringType();
         case SLANG_BUILTIN_TYPE_VOID:
             return &c.getVoidType();
+        case SLANG_BUILTIN_TYPE_LONGINT:
+            return &c.getType(syntax::SyntaxKind::LongIntType);
+        case SLANG_BUILTIN_TYPE_TIME:
+            return &c.getType(syntax::SyntaxKind::TimeType);
+        case SLANG_BUILTIN_TYPE_SHORTINT:
+            return &c.getType(syntax::SyntaxKind::ShortIntType);
+        case SLANG_BUILTIN_TYPE_REALTIME:
+            return &c.getType(syntax::SyntaxKind::RealTimeType);
         default:
             return nullptr;
     }

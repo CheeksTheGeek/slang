@@ -89,6 +89,13 @@ bool EvalContext::pushFrame(const SubroutineSymbol& subroutine, SourceLocation c
         return false;
     }
 
+    // A top-level constant function invocation (no enclosing subroutine frame)
+    // starts with freshly initialized static variables: per LRM 13.4.3, one
+    // invocation has no effect on the initial values seen by another. Calls
+    // nested inside that invocation share its statics.
+    if (std::ranges::none_of(stack, [](const Frame& f) { return f.subroutine != nullptr; }))
+        statics.clear();
+
     Frame frame;
     frame.subroutine = &subroutine;
     frame.callLocation = callLocation;

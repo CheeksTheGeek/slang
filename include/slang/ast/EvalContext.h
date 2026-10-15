@@ -75,10 +75,11 @@ public:
     void deleteLocal(const ValueSymbol* symbol);
 
     /// Gets the storage for an explicitly `static` variable declared inside a
-    /// subroutine. Such storage is shared by every call (and every recursion
-    /// level) within this evaluation and persists across calls; it is created
-    /// on first use. Returns the storage and whether it already existed (i.e.
-    /// whether the variable's initializer has already run).
+    /// subroutine. Such storage is shared by every call nested within one
+    /// top-level constant function invocation (including recursion) and is
+    /// reset at the start of the next top-level invocation (LRM 13.4.3); it is
+    /// created on first use. Returns the storage and whether it already existed
+    /// (i.e. whether the variable's initializer has already run).
     std::pair<ConstantValue*, bool> getOrCreateStatic(const ValueSymbol* symbol);
 
     /// Push a new frame onto the call stack.

@@ -1850,7 +1850,7 @@ TEST_CASE("Array query functions") {
     NO_SESSION_ERRORS;
 }
 
-TEST_CASE("Explicitly static variables in consteval are initialized once and persist") {
+TEST_CASE("Explicitly static variables in consteval are initialized per invocation") {
     ScriptSession session;
 
     session.eval(R"(
@@ -1863,9 +1863,19 @@ endfunction
     session.eval("localparam int i = foo();");
     CHECK(session.eval("i").integer() == 2);
 
-    // Within one evaluation the storage persists across calls: 2 + 3.
+    // Each top-level invocation starts from the initializer (LRM 13.4.3), even
+    // within one expression: 2 + 2.
     session.eval("localparam int k = foo() + foo();");
-    CHECK(session.eval("k").integer() == 5);
+    CHECK(session.eval("k").integer() == 4);
+
+    // Calls nested inside one invocation share the storage: 2 + 3.
+    session.eval(R"(
+function int twice;
+    return foo() + foo();
+endfunction
+)");
+    session.eval("localparam int t = twice();");
+    CHECK(session.eval("t").integer() == 5);
 
     // Separate evaluations don't share state.
     session.eval("localparam int i2 = foo();");

@@ -649,7 +649,12 @@ TEST_CASE("Associative array eval") {
     CHECK(session.eval("-1 inside { arr2 }").integer() == 0);
     CHECK(session.eval("arr == arr2").integer() == 1);
 
+    // [11.4.11]: logically equivalent operands give that value, even with an
+    // unknown predicate; differing maps give the (empty) default.
     cv = session.eval("'x ? arr : arr2");
+    CHECK(cv == session.eval("arr"));
+    session.eval("integer arr3[string] = '{\"Hello\":4, default:-1};");
+    cv = session.eval("'x ? arr : arr3");
     CHECK(cv.map()->empty());
 
     session.eval("arr[\"bye\"] += 20;");
@@ -1893,6 +1898,56 @@ endfunction
 )");
     session.eval("localparam int f5 = fact(5);");
     CHECK(session.eval("f5").integer() == 120);
+
+    NO_SESSION_ERRORS;
+}
+
+TEST_CASE("Unknown conditional with equal non-integral operands") {
+    // [11.4.11]: with an x/z predicate, logically equivalent operands give
+    // that value for every type; otherwise non-integral, non-array results
+    // are the type's default.
+    ScriptSession session;
+
+    // Reals (ivtest pr2453002: `udef ? 6 : 6.0`).
+    CHECK(session.eval("'x ? 6 : 6.0").real() == 6.0);
+    CHECK(session.eval("'x ? 2.5 : 2.5").real() == 2.5);
+    CHECK(session.eval("'x ? 1.0 : 2.0").real() == 0.0);
+    CHECK(session.eval("'z ? shortreal'(1.5) : shortreal'(1.5)").shortReal() == 1.5f);
+
+    // Strings (string-typed operands; bare literals are integral).
+    session.eval(R"(string sa = "abc";)");
+    session.eval(R"(string sb = "abc";)");
+    session.eval(R"(string sc = "abd";)");
+    CHECK(session.eval("'x ? sa : sb").str() == "abc");
+    CHECK(session.eval("'x ? sa : sc").str() == "");
+
+    // Unpacked structs: all members equal -> the value; any member differs
+    // (or compares unknown) -> the default.
+    session.eval("typedef struct { int a; real r; } S;");
+    session.eval("S s1 = '{1, 2.0};");
+    session.eval("S s2 = '{1, 2.0};");
+    session.eval("S s3 = '{1, 3.0};");
+    CHECK(session.eval("('x ? s1 : s2) == s1").integer() == 1);
+    CHECK(session.eval("('x ? s1 : s3).r").real() == 0.0);
+    session.eval("typedef struct { logic [3:0] v; } L;");
+    session.eval("L l1 = '{4'b10x1};");
+    CHECK(session.eval("('x ? l1 : l1).v === 4'bxxxx").integer() == 1);
+
+    // Tagged unions: same member and value -> the value.
+    session.eval("typedef union tagged { int a; real b; } U;");
+    session.eval("U u1 = tagged b 1.5;");
+    session.eval("U u2 = tagged b 1.5;");
+    session.eval("U u3 = tagged a 1;");
+    CHECK(session.eval("('x ? u1 : u2).b").real() == 1.5);
+    CHECK(session.eval("('x ? u1 : u3) === u3").integer() == 0);
+
+    // Unpacked arrays of reals: element by element.
+    session.eval("real ra[2] = '{1.0, 2.0};");
+    session.eval("real rb[2] = '{1.0, 5.0};");
+    auto cv = session.eval("'x ? ra : rb");
+    REQUIRE(cv.isUnpacked());
+    CHECK(cv.elements()[0].real() == 1.0);
+    CHECK(cv.elements()[1].real() == 0.0);
 
     NO_SESSION_ERRORS;
 }

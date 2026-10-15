@@ -1626,6 +1626,65 @@ bool ConditionalExpression::isEquivalentImpl(const ConditionalExpression& rhs) c
                               });
 }
 
+// True if `a == b` (logical equality, [11.4.5]) is definitely 1 -- an x/z
+// comparison result or a pair of values of different kinds counts as not
+// equal. Covers every kind a constant can have, recursing into aggregates, so
+// it never reaches an unreachable path in OpInfo::eval.
+static bool definitelyEqual(const ConstantValue& a, const ConstantValue& b) {
+    if (a.isInteger() && b.isInteger()) {
+        auto& l = a.integer();
+        auto& r = b.integer();
+        // Compare at a common width the way `==` would; the arms of a
+        // conditional are already converted to its common type.
+        if (l.getBitWidth() != r.getBitWidth())
+            return false;
+        return bool(l == r);
+    }
+    if (a.isReal() && b.isReal())
+        return a.real() == b.real();
+    if (a.isShortReal() && b.isShortReal())
+        return a.shortReal() == b.shortReal();
+    if (a.isString() && b.isString())
+        return a.str() == b.str();
+    if (a.isNullHandle() && b.isNullHandle())
+        return true;
+    if (a.isUnbounded() && b.isUnbounded())
+        return true;
+    if (a.isUnion() && b.isUnion()) {
+        auto& ua = *a.unionVal();
+        auto& ub = *b.unionVal();
+        return ua.activeMember == ub.activeMember && definitelyEqual(ua.value, ub.value);
+    }
+
+    auto rangesEqual = [](const auto& la, const auto& ra) {
+        if (la.size() != ra.size())
+            return false;
+        auto ri = ra.begin();
+        for (auto li = la.begin(); li != la.end(); ++li, ++ri) {
+            if (!definitelyEqual(*li, *ri))
+                return false;
+        }
+        return true;
+    };
+
+    if (a.isUnpacked() && b.isUnpacked())
+        return rangesEqual(a.elements(), b.elements());
+    if (a.isQueue() && b.isQueue())
+        return rangesEqual(*a.queue(), *b.queue());
+    if (a.isMap() && b.isMap()) {
+        auto& ma = *a.map();
+        auto& mb = *b.map();
+        if (ma.size() != mb.size())
+            return false;
+        for (auto ia = ma.begin(), ib = mb.begin(); ia != ma.end(); ++ia, ++ib) {
+            if (ia->first != ib->first || !definitelyEqual(ia->second, ib->second))
+                return false;
+        }
+        return true;
+    }
+    return false;
+}
+
 ConstantValue ConditionalExpression::evalImpl(EvalContext& context) const {
     ConstantValue cp;
     for (auto& cond : conditions) {
@@ -1648,8 +1707,17 @@ ConstantValue ConditionalExpression::evalImpl(EvalContext& context) const {
         if (!cvl || !cvr)
             return nullptr;
 
+        // [11.4.11] Integral operands are combined bit by bit (which also
+        // yields the operand itself when both are equal).
         if (cvl.isInteger() && cvr.isInteger())
             return SVInt::conditional(cp.integer(), cvl.integer(), cvr.integer());
+
+        // [11.4.11] Otherwise, if the two operands are logically equivalent
+        // ([11.4.5]) the result is that value, whatever its type: real,
+        // string, unpacked struct, union, null handle, or an array whose
+        // elements all match.
+        if (definitelyEqual(cvl, cvr))
+            return cvl;
 
         auto combineArrays = [&](auto& result, auto& la, auto& ra) -> ConstantValue {
             ConstantValue defaultElement = type->getArrayElementType()->getDefaultValue();
@@ -1658,15 +1726,10 @@ ConstantValue ConditionalExpression::evalImpl(EvalContext& context) const {
             // check each element. If they are equal, take it in the result,
             // otherwise use the default.
             for (size_t i = 0; i < la.size(); i++) {
-                ConstantValue comp = OpInfo::eval(BinaryOperator::Equality, la[i], ra[i]);
-                if (!comp)
-                    return nullptr;
-
-                logic_t l = (logic_t)comp.integer();
-                if (l.isUnknown() || !l)
-                    result[i] = defaultElement;
-                else
+                if (definitelyEqual(la[i], ra[i]))
                     result[i] = la[i];
+                else
+                    result[i] = defaultElement;
             }
 
             return result;

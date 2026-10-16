@@ -2116,6 +2116,23 @@ endfunction
     NO_SESSION_ERRORS;
 }
 
+TEST_CASE("Decimal x/z digit followed by underscores") {
+    // [5.7.1] decimal_number ::= ... decimal_base x_digit { _ } | ... z_digit { _ }
+    ScriptSession session;
+    CHECK_THAT(session.eval("7'dz_").integer(), exactlyEquals("7'bzzzzzzz"_si));
+    CHECK_THAT(session.eval("7'dx__").integer(), exactlyEquals("7'bxxxxxxx"_si));
+    CHECK_THAT(session.eval("7'dz").integer(), exactlyEquals("7'bzzzzzzz"_si));
+    NO_SESSION_ERRORS;
+
+    // An x/z digit must be the only digit.
+    auto tree = SyntaxTree::fromText("module m; logic [6:0] a = 7'd1z; endmodule");
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::DecimalDigitMultipleUnknown);
+}
+
 TEST_CASE("Unknown conditional with equal non-integral operands") {
     // [11.4.11]: with an x/z predicate, logically equivalent operands give
     // that value for every type; otherwise non-integral, non-array results

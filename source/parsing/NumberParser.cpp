@@ -126,21 +126,30 @@ int NumberParser::append(Token token, bool isFirst) {
                 }
             }
 
-            // As mentioned above, this loop is just for checking errors.
-            for (char c : chars) {
-                if (isLogicDigit(c) || isDecimalDigit(c)) {
-                    if (hasUnknown) {
-                        addDiag(diag::DecimalDigitMultipleUnknown, location + index);
+            // Otherwise check the digits. An x or z digit must be the only digit,
+            // though it may be followed by underscores ([5.7.1] `decimal_base
+            // x_digit { _ }`), so record it here: `7'dz_` is all z. Any other
+            // digit before or after it is an error.
+            {
+                bool sawDigit = !isFirst;
+                for (char c : chars) {
+                    if (isLogicDigit(c) || isDecimalDigit(c)) {
+                        if (hasUnknown || (isLogicDigit(c) && sawDigit)) {
+                            addDiag(diag::DecimalDigitMultipleUnknown, location + index);
+                            return -1;
+                        }
+
+                        hasUnknown = isLogicDigit(c);
+                        if (hasUnknown)
+                            addDigit(getLogicCharValue(c), 10);
+                        sawDigit = true;
+                    }
+                    else if (c != '_') {
+                        addDiag(diag::BadDecimalDigit, location + index);
                         return -1;
                     }
-
-                    hasUnknown = isLogicDigit(c);
+                    index++;
                 }
-                else if (c != '_') {
-                    addDiag(diag::BadDecimalDigit, location + index);
-                    return -1;
-                }
-                index++;
             }
             break;
         case LiteralBase::Hex:

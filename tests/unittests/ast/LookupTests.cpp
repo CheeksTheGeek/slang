@@ -68,7 +68,7 @@ endmodule
     const auto& top = *compilation.getRoot().topInstances[0];
     const auto& gen_b = top.body.memberAt<GenerateBlockSymbol>(1);
     const auto& param = gen_b.memberAt<ParameterSymbol>(0);
-    CHECK(compilation.getSemanticDiagnostics().empty());
+    CHECK(compilation.getSemanticDiagnostics().filter(DefaultIgnoreWarnings).empty());
     CHECK(param.getValue().integer() == 12);
 
     // Lookup at (1); should return the local parameter
@@ -81,7 +81,7 @@ endmodule
     REQUIRE(symbol);
     CHECK(symbol->kind == SymbolKind::Parameter);
     CHECK(symbol == &param);
-    CHECK(compilation.getSemanticDiagnostics().empty());
+    CHECK(compilation.getSemanticDiagnostics().filter(DefaultIgnoreWarnings).empty());
 
     // Lookup at (2); should return the package parameter
     context.lookupIndex = LookupLocation::before(param).getIndex();
@@ -122,7 +122,7 @@ endmodule
     CHECK(gen_b.find<ParameterSymbol>("foo").getValue().integer() == 4);
     CHECK(gen_b.find<ParameterSymbol>("bar").getValue().integer() == 12);
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter(DefaultIgnoreWarnings);
     REQUIRE(diags.size() == 1);
     CHECK(diags[0].code == diag::ImportNameCollision);
     REQUIRE(diags[0].notes.size() == 3);
@@ -379,7 +379,7 @@ endmodule
     Compilation compilation;
     compilation.addSyntaxTree(tree);
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter(DefaultIgnoreWarnings);
     REQUIRE(diags.size() == 4);
     CHECK(diags[0].code == diag::ConstEvalHierarchicalName);
     CHECK(diags[1].code == diag::ConstEvalHierarchicalName);
@@ -1579,7 +1579,7 @@ endmodule
     CHECK(m.find<ParameterSymbol>("j").getValue().integer() == 2);
     CHECK(m.find<ParameterSymbol>("k").getValue().integer() == 9);
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter(DefaultIgnoreWarnings);
     REQUIRE(diags.size() == 2);
     CHECK(diags[0].code == diag::NonStaticClassProperty);
     CHECK(diags[1].code == diag::NonStaticClassMethod);
@@ -1823,6 +1823,132 @@ endmodule
     REQUIRE(diags.size() == 2);
     CHECK(diags[0].code == diag::StaticInitValue);
     CHECK(diags[1].code == diag::UndeclaredIdentifier);
+}
+
+TEST_CASE("Upward call with different resolutions -- GH #1993") {
+    // OneArg.f needs an argument, so the call under B is in error. B is written second
+    // because that is the instance a shared body would hide.
+    auto tree = SyntaxTree::fromText(R"(
+module NoArg;
+    function automatic int f();
+        return 1;
+    endfunction
+endmodule
+
+module OneArg;
+    function automatic int f(int a);
+        return a;
+    endfunction
+endmodule
+
+module Caller;
+    initial $display("%0d", cfg.f());
+endmodule
+
+module A;
+    NoArg cfg();
+    Caller c();
+endmodule
+
+module B;
+    OneArg cfg();
+    Caller c();
+endmodule
+
+module top;
+    A a();
+    B b();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics().filter(DefaultIgnoreWarnings);
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::TooFewArguments);
+}
+
+TEST_CASE("Upward call by simple name with different resolutions -- GH #1993") {
+    // The same as above, with the function found by its simple name in the
+    // instantiating module.
+    auto tree = SyntaxTree::fromText(R"(
+module Caller;
+    initial $display("%0d", f());
+endmodule
+
+module A;
+    function automatic int f();
+        return 1;
+    endfunction
+    Caller c();
+endmodule
+
+module B;
+    function automatic int f(int a);
+        return a;
+    endfunction
+    Caller c();
+endmodule
+
+module top;
+    A a();
+    B b();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics().filter(DefaultIgnoreWarnings);
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::TooFewArguments);
+}
+
+TEST_CASE("Upward sequence and property with different resolutions -- GH #1993") {
+    // NoSeq declares neither, so both assertions under B are in error.
+    auto tree = SyntaxTree::fromText(R"(
+module HasSeq;
+    logic clk, x;
+    sequence s;
+        @(posedge clk) x;
+    endsequence
+    property p;
+        @(posedge clk) x;
+    endproperty
+endmodule
+
+module NoSeq;
+endmodule
+
+module User;
+    assert property (cfg.s);
+    assert property (cfg.p);
+endmodule
+
+module A;
+    HasSeq cfg();
+    User u();
+endmodule
+
+module B;
+    NoSeq cfg();
+    User u();
+endmodule
+
+module top;
+    A a();
+    B b();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics().filter(DefaultIgnoreWarnings);
+    REQUIRE(diags.size() == 2);
+    CHECK(diags[0].code == diag::CouldNotResolveHierarchicalPath);
+    CHECK(diags[1].code == diag::CouldNotResolveHierarchicalPath);
 }
 
 TEST_CASE("Package export lookup") {

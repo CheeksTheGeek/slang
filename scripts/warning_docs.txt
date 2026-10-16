@@ -1523,6 +1523,23 @@ module m;
 endmodule
 ```
 
+-Wprefer-localparam
+When used in a `generate` block, package, class body or compilation-unit scope, the
+`parameter` keyword is a synonym for `localparam`. It is clearer to use `localparam`
+directly in these cases because it does not incorrectly imply that the parameter can
+be overridden.
+```
+module m;
+    localparam int a = 1; // Constant.
+    parameter  int b = 2; // Configurable.
+endmodule;
+
+package m;
+    localparam int a = 1; // Constant.
+    parameter  int b = 2; // Warning: this is actually constant too. Use localparam instead.
+endpackage;
+```
+
 @category Compatibility
 
 -Wdpi-spec
@@ -1559,7 +1576,6 @@ endfunction
 
 -Wsplit-distweight-op
 Some tools allow the dist weight operators to be split instead of a single token.
-slang will issue this warning as an error by default but it can be downgraded for compatibility.
 ```
 class c;
   rand int val;
@@ -1570,24 +1586,21 @@ endclass
 ```
 
 -Windex-oob
-An out-of-bounds value was used to index an array. This is an error by default but can be downgraded to
-a warning for compatibility with other tools.
+An out-of-bounds value was used to index an array.
 ```
 logic [7:0] a;
 logic b = a[9];
 ```
 
 -Wrange-oob
-An out-of-bounds range was used to select from an array. This is an error by default but can be downgraded to
-a warning for compatibility with other tools.
+An out-of-bounds range was used to select from an array.
 ```
 logic [7:0] a;
 logic [2:0] b = a[9:7];
 ```
 
 -Wrange-width-oob
-An indexed part-select has a width that is wider than the bounds of the array it is selecting. This is an error
-by default but can be downgraded to a warning for compatibility with other tools.
+An indexed part-select has a width that is wider than the bounds of the array it is selecting.
 ```
 logic [1:0] a;
 int b;
@@ -1595,8 +1608,7 @@ logic [2:0] c = a[b+:3];
 ```
 
 -Wduplicate-definition
-A module has been defined using the same name as a previously defined module. This is an error
-by default but can be downgraded to a warning for compatibility with other tools.
+A module has been defined using the same name as a previously defined module.
 This applies to both top level modules as well as nested modules (but only duplicated nested modules within the same scope,
 as it is OK to have modules with the same name in different scopes).
 ```
@@ -1656,8 +1668,7 @@ endmodule
 -Wbad-procedural-force
 According to the Verilog/SystemVerilog standard, it is illegal to procedurally force a
 bit-select or range select of a variable (you can do that with a net, or with a plain
-variable). It is an error by default, but can be turned into a warning, to support code
-compatibility with commercial tools that accept this illegal code.
+variable). Some commercial tools accept this illegal code anyway.
 ```
 module m;
     reg [1:0]r;
@@ -1669,8 +1680,7 @@ endmodule
 -Wimplicit-port-type-mismatch
 An implicit named port connection is made between two inequivalent types. Unlike with a normal
 port connection, where the type of the connection undergoes implicit conversion, the LRM specifies
-that this case is an error. slang makes this an error by default but it can be turned into a warning,
-to support code compatibility with commercial tools.
+that this case is an error. Some commercial tools accept it anyway.
 ```
 module m(logic p);
 endmodule
@@ -1682,16 +1692,14 @@ endmodule
 ```
 
 -Wdpi-pure-task
-A DPI import task is marked 'pure', which is disallowed by SystemVerilog but can be
-downgraded to a warning to support code compatibility with other tools.
+A DPI import task is marked 'pure', which is disallowed by SystemVerilog.
 ```
 import "DPI-C" pure task func(logic [3:0] a);
 ```
 
 -Wspecify-condition-expr
 State-dependent path conditions in specify blocks are restricted to a subset of expression
-types and operators (see Table 30-1 in the LRM for the list of valid operators). This is an
-error by default but can be downgraded to a warning for compatibility with other tools.
+types and operators (see Table 30-1 in the LRM for the list of valid operators).
 ```
 module m(input b, output c);
     wire integer a;
@@ -1702,8 +1710,8 @@ endmodule
 ```
 
 -Wunknown-sys-name
-An unknown system task or function is called. This is an error by default but can
-be downgraded to allow analyzing code using special system names defined by other tools.
+An unknown system task or function is called. Downgrading this diagnostic allows
+analyzing code using special system names defined by other tools.
 ```
 module m;
     always_comb begin
@@ -1729,7 +1737,7 @@ typedef enum { A[i:3] } e_t;
 
 -Wnested-solve-before
 A `solve before` constraint is nested inside another constraint. This is not allowed in
-SystemVerilog but can be downgraded to a warning for compatibility with other tools.
+SystemVerilog.
 ```
 class A;
     int arr[3];
@@ -1742,8 +1750,7 @@ endclass
 
 -Wdynamic-non-procedural
 A member or element of a dynamic type is accessed outside of a procedural context (such as in
-a continuous assignment). This is not allowed in SystemVerilog but can be downgraded to a
-warning for compatibility with other tools.
+a continuous assignment). This is not allowed in SystemVerilog.
 ```
 module m;
     int a[];
@@ -1777,8 +1784,7 @@ endmodule
 
 -Wmixed-var-assigns
 A mix of procedural and continuous assignments are applied to the same variable (or longest static
-prefix of a variable). This is not allowed in SystemVerilog but can be downgraded to a warning for
-compatibility with other tools.
+prefix of a variable). This is not allowed in SystemVerilog.
 ```
 module m;
     int i;
@@ -1789,8 +1795,7 @@ endmodule
 
 -Wmultiple-cont-assigns
 Multiple continuous assignments are applied to the same variable (or longest static
-prefix of a variable). This is not allowed in SystemVerilog but can be downgraded to a warning for
-compatibility with other tools.
+prefix of a variable). This is not allowed in SystemVerilog.
 ```
 module m;
     int i;
@@ -1801,8 +1806,7 @@ endmodule
 
 -Wmultiple-always-assigns
 Multiple always_comb/latch/ff blocks assign to the same variable (or longest static
-prefix of a variable). This is not allowed in SystemVerilog but can be downgraded to a warning for
-compatibility with other tools.
+prefix of a variable). This is not allowed in SystemVerilog.
 ```
 module m;
     int i;
@@ -1813,8 +1817,7 @@ endmodule
 
 -Wmisplaced-trailing-separator
 A trailing separator (comma or semicolon) was found in a list where it is not
-allowed by the SystemVerilog standard. This is an error by default but can be
-downgraded to a warning for compatibility with tools like Yosys.
+allowed by the SystemVerilog standard. Some tools, like Yosys, accept it anyway.
 ```
 module m(input a, output b,);
 endmodule
@@ -1822,7 +1825,6 @@ endmodule
 
 -Wqualifiers-on-out-of-block
 Out-of-block method definitions are not allowed to include qualifiers (such as the `static` keyword).
-This is an error by default but can be downgraded to a warning for compatibility with other tools.
 ```
 module memMod();
     class C;
@@ -1838,7 +1840,6 @@ endmodule
 -Winitializer-required
 A variable declared in a `for` loop initializer does not have an initializer expression. SystemVerilog
 requires that such variables be initialized at the point of declaration.
-This is an error by default but can be downgraded to a warning for compatibility with other tools.
 ```
 module m;
     initial begin
@@ -1850,8 +1851,7 @@ endmodule
 
 -Wpackage-import-in-class
 A package import declaration was found inside a class body. This is not allowed by the SystemVerilog
-LRM but is supported by some tools. In VCS compatibility mode this is a warning; otherwise it is an
-error that can be downgraded to a warning.
+LRM but is supported by some tools.
 ```
 package p;
   int x;
@@ -1864,7 +1864,6 @@ endclass
 -Wmember-impl-not-found
 A class has the declaration for a member method, but the implementation of that member method is not
 found either in the class or as an out of body definition.
-This is an error by default but can be downgraded to a warning for compatibility with other tools.
 ```
 module m;
 class c;
@@ -1877,8 +1876,7 @@ endmodule
 -Wforeach-call-expr
 The array expression in a foreach loop must be a hierarchical name, not a
 function call or other arbitrary expression. This is not allowed by the
-SystemVerilog LRM but is supported by some tools. In VCS compatibility mode
-this is ignored; otherwise it is an error that can be downgraded to a warning.
+SystemVerilog LRM but is supported by some tools.
 ```
 module top;
     typedef int Arr[4];
@@ -1934,8 +1932,7 @@ endmodule
 The LRM only permits a braced constraint block (`constraint_set`) as the body of a
 `foreach`, `if`, or `else` constraint expression. Using one directly as a top-level
 `constraint_block_item` is non-standard. This pattern commonly arises when a macro passes
-a constraint block including its outer braces as an argument. Some tools accept it anyway,
-so the error can be downgraded for compatibility.
+a constraint block including its outer braces as an argument. Some tools accept it anyway.
 ```
 class my_vseq;
     rand int x;
@@ -1945,7 +1942,7 @@ endclass
 
 -Wliteral-leading-underscore
 Vector literals are not allowed to have leading underscores in their digits but some
-tools allow them anyway, so the error can be downgraded for compatibility.
+tools allow them anyway.
 ```
 module m;
     logic [7:0] a = 8'h_ff;
@@ -1954,7 +1951,7 @@ endmodule
 
 -Wref-arg-automatic
 `ref` arguments are only allowed to be used in `automatic` subroutines, but some tools
-allow them with `static` subroutines anyway, so the error can be downgraded for compatibility.
+allow them with `static` subroutines anyway.
 Note that tasks and functions are static by default if otherwise unmarked; it is preferable
 to mark them `automatic` rather than disable this error.
 ```
@@ -1964,8 +1961,7 @@ endfunction
 
 -Wstring-int-concat
 String concatenations can only accept `string` typed operands and string literals.
-Some tools allow integer operands as well, implicitly converting them to strings,
-so this error can be downgraded for compatibility.
+Some tools allow integer operands as well, implicitly converting them to strings.
 ```
 module m;
     string s;
@@ -1978,8 +1974,7 @@ endmodule
 
 -Wrange-select-reversed
 The ordering of a range select (ascending or descending) does not match the direction of
-the dimensions of the type being selected. Most tools error on this, but some allow it
-so the error can be downgraded for compatibility.
+the dimensions of the type being selected. Most tools error on this, but some allow it.
 ```
 module m;
     logic [63:0] a;
@@ -1993,7 +1988,7 @@ endmodule
 -Wformat-empty-arg
 An empty argument (produced by a trailing or stray comma) was passed to a string
 formatting function in a position where the format string expects a value. Some tools
-accept this and substitute a blank, so the diagnostic is a suppressible warning.
+accept this and substitute a blank.
 ```
 module m;
     string s;
@@ -2004,8 +1999,7 @@ endmodule
 
 -Wformat-too-many-args
 More arguments were provided to a string formatting function than the format string
-consumed. Some tools accept this and silently ignore the extra arguments, so the
-diagnostic is a suppressible warning.
+consumed. Some tools accept this and silently ignore the extra arguments.
 ```
 module m;
     string s;
@@ -2016,8 +2010,7 @@ endmodule
 
 -Wclockvar-target-assign
 The LRM explicitly prohibits writing to a variable with a continuous assignment when
-it is associated with an output clockvar. Some tools accept this construct with a warning,
-so the error can be downgraded for compatibility.
+it is associated with an output clockvar. Some tools accept this construct with a warning.
 ```
 module m(input clk);
     int j;
@@ -2031,8 +2024,7 @@ endmodule
 -Wcross-ident-in-binsof
 The LRM defines `bins_expression` as either a `variable_identifier` or a
 `cover_point_identifier` with an optional `bin_identifier`; a cross identifier is not a
-valid `bins_expression` argument to `binsof()`. Some tools accept it anyway, so the error
-can be downgraded for compatibility.
+valid `bins_expression` argument to `binsof()`. Some tools accept it anyway.
 ```
 module m;
     logic clk, a, b;
@@ -2050,8 +2042,7 @@ endmodule
 
 -Wref-arg-in-fork-join
 The LRM prohibits referencing a 'ref' argument inside a fork-join_any or
-fork-join_none block. Some tools allow this anyway, so the error can be
-downgraded for compatibility.
+fork-join_none block. Some tools allow this anyway.
 ```
 task automatic run(ref bit flag);
   fork
@@ -2064,8 +2055,7 @@ endtask
 
 -Wcannot-index-scalar
 The LRM does not define a bit-select on a scalar (single-bit) type. Some tools
-allow this as an extension, treating the result as the scalar's element type,
-so the error can be downgraded for compatibility.
+allow this as an extension, treating the result as the scalar's element type.
 ```
 module m;
   bit flag;
@@ -2077,8 +2067,7 @@ endmodule
 -Wundefined-param-override
 The LRM does not define the behavior when a named parameter override refers to a
 parameter that does not exist in the instantiated module. Some vendor tools
-issue only a warning and silently ignore the override, so the error can be
-downgraded for compatibility.
+issue only a warning and silently ignore the override.
 ```
 module bot(input clk);
   parameter TYPE = 0;
@@ -2091,8 +2080,7 @@ endmodule
 
 -Wvirtual-arg-name-mismatch
 The LRM requires virtual method overrides to use identical argument names to
-their superclass declaration. Some tools issue only a warning for this mismatch,
-so the error can be downgraded for compatibility.
+their superclass declaration. Some tools issue only a warning for this mismatch.
 ```
 class Base;
   virtual task run(int count);
@@ -2107,7 +2095,7 @@ endclass
 -Wredefinition
 The LRM requires every identifier in a scope to have a unique definition.
 Some tools issue only a warning when a name is declared more than once in the
-same scope, so the error can be downgraded for compatibility.
+same scope.
 ```
 module m;
   int i;
@@ -2118,7 +2106,7 @@ endmodule
 -Wredefinition-different-type
 The LRM requires every identifier in a scope to have a unique definition.
 Some tools issue only a warning when a name is re-declared with a different type
-in the same scope, so the error can be downgraded for compatibility.
+in the same scope.
 ```
 module m;
   int i;
@@ -2129,7 +2117,6 @@ endmodule
 -Wstring-in-constraint
 The LRM does not permit string sub-expressions in constraint expressions.
 Some tools accept string equality comparisons inside constraint if-conditions as an extension.
- The error can be downgraded for compatibility.
 ```
 class RegField;
   rand logic [7:0] value;
@@ -2949,6 +2936,88 @@ endmodule
 module parent;
     int value = 42;
     child c1();
+endmodule
+```
+
+-Wtautological-self-compare
+Warns about comparisons of an expression with itself, which always evaluate
+to the same result. Comparisons like `==`, `<=`, and `>=` on four-state
+values are not diagnosed since they evaluate to X when the value has
+unknown bits.
+```
+module m;
+    int a;
+    initial begin
+        if (a < a) begin end
+    end
+endmodule
+```
+
+-Wtautological-range-compare
+Warns about comparisons against a constant that lies outside the range of
+values the other side of the comparison can take on, which means the
+comparison always has the same result.
+```
+module m;
+    logic [3:0] a;
+    byte b;
+    initial begin
+        if (a == 20) begin end
+        if (b < 200) begin end
+    end
+endmodule
+```
+
+-Wtautological-limit-compare
+Warns about comparisons against a constant at the very limit of the range of
+values the other side of the comparison can take on, such that the comparison
+always has the same result. A common source of this is checking whether an
+unsigned value is greater than or equal to zero.
+```
+module m;
+    logic [3:0] a;
+    initial begin
+        for (logic [3:0] i = 15; i >= 0; i--) begin end
+        if (a <= 15) begin end
+    end
+endmodule
+```
+
+-Wtautological-bitwise-compare
+Warns about equality comparisons against the result of a bitwise AND or OR
+with a constant mask that make it impossible for the comparison to succeed.
+```
+module m;
+    logic [3:0] a;
+    initial begin
+        if ((a & 4'h4) == 4'h8) begin end
+        if ((a | 4'h4) != 4'h1) begin end
+    end
+endmodule
+```
+
+-Wtautological-overlap-compare
+Warns about logical combinations of comparisons of the same expression against
+constants that always evaluate to the same result.
+```
+module m;
+    int a;
+    initial begin
+        if (a < 5 && a > 10) begin end
+        if (a != 1 || a != 2) begin end
+    end
+endmodule
+```
+
+-Wtautological-negation-compare
+Warns about logical combinations of an expression and its own negation, which
+always evaluate to the same result.
+```
+module m;
+    logic a;
+    initial begin
+        if (a || !a) begin end
+    end
 endmodule
 ```
 

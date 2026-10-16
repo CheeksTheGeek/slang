@@ -6148,8 +6148,12 @@ fn constant_value_conversions_and_slicing() {
         init_of("Str").constant_as_str().unwrap().as_str(),
         Some("hi!")
     );
-    // Converting a container (not string/integer) to str fails.
-    assert!(arr.constant_as_str().is_none());
+    // An unpacked array of integers is string-like [21.2.1.8]: one character
+    // per element, left bound to right (slang 9ad44fd1f; it used to fail).
+    assert_eq!(
+        arr.constant_as_str().unwrap().as_str(),
+        Some("\u{a}\u{14}\u{1e}")
+    );
 
     // convertToByteArray / convertToByteQueue: MSB-first character packing.
     let two_chars = init_of("TwoChars");

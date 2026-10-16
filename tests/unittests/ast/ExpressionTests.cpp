@@ -7,7 +7,6 @@
 #include "slang/ast/Expression.h"
 #include "slang/ast/expressions/AssignmentExpressions.h"
 #include "slang/ast/expressions/ConversionExpression.h"
-#include "slang/ast/expressions/MiscExpressions.h"
 #include "slang/ast/expressions/OperatorExpressions.h"
 #include "slang/ast/expressions/SelectExpressions.h"
 #include "slang/ast/symbols/BlockSymbols.h"
@@ -16,7 +15,6 @@
 #include "slang/ast/symbols/ParameterSymbols.h"
 #include "slang/ast/symbols/VariableSymbols.h"
 #include "slang/ast/types/Type.h"
-#include "slang/parsing/Parser.h"
 #include "slang/syntax/AllSyntax.h"
 
 TEST_CASE("Evaluate assignment expression") {
@@ -310,6 +308,13 @@ TEST_CASE("Expression types") {
     CHECK(typeof("sl[7:0]") == "logic[7:0]");
     CHECK(typeof("sla[0]") == "logic[7:0]");
     CHECK(typeof("arr4[0]") == "logic signed[7:0]");
+
+    // Selects of signed packed arrays are unsigned, even through a typedef.
+    declare("typedef logic signed [7:0] sl_t; sl_t slt;");
+    declare("typedef logic signed [2:0][7:0] sla_t; sla_t slat;");
+    CHECK(typeof("slt[0]") == "logic");
+    CHECK(typeof("slt[3:0]") == "logic[3:0]");
+    CHECK(typeof("slat[0]") == "logic[7:0]");
 
     // Casts
     declare("parameter int FOO = 1;");
@@ -3914,8 +3919,9 @@ endfunction
     Compilation compilation;
     compilation.addSyntaxTree(tree);
 
-    auto diags = compilation.getAllDiagnostics().filter(
-        {diag::FloatBoolConv, diag::IntBoolConv, diag::RealCaseEq});
+    auto diags = compilation.getAllDiagnostics()
+                     .filter({diag::FloatBoolConv, diag::IntBoolConv, diag::RealCaseEq})
+                     .filter(DefaultIgnoreWarnings);
     if (!diags.empty()) {
         FAIL_CHECK(report(diags));
     }
@@ -4364,6 +4370,31 @@ endmodule
     CHECK(diags[0].code == diag::ReplicationZeroOutsideConcat);
 }
 
+TEST_CASE("String replication count zero") {
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    string s = "ab";
+    string q[$];
+    bit [7:0] w;
+    string r;
+    initial begin
+        q = {"a", {0{s}}};
+        w = {8'h41, {0{"ab"}}};
+        r = {{0{"ab"}}};
+        r = {8'h41, {0{s}}};
+    end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 2);
+    CHECK(diags[0].code == diag::EmptyConcatNotAllowed);
+    CHECK(diags[1].code == diag::ConcatWithStringInt);
+}
+
 TEST_CASE("Unknown built-in method on string") {
     auto tree = SyntaxTree::fromText(R"(
 module m;
@@ -4701,4 +4732,29 @@ endmodule
     auto& diags = compilation.getAllDiagnostics();
     REQUIRE(diags.size() == 1);
     CHECK(diags[0].code == diag::BadValueRange);
+}
+
+TEST_CASE("Integral replication with parameter operands in an uninstantiated body") {
+    // Parameters of an uninstantiated module have no values, so `{N{E}}` must not
+    // be mistaken for a string replication (whose integral uses then report errors).
+    auto tree = SyntaxTree::fromText(R"(
+module m #(parameter int unsigned N = 8, parameter logic E = 1'b0, parameter S = "ab")
+          (input logic [N-1:0] a, output logic [N-1:0] y, output logic [N-1:0] z);
+    assign y = a | ~{N{E}};
+    always_comb z = ({N{E}} + 1'b1) & ({N{E}} ? a : '0);
+    string s;
+    initial s = {N{S}};
+endmodule
+
+module top(input logic a, output logic b);
+    assign b = a;
+endmodule
+)");
+
+    CompilationOptions options;
+    options.topModules.emplace("top");
+
+    Compilation compilation(options);
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
 }

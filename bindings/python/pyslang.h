@@ -119,7 +119,10 @@ static constexpr auto byrefint = nb::rv_policy::reference_internal;
 //
 // NOTE: a behavioral consequence is that `isinstance(x, Scope)` /
 // `isinstance(x, ParameterSymbolBase)` is False for these subclasses in Python,
-// since they no longer inherit the base type but only its methods.
+// since they no longer inherit the base type but only its methods. Scope-derived
+// symbols are still accepted wherever a Scope argument is expected, via an
+// implicit conversion registered alongside the Scope class binding (which can
+// also be invoked explicitly from Python as `Scope(symbol)`).
 template<typename Derived, typename... Extra>
 void addScopeMethods(nb::class_<Derived, Extra...>& cls) {
     cls.def_prop_ro("compilation",
@@ -336,9 +339,25 @@ struct type_caster<std::span<T>> {
         return false; // Python type cannot be loaded into a span.
     }
 
-    template<typename CType>
-    static handle from_cpp(CType&& src, rv_policy policy, cleanup_list* cleanup) noexcept {
-        return ListCaster::from_cpp(std::forward<CType>(src), policy, cleanup);
+    // A span never owns its elements, so they must always be converted as
+    // lvalues no matter the value category of the span itself. Forwarding an
+    // rvalue span would cause nanobind to *move* out of each element (which
+    // for trivially relocatable types zeroes out the source storage).
+    static handle from_cpp(std::span<T> src, rv_policy policy, cleanup_list* cleanup) noexcept {
+        object result = steal(PyList_New(Py_ssize_t(src.size())));
+        if (!result.is_valid())
+            return {};
+
+        Py_ssize_t index = 0;
+        for (T& value : src) {
+            handle h = make_caster<T>::from_cpp(value, policy, cleanup);
+            if (!h.is_valid())
+                return {};
+
+            NB_LIST_SET_ITEM(result.ptr(), index++, h.ptr());
+        }
+
+        return result.release();
     }
 
     explicit operator std::span<T>() { return value; }

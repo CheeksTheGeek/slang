@@ -147,6 +147,9 @@ DeclaredType::getFlags  # internal DeclaredTypeFlags bitset; niche
 DeclaredType::getDimensionSyntax  # niche; the declared-type syntax is reachable via declared_type_syntax()
 AssertionExpr::isEquivalentTo  # structural-equivalence helper (bound for Expression only); niche
 Constraint::isEquivalentTo  # structural-equivalence helper; niche
+ConstantValue::isIdentical  # false-neg: exact identity is the owned Rust ConstantValue's PartialEq (upstream 67c165a64)
+AnalysisContext::isFromMacroBody  # internal: analysis-pass helper for warning suppression (upstream 68fe49ac4)
+TautologicalCompare::check  # internal: tautological-compare warning pass driver (upstream 68fe49ac4)
 Pattern::isEquivalentTo  # structural-equivalence helper; niche
 TimingControl::isEquivalentTo  # structural-equivalence helper; niche
 ForeachLoopStatement::isEquivalentTo  # structural-equivalence helper; niche

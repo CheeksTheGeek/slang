@@ -229,477 +229,519 @@
           "option": null
         },
         {
-          "name": "CaseComplex",
+          "name": "BitwiseCompare",
           "index": 32,
+          "severity": "Warning",
+          "message": "bitwise comparison always evaluates to {}",
+          "option": "tautological-bitwise-compare"
+        },
+        {
+          "name": "CaseComplex",
+          "index": 33,
           "severity": "Warning",
           "message": "'{}' statement is too complex to analyze; assuming it does not have full coverage (increase --max-case-analysis-steps to try harder)",
           "option": "case-too-complex"
         },
         {
           "name": "CaseDup",
-          "index": 33,
+          "index": 34,
           "severity": "Warning",
           "message": "'{}' statement contains duplicate items for value '{}' (the second one will never be matched)",
           "option": "case-dup"
         },
         {
           "name": "CaseEnum",
-          "index": 34,
+          "index": 35,
           "severity": "Warning",
           "message": "enumeration {} not handled in case statement",
           "option": "case-enum"
         },
         {
           "name": "CaseEnumExplicit",
-          "index": 35,
+          "index": 36,
           "severity": "Warning",
           "message": "enumeration {} not explicitly handled in case statement",
           "option": "case-enum-explicit"
         },
         {
           "name": "CaseIncomplete",
-          "index": 36,
+          "index": 37,
           "severity": "Warning",
           "message": "'{}' statement does not handle all possible inputs (for example, {})",
           "option": "case-incomplete"
         },
         {
           "name": "CaseNone",
-          "index": 37,
+          "index": 38,
           "severity": "Warning",
           "message": "'{}' does not match any item in '{}' statement and no default item is provided",
           "option": "case-none"
         },
         {
           "name": "CaseNotWildcard",
-          "index": 38,
+          "index": 39,
           "severity": "Warning",
           "message": "'case' statement item has unknown bits which don't work as wildcards; should this be a 'casex' or 'casez' statement?",
           "option": "case-not-wildcard"
         },
         {
           "name": "CaseOverlap",
-          "index": 39,
+          "index": 40,
           "severity": "Warning",
           "message": "'{}' statement item overlaps previous item",
           "option": "case-overlap"
         },
         {
           "name": "CaseUnreachable",
-          "index": 40,
+          "index": 41,
           "severity": "Warning",
           "message": "'{}' statement item will never match because it is completely handled by previous items",
           "option": "case-unreachable"
         },
         {
           "name": "CaseZWithX",
-          "index": 41,
+          "index": 42,
           "severity": "Warning",
           "message": "'casez' statement item has 'x' bits which don't work as wildcards; should this be a 'casex' statement?",
           "option": "casez-with-x"
         },
         {
           "name": "ClockVarTargetAssign",
-          "index": 42,
+          "index": 43,
           "severity": "Warning",
           "message": "cannot write to '{}' with a continuous assignment since it's associated with an output clocking signal",
           "option": "clockvar-target-assign"
         },
         {
           "name": "ConstraintFuncArgCycle",
-          "index": 43,
+          "index": 44,
           "severity": "Warning",
           "message": "potentially circular dependency in constraint ordering for random variable '{}'",
           "option": "constraint-func-cycle"
         },
         {
           "name": "ConstraintSolveCycle",
-          "index": 44,
+          "index": 45,
           "severity": "Warning",
           "message": "circular dependency in 'solve...before' constraint ordering for random variable '{}'",
           "option": "constraint-solve-cycle"
         },
         {
           "name": "ForkLoopVar",
-          "index": 45,
+          "index": 46,
           "severity": "Warning",
           "message": "loop variable '{}' is used inside a {} block; all loop iterations will see the same stale value (use an automatic local variable inside the fork to capture the current value)",
           "option": "fork-loop-var"
         },
         {
           "name": "IncompleteReturn",
-          "index": 46,
+          "index": 47,
           "severity": "Warning",
           "message": "non-void function '{}' does not return a value on all control paths",
           "option": "incomplete-return"
         },
         {
           "name": "InferredComb",
-          "index": 47,
+          "index": 48,
           "severity": "Warning",
           "message": "combinational logic inferred for '{}' because it is assigned on all control paths",
           "option": "inferred-comb"
         },
         {
           "name": "InferredLatch",
-          "index": 48,
+          "index": 49,
           "severity": "Warning",
           "message": "latch inferred for '{}' because it is not assigned on all control paths",
           "option": "inferred-latch"
         },
         {
           "name": "InputPortCoercion",
-          "index": 49,
+          "index": 50,
           "severity": "Warning",
           "message": "input net port '{}' coerced to 'inout'",
           "option": "port-coercion"
         },
         {
+          "name": "LimitCompare",
+          "index": 51,
+          "severity": "Warning",
+          "message": "comparison of {}-bit {} value {} {} is always {}",
+          "option": "tautological-limit-compare"
+        },
+        {
           "name": "LoopCondNotModified",
-          "index": 50,
+          "index": 52,
           "severity": "Warning",
           "message": "none of the variables in `for` loop condition are modified in the loop step expressions or body statements",
           "option": "loop-cond-not-modified"
         },
         {
           "name": "LoopVarModify",
-          "index": 51,
+          "index": 53,
           "severity": "Warning",
           "message": "loop variable '{}' is modified in both the `for` loop step and the loop body",
           "option": "loop-var-modify"
         },
         {
           "name": "MissingReturn",
-          "index": 52,
+          "index": 54,
           "severity": "Warning",
           "message": "non-void function '{}' does not return a value",
           "option": "missing-return"
         },
         {
           "name": "MixedVarAssigns",
-          "index": 53,
+          "index": 55,
           "severity": "Warning",
           "message": "cannot mix continuous and procedural assignments to variable '{}'",
           "option": "mixed-var-assigns"
         },
         {
           "name": "MultiWriteExpr",
-          "index": 54,
+          "index": 56,
           "severity": "Warning",
           "message": "'{}' is modified more than once in the same expression; the order of evaluation is undefined",
           "option": "multi-write"
         },
         {
           "name": "MultipleAlwaysAssigns",
-          "index": 55,
+          "index": 57,
           "severity": "Warning",
           "message": "variable '{}' driven by {} procedure cannot be written to by any other process",
           "option": "multiple-always-assigns"
         },
         {
           "name": "MultipleContAssigns",
-          "index": 56,
+          "index": 58,
           "severity": "Warning",
           "message": "cannot have multiple continuous assignments to variable '{}'",
           "option": "multiple-cont-assigns"
         },
         {
+          "name": "NegationCompare",
+          "index": 59,
+          "severity": "Warning",
+          "message": "'{}' of a value and its negation always evaluates to {}",
+          "option": "tautological-negation-compare"
+        },
+        {
           "name": "NetInconsistent",
-          "index": 57,
+          "index": 60,
           "severity": "Warning",
           "message": "net type '{}' of connection is inconsistent with net type '{}' of port",
           "option": "net-inconsistent"
         },
         {
           "name": "NetRangeInconsistent",
-          "index": 58,
+          "index": 61,
           "severity": "Warning",
           "message": "net type '{}' of connection bits [{}:{}] is inconsistent with net type '{}' of corresponding port range",
           "option": "net-inconsistent"
         },
         {
+          "name": "OutOfRangeCompare",
+          "index": 62,
+          "severity": "Warning",
+          "message": "comparison of {}-bit {} value {} {} is always {}",
+          "option": "tautological-range-compare"
+        },
+        {
           "name": "OutputPortCoercion",
-          "index": 59,
+          "index": 63,
           "severity": "Warning",
           "message": "output net port '{}' coerced to 'inout'",
           "option": "port-coercion"
         },
         {
+          "name": "OverlapCompare",
+          "index": 64,
+          "severity": "Warning",
+          "message": "{} comparisons always evaluate to {}",
+          "option": "tautological-overlap-compare"
+        },
+        {
           "name": "ReadWriteExpr",
-          "index": 60,
+          "index": 65,
           "severity": "Warning",
           "message": "'{}' is both read and modified in the same expression; the order of evaluation is undefined",
           "option": "read-write"
         },
         {
+          "name": "SelfCompare",
+          "index": 66,
+          "severity": "Warning",
+          "message": "self-comparison always evaluates to {}",
+          "option": "tautological-self-compare"
+        },
+        {
           "name": "ShadowHierarchy",
-          "index": 61,
+          "index": 67,
           "severity": "Warning",
           "message": "'{}' shadows a declaration in an outer scope",
           "option": "shadow-hierarchy"
         },
         {
           "name": "ShadowProperty",
-          "index": 62,
+          "index": 68,
           "severity": "Warning",
           "message": "'{}' shadows a property declared in '{}'",
           "option": "shadow-property"
         },
         {
           "name": "ShadowValue",
-          "index": 63,
+          "index": 69,
           "severity": "Warning",
           "message": "'{}' shadows a declaration in an outer scope",
           "option": "shadow-value"
         },
         {
           "name": "UnassignedLocalProperty",
-          "index": 64,
+          "index": 70,
           "severity": "Warning",
           "message": "'local' class property '{}' is never assigned a value",
           "option": "unassigned-local-property"
         },
         {
           "name": "UnassignedProperty",
-          "index": 65,
+          "index": 71,
           "severity": "Warning",
           "message": "class property '{}' is never assigned a value",
           "option": "unassigned-property"
         },
         {
           "name": "UnassignedVariable",
-          "index": 66,
+          "index": 72,
           "severity": "Warning",
           "message": "variable '{}' is never assigned a value",
           "option": "unassigned-variable"
         },
         {
           "name": "UndrivenNet",
-          "index": 67,
+          "index": 73,
           "severity": "Warning",
           "message": "net '{}' is never driven",
           "option": "undriven-net"
         },
         {
           "name": "UndrivenPort",
-          "index": 68,
+          "index": 74,
           "severity": "Warning",
           "message": "undriven output port '{}'",
           "option": "undriven-port"
         },
         {
           "name": "UnusedArgument",
-          "index": 69,
+          "index": 75,
           "severity": "Warning",
           "message": "unused formal argument '{}'",
           "option": "unused-argument"
         },
         {
           "name": "UnusedAssertionDecl",
-          "index": 70,
+          "index": 76,
           "severity": "Warning",
           "message": "unused {} '{}'",
           "option": "unused-assertion-decl"
         },
         {
           "name": "UnusedButSetLocalProperty",
-          "index": 71,
+          "index": 77,
           "severity": "Warning",
           "message": "'local' class property '{}' is assigned but its value is never used",
           "option": "unused-but-set-local-property"
         },
         {
           "name": "UnusedButSetNet",
-          "index": 72,
+          "index": 78,
           "severity": "Warning",
           "message": "net '{}' is driven but its value is never used",
           "option": "unused-but-set-net"
         },
         {
           "name": "UnusedButSetPort",
-          "index": 73,
+          "index": 79,
           "severity": "Warning",
           "message": "'inout' port '{}' is driven but its value is never used",
           "option": "unused-but-set-port"
         },
         {
           "name": "UnusedButSetProperty",
-          "index": 74,
+          "index": 80,
           "severity": "Warning",
           "message": "class property '{}' is assigned but its value is never used",
           "option": "unused-but-set-property"
         },
         {
           "name": "UnusedButSetVariable",
-          "index": 75,
+          "index": 81,
           "severity": "Warning",
           "message": "variable '{}' is assigned but its value is never used",
           "option": "unused-but-set-variable"
         },
         {
           "name": "UnusedClassMethod",
-          "index": 76,
+          "index": 82,
           "severity": "Warning",
           "message": "unused class method '{}'",
           "option": "unused-class-method"
         },
         {
           "name": "UnusedClassProperty",
-          "index": 77,
+          "index": 83,
           "severity": "Warning",
           "message": "unused class property '{}'",
           "option": "unused-class-property"
         },
         {
           "name": "UnusedConstructor",
-          "index": 78,
+          "index": 84,
           "severity": "Warning",
           "message": "unused class constructor for '{}'",
           "option": "unused-constructor"
         },
         {
           "name": "UnusedDPIImport",
-          "index": 79,
+          "index": 85,
           "severity": "Warning",
           "message": "unused DPI import '{}'",
           "option": "unused-dpi-import"
         },
         {
           "name": "UnusedDefinition",
-          "index": 80,
+          "index": 86,
           "severity": "Warning",
           "message": "{} definition is unused",
           "option": "unused-def"
         },
         {
           "name": "UnusedGenvar",
-          "index": 81,
+          "index": 87,
           "severity": "Warning",
           "message": "unused genvar '{}'",
           "option": "unused-genvar"
         },
         {
           "name": "UnusedImplicitNet",
-          "index": 82,
+          "index": 88,
           "severity": "Warning",
           "message": "implicit net '{}' is unused elsewhere",
           "option": "unused-implicit-net"
         },
         {
           "name": "UnusedImport",
-          "index": 83,
+          "index": 89,
           "severity": "Warning",
           "message": "unused import '{}'",
           "option": "unused-import"
         },
         {
           "name": "UnusedLocalClassMethod",
-          "index": 84,
+          "index": 90,
           "severity": "Warning",
           "message": "unused 'local' class method '{}'",
           "option": "unused-local-class-method"
         },
         {
           "name": "UnusedLocalClassProperty",
-          "index": 85,
+          "index": 91,
           "severity": "Warning",
           "message": "unused 'local' class property '{}'",
           "option": "unused-local-class-property"
         },
         {
           "name": "UnusedNet",
-          "index": 86,
+          "index": 92,
           "severity": "Warning",
           "message": "unused net '{}'",
           "option": "unused-net"
         },
         {
           "name": "UnusedPackageAssertionDecl",
-          "index": 87,
+          "index": 93,
           "severity": "Warning",
           "message": "unused package {} '{}'",
           "option": "unused-package-assertion-decl"
         },
         {
           "name": "UnusedPackageParameter",
-          "index": 88,
+          "index": 94,
           "severity": "Warning",
           "message": "unused package parameter '{}'",
           "option": "unused-package-parameter"
         },
         {
           "name": "UnusedPackageSubroutine",
-          "index": 89,
+          "index": 95,
           "severity": "Warning",
           "message": "unused package {} '{}'",
           "option": "unused-package-subroutine"
         },
         {
           "name": "UnusedPackageTypeParameter",
-          "index": 90,
+          "index": 96,
           "severity": "Warning",
           "message": "unused package type parameter '{}'",
           "option": "unused-package-type-parameter"
         },
         {
           "name": "UnusedPackageTypedef",
-          "index": 91,
+          "index": 97,
           "severity": "Warning",
           "message": "unused package typedef '{}'",
           "option": "unused-package-typedef"
         },
         {
           "name": "UnusedPackageVar",
-          "index": 92,
+          "index": 98,
           "severity": "Warning",
           "message": "unused package variable '{}'",
           "option": "unused-package-var"
         },
         {
           "name": "UnusedParameter",
-          "index": 93,
+          "index": 99,
           "severity": "Warning",
           "message": "unused parameter '{}'",
           "option": "unused-parameter"
         },
         {
           "name": "UnusedPort",
-          "index": 94,
+          "index": 100,
           "severity": "Warning",
           "message": "unused port signal '{}'",
           "option": "unused-port"
         },
         {
           "name": "UnusedSubroutine",
-          "index": 95,
+          "index": 101,
           "severity": "Warning",
           "message": "unused {} '{}'",
           "option": "unused-subroutine"
         },
         {
           "name": "UnusedTypeParameter",
-          "index": 96,
+          "index": 102,
           "severity": "Warning",
           "message": "unused type parameter '{}'",
           "option": "unused-type-parameter"
         },
         {
           "name": "UnusedTypedef",
-          "index": 97,
+          "index": 103,
           "severity": "Warning",
           "message": "unused typedef '{}'",
           "option": "unused-typedef"
         },
         {
           "name": "UnusedVariable",
-          "index": 98,
+          "index": 104,
           "severity": "Warning",
           "message": "unused variable '{}'",
           "option": "unused-variable"
         },
         {
           "name": "UnusedWildcardImport",
-          "index": 99,
+          "index": 105,
           "severity": "Warning",
           "message": "unused wildcard import",
           "option": "unused-wildcard-import"
@@ -3051,113 +3093,120 @@
           "option": "undefined-param-override"
         },
         {
-          "name": "RefArgAutomaticFunc",
+          "name": "PreferLocalparam",
           "index": 246,
+          "severity": "Warning",
+          "message": "prefer 'localparam' because parameter cannot be overridden in this context",
+          "option": "prefer-localparam"
+        },
+        {
+          "name": "RefArgAutomaticFunc",
+          "index": 247,
           "severity": "Warning",
           "message": "'ref' arguments can only be used in 'automatic' subroutines",
           "option": "ref-arg-automatic"
         },
         {
           "name": "SignednessNoEffect",
-          "index": 247,
+          "index": 248,
           "severity": "Warning",
           "message": "'{}' on I/O declaration has no effect on type {}",
           "option": "ineffective-sign"
         },
         {
           "name": "StaticInitOrder",
-          "index": 248,
+          "index": 249,
           "severity": "Warning",
           "message": "initializer for static variable '{}' refers to another static variable '{}' which will be initialized in an indeterminate order",
           "option": "static-init-order"
         },
         {
           "name": "StaticInitValue",
-          "index": 249,
+          "index": 250,
           "severity": "Warning",
           "message": "initializer for static variable '{}' refers to '{}' which will not have a value at initialization time",
           "option": "static-init-value"
         },
         {
           "name": "StaticInitializerMustBeExplicit",
-          "index": 250,
+          "index": 251,
           "severity": "Warning",
           "message": "initializing a static variable in a procedural context requires an explicit 'static' keyword",
           "option": "explicit-static"
         },
         {
           "name": "UdpCoverage",
-          "index": 251,
+          "index": 252,
           "severity": "Warning",
           "message": "primitive does not specify outputs for all edges of all inputs",
           "option": "udp-coverage"
         },
         {
           "name": "UnconnectedInOutPort",
-          "index": 252,
+          "index": 253,
           "severity": "Warning",
           "message": "inout port '{}' has no connection",
           "option": "unconnected-inout-port"
         },
         {
           "name": "UnconnectedInputPort",
-          "index": 253,
+          "index": 254,
           "severity": "Warning",
           "message": "input port '{}' has no connection",
           "option": "unconnected-input-port"
         },
         {
           "name": "UnconnectedOutputPort",
-          "index": 254,
+          "index": 255,
           "severity": "Warning",
           "message": "output port '{}' has no connection",
           "option": "unconnected-output-port"
         },
         {
           "name": "UnconnectedUnnamedPort",
-          "index": 255,
+          "index": 256,
           "severity": "Warning",
           "message": "instance does not provide a connection for an unnamed port",
           "option": "unconnected-unnamed-port"
         },
         {
           "name": "UnnamedGenerate",
-          "index": 256,
+          "index": 257,
           "severity": "Warning",
           "message": "generate block is unnamed",
           "option": "unnamed-generate"
         },
         {
           "name": "UnusedConfigCell",
-          "index": 257,
+          "index": 258,
           "severity": "Warning",
           "message": "unused cell config rule",
           "option": "unused-config-cell"
         },
         {
           "name": "UnusedConfigInstance",
-          "index": 258,
+          "index": 259,
           "severity": "Warning",
           "message": "unused config rule -- instance path does not exist in the design",
           "option": "unused-config-instance"
         },
         {
           "name": "VirtualArgNameMismatch",
-          "index": 259,
+          "index": 260,
           "severity": "Warning",
           "message": "virtual method argument name '{}' doesn't match '{}' given in its superclass method",
           "option": "virtual-arg-name-mismatch"
         },
         {
           "name": "WarnUnknownLibrary",
-          "index": 260,
+          "index": 261,
           "severity": "Warning",
           "message": "unknown library '{}'",
           "option": "unknown-library"
         },
         {
           "name": "WarningTask",
-          "index": 261,
+          "index": 262,
           "severity": "Warning",
           "message": "$warning encountered{}",
           "option": "warning-task"
@@ -8990,7 +9039,12 @@
         "undefined-param-override",
         "redefinition",
         "redefinition-different-type",
-        "command-line"
+        "command-line",
+        "tautological-self-compare",
+        "tautological-range-compare",
+        "tautological-bitwise-compare",
+        "tautological-overlap-compare",
+        "tautological-negation-compare"
       ]
     },
     {
@@ -9056,7 +9110,8 @@
         "colon-plus",
         "empty-input-connection",
         "bits-of-integer-constant",
-        "missing-else-clause"
+        "missing-else-clause",
+        "tautological-limit-compare"
       ]
     },
     {
@@ -9174,7 +9229,18 @@
         "shadow-hierarchy",
         "shadow-property"
       ]
+    },
+    {
+      "name": "tautological-compare",
+      "options": [
+        "tautological-self-compare",
+        "tautological-range-compare",
+        "tautological-limit-compare",
+        "tautological-bitwise-compare",
+        "tautological-overlap-compare",
+        "tautological-negation-compare"
+      ]
     }
   ],
-  "modelHash": "39d03621784b29d931c5aca1fd2efa7f222a5d844d21e85a7b6b87fdb4961d3e"
+  "modelHash": "15e066970c332274b7d183b906fa9b2d0bdfeb6afe1cc0a940c3b2e1f6ca3f2e"
 }

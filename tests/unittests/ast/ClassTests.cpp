@@ -258,7 +258,7 @@ endmodule
     Compilation compilation;
     compilation.addSyntaxTree(tree);
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter(DefaultIgnoreWarnings);
     REQUIRE(diags.size() == 4);
     for (int i = 0; i < 4; i++) {
         CHECK(diags[i].code == diag::ConstEvalClassType);
@@ -1409,7 +1409,7 @@ endclass
     Compilation compilation;
     compilation.addSyntaxTree(tree);
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter(DefaultIgnoreWarnings);
     REQUIRE(diags.size() == 5);
     CHECK(diags[0].code == diag::VirtualReturnMismatch);
     CHECK(diags[1].code == diag::IfaceNameConflict);
@@ -3932,6 +3932,52 @@ endmodule
 
     Compilation compilation;
     compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::BadAssignment);
+}
+
+TEST_CASE("Generic class specializations with parameters that only compare equal") {
+    // Two value parameters are the same when their types match and their values are
+    // the same [8.25]. An implicitly typed parameter takes its type from its value.
+    auto tree = SyntaxTree::fromText(R"(
+class C #(parameter p = 1);
+    static function int f();
+        return $bits(p);
+    endfunction
+endclass
+
+class R #(parameter real p = 1.0);
+    static function real f();
+        return $atan2(p, -1.0);
+    endfunction
+endclass
+
+module m;
+    localparam int i1 = C #(4'd1)::f();
+    localparam int i2 = C #(8'd1)::f();
+    localparam real r1 = R #(0.0)::f();
+    localparam real r2 = R #(-0.0)::f();
+
+    C #(4'd1) c1;
+    C #(8'd1) c2;
+    C #(4'd1) c3;
+    initial begin
+        c1 = c2;
+        c1 = c3;
+    end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& root = compilation.getRoot();
+    CHECK(root.lookupName<ParameterSymbol>("m.i1").getValue().integer() == 4);
+    CHECK(root.lookupName<ParameterSymbol>("m.i2").getValue().integer() == 8);
+    CHECK(root.lookupName<ParameterSymbol>("m.r1").getValue().real() > 0.0);
+    CHECK(root.lookupName<ParameterSymbol>("m.r2").getValue().real() < 0.0);
 
     auto& diags = compilation.getAllDiagnostics();
     REQUIRE(diags.size() == 1);

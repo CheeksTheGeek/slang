@@ -14,7 +14,6 @@
 #include "slang/ast/Patterns.h"
 #include "slang/ast/expressions/ConversionExpression.h"
 #include "slang/ast/expressions/MiscExpressions.h"
-#include "slang/ast/statements/ConditionalStatements.h"
 #include "slang/ast/symbols/ParameterSymbols.h"
 #include "slang/ast/symbols/VariableSymbols.h"
 #include "slang/ast/types/AllTypes.h"
@@ -46,6 +45,20 @@ static std::optional<bitwidth_t> evalEffectiveWidth(const ASTContext& context,
     if (keyword == TokenKind::CaseZKeyword)
         return *width - cv.integer().countLeadingZs();
     return width;
+}
+
+// Returns the larger of two effective widths, or nullopt if either is unknown.
+static std::optional<bitwidth_t> maxEffectiveWidth(std::optional<bitwidth_t> a,
+                                                   std::optional<bitwidth_t> b) {
+    if (!a || !b)
+        return std::nullopt;
+    return std::max(*a, *b);
+}
+
+// Returns true if the given expression can't hold a negative value, which
+// means that bits above its effective width are known to be zero.
+static bool isEffectivelyNonNegative(const Expression& expr) {
+    return expr.getEffectiveSign(/* isForConversion */ false) != Expression::EffectiveSign::Signed;
 }
 
 bool Expression::bindMembershipExpressions(const ASTContext& context, TokenKind keyword,
@@ -1247,17 +1260,44 @@ bool BinaryExpression::propagateType(const ASTContext& context, const Type& newT
 }
 
 std::optional<bitwidth_t> BinaryExpression::getEffectiveWidthImpl() const {
+    // Note that this is an approximation meant to reduce noise in width conversion
+    // warnings -- it doesn't try to account for things like carry bits from addition,
+    // so it's not a guaranteed bound on the value of the expression.
     switch (op) {
         case BinaryOperator::Add:
         case BinaryOperator::Subtract:
         case BinaryOperator::Multiply:
-        case BinaryOperator::Divide:
-        case BinaryOperator::Mod:
-        case BinaryOperator::BinaryAnd:
         case BinaryOperator::BinaryOr:
         case BinaryOperator::BinaryXor:
         case BinaryOperator::BinaryXnor:
-            return std::max(left().getEffectiveWidth(), right().getEffectiveWidth());
+            return maxEffectiveWidth(left().getEffectiveWidth(), right().getEffectiveWidth());
+        case BinaryOperator::Divide:
+        case BinaryOperator::Mod:
+        case BinaryOperator::BinaryAnd: {
+            auto lw = left().getEffectiveWidth();
+            auto rw = right().getEffectiveWidth();
+            if (!lw || !rw)
+                return std::nullopt;
+
+            // For non-negative operands, the quotient can be no larger than the
+            // dividend and the remainder no larger than either operand.
+            // For AND, any non-negative operand clears the bits above its width.
+            const bool ln = isEffectivelyNonNegative(left());
+            const bool rn = isEffectivelyNonNegative(right());
+            if (ln && rn) {
+                if (op == BinaryOperator::Divide)
+                    return lw;
+                return std::min(*lw, *rw);
+            }
+
+            if (op == BinaryOperator::BinaryAnd) {
+                if (ln)
+                    return lw;
+                if (rn)
+                    return rw;
+            }
+            return std::max(*lw, *rw);
+        }
         case BinaryOperator::Equality:
         case BinaryOperator::Inequality:
         case BinaryOperator::CaseEquality:
@@ -1273,10 +1313,24 @@ std::optional<bitwidth_t> BinaryExpression::getEffectiveWidthImpl() const {
         case BinaryOperator::LogicalImplication:
         case BinaryOperator::LogicalEquivalence:
             return 1;
-        case BinaryOperator::LogicalShiftLeft:
         case BinaryOperator::LogicalShiftRight:
+        case BinaryOperator::ArithmeticShiftRight: {
+            // Shifting a non-negative value right by a known amount
+            // removes that many bits from its effective width.
+            auto lw = left().getEffectiveWidth();
+            if (lw && isEffectivelyNonNegative(left())) {
+                if (auto cv = right().getConstant(); cv && cv->isInteger()) {
+                    auto& amount = cv->integer();
+                    if (!amount.hasUnknown() && !(amount.isSigned() && amount.isNegative())) {
+                        auto shift = amount.as<bitwidth_t>().value_or(*lw);
+                        return shift >= *lw ? 0 : *lw - shift;
+                    }
+                }
+            }
+            return lw;
+        }
+        case BinaryOperator::LogicalShiftLeft:
         case BinaryOperator::ArithmeticShiftLeft:
-        case BinaryOperator::ArithmeticShiftRight:
         case BinaryOperator::Power:
             return left().getEffectiveWidth();
     }
@@ -1606,7 +1660,7 @@ bool ConditionalExpression::propagateType(const ASTContext& context, const Type&
 std::optional<bitwidth_t> ConditionalExpression::getEffectiveWidthImpl() const {
     if (auto branch = knownSide())
         return branch->getEffectiveWidth();
-    return std::max(left().getEffectiveWidth(), right().getEffectiveWidth());
+    return maxEffectiveWidth(left().getEffectiveWidth(), right().getEffectiveWidth());
 }
 
 Expression::EffectiveSign ConditionalExpression::getEffectiveSignImpl(bool isForConversion) const {
@@ -1712,10 +1766,11 @@ ConstantValue ConditionalExpression::evalImpl(EvalContext& context) const {
         if (cvl.isInteger() && cvr.isInteger())
             return SVInt::conditional(cp.integer(), cvl.integer(), cvr.integer());
 
-        // [11.4.11] Otherwise, if the two operands are logically equivalent
-        // ([11.4.5]) the result is that value, whatever its type: real,
-        // string, unpacked struct, union, null handle, or an array whose
-        // elements all match.
+        // [11.4.11] says that both sides are compared for logical equivalence,
+        // and if they are equal the result is either of them. Only otherwise
+        // does the result depend on the type. (definitelyEqual rather than
+        // OpInfo::eval(Equality): it is total over every constant kind, e.g.
+        // the unbounded `$` value, which OpInfo::eval doesn't handle.)
         if (definitelyEqual(cvl, cvr))
             return cvl;
 
@@ -2044,7 +2099,9 @@ Expression& ConcatenationExpression::fromSyntax(Compilation& comp,
             }
             else {
                 Expression* expr = buffer[i];
-                if (expr->type->isString()) {
+
+                // Zero-width replication operands contribute nothing, so leave them unconverted.
+                if (expr->type->isString() || expr->type->isVoid()) {
                     selfDetermined(context, expr);
                 }
                 else {
@@ -2107,6 +2164,41 @@ Expression& ConcatenationExpression::fromEmpty(Compilation& comp,
 
     return *comp.emplace<ConcatenationExpression>(*assignmentTarget, std::span<Expression*>{},
                                                   syntax.sourceRange());
+}
+
+std::optional<bitwidth_t> ConcatenationExpression::getEffectiveWidthImpl() const {
+    if (!type->isIntegral())
+        return type->getBitWidth();
+
+    // Leading operands that are zero don't contribute to the effective width,
+    // and neither do the leading zero bits of the first non-zero operand.
+    auto ops = operands();
+    bitwidth_t result = 0;
+    size_t i = 0;
+    for (; i < ops.size(); i++) {
+        auto& op = *ops[i];
+        if (!op.type->isIntegral())
+            return type->getBitWidth();
+
+        auto width = op.getEffectiveWidth();
+        if (!width)
+            return std::nullopt;
+
+        // Negative values have all of their bits set in the result.
+        if (!isEffectivelyNonNegative(op))
+            break;
+
+        if (*width > 0) {
+            result = *width;
+            i++;
+            break;
+        }
+    }
+
+    for (; i < ops.size(); i++)
+        result += ops[i]->type->getBitWidth();
+
+    return result;
 }
 
 ConstantValue ConcatenationExpression::evalImpl(EvalContext& context) const {
@@ -2243,9 +2335,28 @@ Expression& ReplicationExpression::fromSyntax(Compilation& compilation,
         return badExpr(compilation, result);
     }
 
+    // Converts any string literal operands to string and gives the result string type.
+    auto makeStringReplication = [&]() -> Expression& {
+        contextDetermined(context, right, result, compilation.getStringType(), {});
+        result->concat_ = right;
+        result->type = &compilation.getStringType();
+        return *result;
+    };
+
     // If the multiplier isn't constant this must be a string replication.
     EvalContext evalCtx(context, EvalFlags::CacheResults);
     if (ConstantValue leftVal = left.eval(evalCtx); !leftVal) {
+        // Parameters in an uninstantiated body have no values (they are forced
+        // invalid), so a multiplier that names one cannot be evaluated, and an
+        // operand that names one counts as an implicit string. Neither says
+        // the replication is a string one: `{N{E}}` with integral parameters is
+        // an ordinary vector. Typing it `string` would make every integral use
+        // of it (`~{N{E}}`, `{N{E}} + 1`) report a spurious error in a body
+        // that is never elaborated, so give up on it quietly instead. A real
+        // string operand keeps the string replication.
+        if (context.scope->isUninstantiated() && !right->type->isString())
+            return badExpr(compilation, result);
+
         if (!right->isImplicitString()) {
             // They probably meant for this to be a constant (non-string) replication,
             // so do the normal error reporting for that case.
@@ -2253,11 +2364,7 @@ Expression& ReplicationExpression::fromSyntax(Compilation& compilation,
             return badExpr(compilation, result);
         }
 
-        contextDetermined(context, right, result, compilation.getStringType(), {});
-
-        result->concat_ = right;
-        result->type = &compilation.getStringType();
-        return *result;
+        return makeStringReplication();
     }
 
     std::optional<int32_t> count = context.evalInteger(left);
@@ -2269,8 +2376,18 @@ Expression& ReplicationExpression::fromSyntax(Compilation& compilation,
         return badExpr(compilation, result);
     }
 
+    // A replication of a string is a string whatever the count, and a zero count yields the
+    // empty string (LRM Table 6-9).
+    if (right->type->isString())
+        return makeStringReplication();
+
     if (*count == 0) {
         if (!context.flags.has(ASTFlags::InsideConcatenation)) {
+            // Zero copies of string literals are the empty string here, rather than a zero-width
+            // integral (LRM Table 6-9).
+            if (right->isImplicitString())
+                return makeStringReplication();
+
             context.addDiag(diag::ReplicationZeroOutsideConcat, left.sourceRange);
             return badExpr(compilation, result);
         }
@@ -2283,11 +2400,6 @@ Expression& ReplicationExpression::fromSyntax(Compilation& compilation,
 
     selfDetermined(context, right);
     result->concat_ = right;
-
-    if (right->type->isString()) {
-        result->type = &compilation.getStringType();
-        return *result;
-    }
 
     auto width = context.requireValidBitWidth(
         SVInt(32, uint64_t(*count), true) * right->type->getBitWidth(), syntax.sourceRange());
@@ -2430,9 +2542,8 @@ Expression& StreamingConcatenationExpression::fromSyntax(
             // Unpacked unions get "unwrapped" to their first member when streaming.
             if (argType->isUnpackedUnion() && !argType->isTaggedUnion()) {
                 auto& uu = argType->getCanonicalType().as<UnpackedUnionType>();
-                auto members = uu.members();
-                if (members.begin() != members.end())
-                    argType = &members.begin()->as<ValueSymbol>().getType();
+                if (!uu.fields.empty())
+                    argType = &uu.fields[0]->getType();
             }
 
             if (!argType->isBitstreamType(isDestination)) {

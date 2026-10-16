@@ -3649,6 +3649,12 @@ const DECLARATIONS_TABLE: &[DiagInfo] = &[
         "parameter '{}' does not exist in '{}'",
     ),
     (
+        "PreferLocalparam",
+        DiagSeverity::Warning,
+        Some("prefer-localparam"),
+        "prefer 'localparam' because parameter cannot be overridden in this context",
+    ),
+    (
         "RefArgAutomaticFunc",
         DiagSeverity::Warning,
         Some("ref-arg-automatic"),
@@ -7331,6 +7337,12 @@ const ANALYSIS_TABLE: &[DiagInfo] = &[
         "required here",
     ),
     (
+        "BitwiseCompare",
+        DiagSeverity::Warning,
+        Some("tautological-bitwise-compare"),
+        "bitwise comparison always evaluates to {}",
+    ),
+    (
         "CaseComplex",
         DiagSeverity::Warning,
         Some("case-too-complex"),
@@ -7439,6 +7451,12 @@ const ANALYSIS_TABLE: &[DiagInfo] = &[
         "input net port '{}' coerced to 'inout'",
     ),
     (
+        "LimitCompare",
+        DiagSeverity::Warning,
+        Some("tautological-limit-compare"),
+        "comparison of {}-bit {} value {} {} is always {}",
+    ),
+    (
         "LoopCondNotModified",
         DiagSeverity::Warning,
         Some("loop-cond-not-modified"),
@@ -7481,6 +7499,12 @@ const ANALYSIS_TABLE: &[DiagInfo] = &[
         "cannot have multiple continuous assignments to variable '{}'",
     ),
     (
+        "NegationCompare",
+        DiagSeverity::Warning,
+        Some("tautological-negation-compare"),
+        "'{}' of a value and its negation always evaluates to {}",
+    ),
+    (
         "NetInconsistent",
         DiagSeverity::Warning,
         Some("net-inconsistent"),
@@ -7493,16 +7517,34 @@ const ANALYSIS_TABLE: &[DiagInfo] = &[
         "net type '{}' of connection bits [{}:{}] is inconsistent with net type '{}' of corresponding port range",
     ),
     (
+        "OutOfRangeCompare",
+        DiagSeverity::Warning,
+        Some("tautological-range-compare"),
+        "comparison of {}-bit {} value {} {} is always {}",
+    ),
+    (
         "OutputPortCoercion",
         DiagSeverity::Warning,
         Some("port-coercion"),
         "output net port '{}' coerced to 'inout'",
     ),
     (
+        "OverlapCompare",
+        DiagSeverity::Warning,
+        Some("tautological-overlap-compare"),
+        "{} comparisons always evaluate to {}",
+    ),
+    (
         "ReadWriteExpr",
         DiagSeverity::Warning,
         Some("read-write"),
         "'{}' is both read and modified in the same expression; the order of evaluation is undefined",
+    ),
+    (
+        "SelfCompare",
+        DiagSeverity::Warning,
+        Some("tautological-self-compare"),
+        "self-comparison always evaluates to {}",
     ),
     (
         "ShadowHierarchy",
@@ -7807,74 +7849,80 @@ pub mod diag {
     pub const NoteLoopVarStep: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 29);
     pub const NotePortConnHere: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 30);
     pub const NoteRequiredHere: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 31);
-    pub const CaseComplex: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 32);
-    pub const CaseDup: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 33);
-    pub const CaseEnum: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 34);
-    pub const CaseEnumExplicit: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 35);
-    pub const CaseIncomplete: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 36);
-    pub const CaseNone: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 37);
-    pub const CaseNotWildcard: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 38);
-    pub const CaseOverlap: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 39);
-    pub const CaseUnreachable: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 40);
-    pub const CaseZWithX: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 41);
-    pub const ClockVarTargetAssign: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 42);
-    pub const ConstraintFuncArgCycle: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 43);
-    pub const ConstraintSolveCycle: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 44);
-    pub const ForkLoopVar: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 45);
-    pub const IncompleteReturn: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 46);
-    pub const InferredComb: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 47);
-    pub const InferredLatch: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 48);
-    pub const InputPortCoercion: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 49);
-    pub const LoopCondNotModified: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 50);
-    pub const LoopVarModify: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 51);
-    pub const MissingReturn: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 52);
-    pub const MixedVarAssigns: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 53);
-    pub const MultiWriteExpr: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 54);
-    pub const MultipleAlwaysAssigns: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 55);
-    pub const MultipleContAssigns: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 56);
-    pub const NetInconsistent: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 57);
-    pub const NetRangeInconsistent: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 58);
-    pub const OutputPortCoercion: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 59);
-    pub const ReadWriteExpr: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 60);
-    pub const ShadowHierarchy: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 61);
-    pub const ShadowProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 62);
-    pub const ShadowValue: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 63);
-    pub const UnassignedLocalProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 64);
-    pub const UnassignedProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 65);
-    pub const UnassignedVariable: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 66);
-    pub const UndrivenNet: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 67);
-    pub const UndrivenPort: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 68);
-    pub const UnusedArgument: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 69);
-    pub const UnusedAssertionDecl: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 70);
-    pub const UnusedButSetLocalProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 71);
-    pub const UnusedButSetNet: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 72);
-    pub const UnusedButSetPort: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 73);
-    pub const UnusedButSetProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 74);
-    pub const UnusedButSetVariable: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 75);
-    pub const UnusedClassMethod: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 76);
-    pub const UnusedClassProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 77);
-    pub const UnusedConstructor: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 78);
-    pub const UnusedDPIImport: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 79);
-    pub const UnusedDefinition: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 80);
-    pub const UnusedGenvar: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 81);
-    pub const UnusedImplicitNet: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 82);
-    pub const UnusedImport: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 83);
-    pub const UnusedLocalClassMethod: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 84);
-    pub const UnusedLocalClassProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 85);
-    pub const UnusedNet: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 86);
-    pub const UnusedPackageAssertionDecl: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 87);
-    pub const UnusedPackageParameter: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 88);
-    pub const UnusedPackageSubroutine: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 89);
-    pub const UnusedPackageTypeParameter: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 90);
-    pub const UnusedPackageTypedef: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 91);
-    pub const UnusedPackageVar: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 92);
-    pub const UnusedParameter: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 93);
-    pub const UnusedPort: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 94);
-    pub const UnusedSubroutine: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 95);
-    pub const UnusedTypeParameter: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 96);
-    pub const UnusedTypedef: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 97);
-    pub const UnusedVariable: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 98);
-    pub const UnusedWildcardImport: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 99);
+    pub const BitwiseCompare: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 32);
+    pub const CaseComplex: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 33);
+    pub const CaseDup: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 34);
+    pub const CaseEnum: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 35);
+    pub const CaseEnumExplicit: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 36);
+    pub const CaseIncomplete: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 37);
+    pub const CaseNone: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 38);
+    pub const CaseNotWildcard: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 39);
+    pub const CaseOverlap: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 40);
+    pub const CaseUnreachable: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 41);
+    pub const CaseZWithX: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 42);
+    pub const ClockVarTargetAssign: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 43);
+    pub const ConstraintFuncArgCycle: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 44);
+    pub const ConstraintSolveCycle: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 45);
+    pub const ForkLoopVar: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 46);
+    pub const IncompleteReturn: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 47);
+    pub const InferredComb: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 48);
+    pub const InferredLatch: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 49);
+    pub const InputPortCoercion: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 50);
+    pub const LimitCompare: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 51);
+    pub const LoopCondNotModified: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 52);
+    pub const LoopVarModify: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 53);
+    pub const MissingReturn: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 54);
+    pub const MixedVarAssigns: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 55);
+    pub const MultiWriteExpr: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 56);
+    pub const MultipleAlwaysAssigns: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 57);
+    pub const MultipleContAssigns: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 58);
+    pub const NegationCompare: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 59);
+    pub const NetInconsistent: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 60);
+    pub const NetRangeInconsistent: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 61);
+    pub const OutOfRangeCompare: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 62);
+    pub const OutputPortCoercion: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 63);
+    pub const OverlapCompare: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 64);
+    pub const ReadWriteExpr: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 65);
+    pub const SelfCompare: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 66);
+    pub const ShadowHierarchy: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 67);
+    pub const ShadowProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 68);
+    pub const ShadowValue: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 69);
+    pub const UnassignedLocalProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 70);
+    pub const UnassignedProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 71);
+    pub const UnassignedVariable: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 72);
+    pub const UndrivenNet: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 73);
+    pub const UndrivenPort: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 74);
+    pub const UnusedArgument: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 75);
+    pub const UnusedAssertionDecl: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 76);
+    pub const UnusedButSetLocalProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 77);
+    pub const UnusedButSetNet: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 78);
+    pub const UnusedButSetPort: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 79);
+    pub const UnusedButSetProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 80);
+    pub const UnusedButSetVariable: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 81);
+    pub const UnusedClassMethod: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 82);
+    pub const UnusedClassProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 83);
+    pub const UnusedConstructor: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 84);
+    pub const UnusedDPIImport: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 85);
+    pub const UnusedDefinition: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 86);
+    pub const UnusedGenvar: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 87);
+    pub const UnusedImplicitNet: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 88);
+    pub const UnusedImport: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 89);
+    pub const UnusedLocalClassMethod: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 90);
+    pub const UnusedLocalClassProperty: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 91);
+    pub const UnusedNet: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 92);
+    pub const UnusedPackageAssertionDecl: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 93);
+    pub const UnusedPackageParameter: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 94);
+    pub const UnusedPackageSubroutine: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 95);
+    pub const UnusedPackageTypeParameter: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 96);
+    pub const UnusedPackageTypedef: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 97);
+    pub const UnusedPackageVar: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 98);
+    pub const UnusedParameter: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 99);
+    pub const UnusedPort: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 100);
+    pub const UnusedSubroutine: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 101);
+    pub const UnusedTypeParameter: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 102);
+    pub const UnusedTypedef: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 103);
+    pub const UnusedVariable: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 104);
+    pub const UnusedWildcardImport: DiagCode = DiagCode::new(DiagSubsystem::Analysis, 105);
     pub const BindTypeParamMismatch: DiagCode = DiagCode::new(DiagSubsystem::Compilation, 0);
     pub const BindTypeParamNotFound: DiagCode = DiagCode::new(DiagSubsystem::Compilation, 1);
     pub const ConfigParamsIgnored: DiagCode = DiagCode::new(DiagSubsystem::Compilation, 2);
@@ -8244,23 +8292,24 @@ pub mod diag {
     pub const NoConstraintBody: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 243);
     pub const NullPort: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 244);
     pub const ParameterDoesNotExist: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 245);
-    pub const RefArgAutomaticFunc: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 246);
-    pub const SignednessNoEffect: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 247);
-    pub const StaticInitOrder: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 248);
-    pub const StaticInitValue: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 249);
+    pub const PreferLocalparam: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 246);
+    pub const RefArgAutomaticFunc: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 247);
+    pub const SignednessNoEffect: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 248);
+    pub const StaticInitOrder: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 249);
+    pub const StaticInitValue: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 250);
     pub const StaticInitializerMustBeExplicit: DiagCode =
-        DiagCode::new(DiagSubsystem::Declarations, 250);
-    pub const UdpCoverage: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 251);
-    pub const UnconnectedInOutPort: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 252);
-    pub const UnconnectedInputPort: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 253);
-    pub const UnconnectedOutputPort: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 254);
-    pub const UnconnectedUnnamedPort: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 255);
-    pub const UnnamedGenerate: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 256);
-    pub const UnusedConfigCell: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 257);
-    pub const UnusedConfigInstance: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 258);
-    pub const VirtualArgNameMismatch: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 259);
-    pub const WarnUnknownLibrary: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 260);
-    pub const WarningTask: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 261);
+        DiagCode::new(DiagSubsystem::Declarations, 251);
+    pub const UdpCoverage: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 252);
+    pub const UnconnectedInOutPort: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 253);
+    pub const UnconnectedInputPort: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 254);
+    pub const UnconnectedOutputPort: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 255);
+    pub const UnconnectedUnnamedPort: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 256);
+    pub const UnnamedGenerate: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 257);
+    pub const UnusedConfigCell: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 258);
+    pub const UnusedConfigInstance: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 259);
+    pub const VirtualArgNameMismatch: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 260);
+    pub const WarnUnknownLibrary: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 261);
+    pub const WarningTask: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 262);
     pub const CommandLineError: DiagCode = DiagCode::new(DiagSubsystem::Driver, 0);
     pub const NoteCommandLine: DiagCode = DiagCode::new(DiagSubsystem::Driver, 1);
     pub const CommandLineWarning: DiagCode = DiagCode::new(DiagSubsystem::Driver, 2);
@@ -9219,6 +9268,11 @@ pub const DIAG_GROUPS: &[DiagGroup] = &[
             "redefinition",
             "redefinition-different-type",
             "command-line",
+            "tautological-self-compare",
+            "tautological-range-compare",
+            "tautological-bitwise-compare",
+            "tautological-overlap-compare",
+            "tautological-negation-compare",
         ],
     },
     DiagGroup {
@@ -9285,6 +9339,7 @@ pub const DIAG_GROUPS: &[DiagGroup] = &[
             "empty-input-connection",
             "bits-of-integer-constant",
             "missing-else-clause",
+            "tautological-limit-compare",
         ],
     },
     DiagGroup {
@@ -9403,8 +9458,19 @@ pub const DIAG_GROUPS: &[DiagGroup] = &[
             "shadow-property",
         ],
     },
+    DiagGroup {
+        name: "tautological-compare",
+        options: &[
+            "tautological-self-compare",
+            "tautological-range-compare",
+            "tautological-limit-compare",
+            "tautological-bitwise-compare",
+            "tautological-overlap-compare",
+            "tautological-negation-compare",
+        ],
+    },
 ];
 
 /// SHA-256 of the canonical diagnostics model these tables were generated from.
 pub const DIAGNOSTICS_MODEL_HASH: &str =
-    "39d03621784b29d931c5aca1fd2efa7f222a5d844d21e85a7b6b87fdb4961d3e";
+    "15e066970c332274b7d183b906fa9b2d0bdfeb6afe1cc0a940c3b2e1f6ca3f2e";

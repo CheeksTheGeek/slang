@@ -122,7 +122,7 @@ TEST_CASE("Type parameters") {
     auto tree = SyntaxTree::fromText(R"(
 module m #(parameter type foo_t = int, foo_t foo = 1) ();
     if (foo) begin
-        parameter type asdf = shortint, basdf = logic;
+        localparam type asdf = shortint, basdf = logic;
     end
 endmodule
 )");
@@ -135,12 +135,12 @@ endmodule
 TEST_CASE("Type parameters 2") {
     auto tree = SyntaxTree::fromText(R"(
 package p;
-parameter type x_t = logic[3:0];
-parameter type y_t = logic[3:0];
+localparam type x_t = logic[3:0];
+localparam type y_t = logic[3:0];
 endpackage
 module m #(parameter type foo_t, foo_t foo = 1) ();
     if (foo) begin
-        parameter type asdf = shortint, basdf = logic;
+        localparam type asdf = shortint, basdf = logic;
     end
 endmodule
 
@@ -178,7 +178,7 @@ TEST_CASE("Type parameters 3") {
     auto tree = SyntaxTree::fromText(R"(
 module m #(parameter type foo_t, foo_t foo = 1) ();
     if (foo) begin
-        parameter type asdf = shortint, basdf = logic;
+        localparam type asdf = shortint, basdf = logic;
     end
 endmodule
 
@@ -239,7 +239,7 @@ TEST_CASE("Type parameters unset -- ok") {
     auto tree = SyntaxTree::fromText(R"(
 module m #(parameter type foo_t = int, foo_t foo = 1) ();
     if (foo) begin
-        parameter type asdf = shortint, basdf = logic;
+        localparam type asdf = shortint, basdf = logic;
     end
 endmodule
 
@@ -336,7 +336,7 @@ endmodule
     };
 
     CHECK(typeof("a") == "logic[9:1]");
-    CHECK(typeof("b") == "logic[31:0]");
+    CHECK(typeof("b") == "logic[0:0]");
     CHECK(typeof("c") == "real");
     CHECK(typeof("d") == "logic signed[1:0]");
     CHECK(typeof("e") == "logic signed[31:0]");
@@ -346,7 +346,7 @@ endmodule
 
 TEST_CASE("Param initialize self-reference") {
     auto tree = SyntaxTree::fromText(R"(
-parameter int foo = foo;
+localparam int foo = foo;
 )");
 
     Compilation compilation;
@@ -905,7 +905,7 @@ endmodule
 
 module n #(parameter int foo = 0);
     if (foo > 10) begin : bar
-        parameter baz = 6;
+        localparam baz = 6;
         n #(baz) n2();
     end
 endmodule
@@ -937,7 +937,7 @@ module m;
     defparam q.foo = 1;
 
     if (a == 6) begin : q
-        parameter foo = 0;
+        localparam foo = 0;
     end
 
     parameter b = 3;
@@ -1431,6 +1431,151 @@ endmodule
     CHECK(diags[0].code == diag::InfoTask);
 }
 
+TEST_CASE("Real parameters differing in sign of zero with instance caching") {
+    // 0.0 and -0.0 compare equal but $atan2 tells them apart,
+    // so each instance needs its own body.
+    auto tree = SyntaxTree::fromText(R"(
+typedef struct { int i; real r; } s_t;
+typedef union { real r; longint i; } u_t;
+
+function automatic u_t make_union(real r);
+    u_t u;
+    u.r = r;
+    return u;
+endfunction
+
+module m;
+    r #(0.0) r1();
+    r #(-0.0) r2();
+
+    sr #(0.0) sr1();
+    sr #(-0.0) sr2();
+
+    arr #('{1.0, 0.0}) arr1();
+    arr #('{1.0, -0.0}) arr2();
+
+    st #('{0, 0.0}) st1();
+    st #('{0, -0.0}) st2();
+
+    q #('{0.0}) q1();
+    q #('{-0.0}) q2();
+
+    aa #('{"k": 0.0}) aa1();
+    aa #('{"k": -0.0}) aa2();
+
+    aadef #('{default: 0.0}) aadef1();
+    aadef #('{default: -0.0}) aadef2();
+
+    un #(make_union(0.0)) un1();
+    un #(make_union(-0.0)) un2();
+endmodule
+
+module r #(parameter real p = 1.0);
+    if ($atan2(p, -1.0) < 0.0) begin : blk
+        $info("Hello");
+    end
+endmodule
+
+module sr #(parameter shortreal p = 1.0);
+    if ($atan2(p, -1.0) < 0.0) begin : blk
+        $info("Hello");
+    end
+endmodule
+
+module arr #(parameter real p[2] = '{1.0, 1.0});
+    if ($atan2(p[1], -1.0) < 0.0) begin : blk
+        $info("Hello");
+    end
+endmodule
+
+module st #(parameter s_t p = '{0, 1.0});
+    if ($atan2(p.r, -1.0) < 0.0) begin : blk
+        $info("Hello");
+    end
+endmodule
+
+module q #(parameter real p[$] = '{1.0});
+    if ($atan2(p[0], -1.0) < 0.0) begin : blk
+        $info("Hello");
+    end
+endmodule
+
+module aa #(parameter real p[string] = '{"k": 1.0});
+    if ($atan2(p["k"], -1.0) < 0.0) begin : blk
+        $info("Hello");
+    end
+endmodule
+
+module aadef #(parameter real p[string] = '{default: 1.0});
+    if ($atan2(p["missing"], -1.0) < 0.0) begin : blk
+        $info("Hello");
+    end
+endmodule
+
+module un #(parameter u_t p = make_union(1.0));
+    if ($atan2(p.r, -1.0) < 0.0) begin : blk
+        $info("Hello");
+    end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 8);
+    for (auto& d : diags)
+        CHECK(d.code == diag::InfoTask);
+}
+
+TEST_CASE("Implicitly typed parameters of different sizes with instance caching") {
+    // A parameter with no declared type takes the type of its value (6.20.2),
+    // so the same number at two sizes makes two different parameters.
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    n #(4'd1) n1();
+    n #(8'd1) n2();
+endmodule
+
+module n #(parameter p = 1);
+    if ($bits(p) == 8) begin : blk
+        $info("Hello");
+    end
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::InfoTask);
+}
+
+TEST_CASE("NaN parameters with instance caching") {
+    // A NaN does not compare equal to itself, but two instances
+    // given the same NaN can still share a body.
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    n #($bitstoreal(64'h7ff8000000000000)) n1();
+    n #($bitstoreal(64'h7ff8000000000000)) n2();
+    n #($bitstoreal(64'h7ff8000000000001)) n3();
+endmodule
+
+module n #(parameter real p = 1.0);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+
+    auto& root = compilation.getRoot();
+    CHECK(root.lookupName<InstanceSymbol>("m.n1").getCanonicalBody() == nullptr);
+    CHECK(root.lookupName<InstanceSymbol>("m.n2").getCanonicalBody() != nullptr);
+    CHECK(root.lookupName<InstanceSymbol>("m.n3").getCanonicalBody() == nullptr);
+}
+
 TEST_CASE("Multiple type parameters in declaration list regress") {
     auto tree = SyntaxTree::fromText(R"(
 bit failed = 1'b0;
@@ -1655,7 +1800,7 @@ endmodule
 TEST_CASE("Package value parameter missing initializer") {
     auto tree = SyntaxTree::fromText(R"(
 package p;
-    parameter x;
+    localparam x;
 endpackage
 )");
 
@@ -1670,7 +1815,7 @@ endpackage
 TEST_CASE("Package type parameter missing initializer") {
     auto tree = SyntaxTree::fromText(R"(
 package p;
-    parameter type T;
+    localparam type T;
 endpackage
 )");
 
@@ -1680,4 +1825,169 @@ endpackage
     auto& diags = compilation.getAllDiagnostics();
     REQUIRE(diags.size() == 1);
     CHECK(diags[0].code == diag::BodyParamNoInitializer);
+}
+
+TEST_CASE("Param alias: global parameter") {
+    auto tree = SyntaxTree::fromText(R"(
+        parameter int p = 1;
+    )");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::PreferLocalparam);
+}
+
+TEST_CASE("Param alias: global localparam") {
+    auto tree = SyntaxTree::fromText(R"(
+        localparam int p = 1;
+    )");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.empty());
+}
+
+TEST_CASE("Param alias: package parameter") {
+    auto tree = SyntaxTree::fromText(R"(
+        package m;
+            parameter int p = 1;
+            parameter type tp = int;
+        endpackage
+    )");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 2);
+    CHECK(diags[0].code == diag::PreferLocalparam);
+    CHECK(diags[1].code == diag::PreferLocalparam);
+}
+
+TEST_CASE("Param alias: package localparam") {
+    auto tree = SyntaxTree::fromText(R"(
+        package m;
+            localparam int p = 1;
+            localparam type tp = int;
+        endpackage
+    )");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.empty());
+}
+
+TEST_CASE("Param alias: generate parameter") {
+    auto tree = SyntaxTree::fromText(R"(
+        module m;
+            if (1) begin : generated
+                parameter int p = 1;
+                parameter type tp = int;
+            end
+        endmodule
+    )");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 2);
+    CHECK(diags[0].code == diag::PreferLocalparam);
+    CHECK(diags[1].code == diag::PreferLocalparam);
+}
+
+TEST_CASE("Param alias: generate localparam") {
+    auto tree = SyntaxTree::fromText(R"(
+        module m;
+            if (1) begin : generated
+                localparam int p = 1;
+                localparam type tp = int;
+            end
+        endmodule
+    )");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.empty());
+}
+
+TEST_CASE("Param alias: module parameter") {
+    auto tree = SyntaxTree::fromText(R"(
+        module m;
+            parameter int p = 1;
+            parameter type tp = int;
+        endmodule
+    )");
+
+    // This situation is fine.
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.empty());
+}
+
+TEST_CASE("Param alias: module localparam") {
+    auto tree = SyntaxTree::fromText(R"(
+        module m;
+            localparam int p = 1;
+            localparam type tp = int;
+        endmodule
+    )");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.empty());
+}
+
+TEST_CASE("Implicit param type inferred from unbased unsized literal") {
+    auto tree = SyntaxTree::fromText(R"(
+module sub #(P = 0, parameter signed Q = 0) ();
+  if (P > 2) $error("Unexpected value for P: %d", P);
+  if ($bits(P) != 1) $error("Unexpected width for P");
+  if ($bits(Q) != 1 || Q != -1) $error("Unexpected value for Q");
+endmodule
+
+module top;
+  sub #('1, '1) u_sub ();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+}
+
+TEST_CASE("Defparam inside instance array elements") {
+    auto tree = SyntaxTree::fromText(R"(
+module leaf #(parameter W = 1);
+  if (W != 8) $error("Unexpected value for W: %0d", W);
+endmodule
+
+module mid;
+  leaf l ();
+  defparam l.W = 8;
+endmodule
+
+module top;
+  mid m [1:0] ();
+  mid n [1:0][2:0] ();
+  mid s ();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
 }

@@ -169,7 +169,7 @@ module m6(I.bar bar); endmodule
     checkIfacePort("m5", "a2", "K", "");
     checkIfacePort("m6", "bar", "I", "bar");
 
-    auto& diags = compilation.getAllDiagnostics();
+    auto diags = compilation.getAllDiagnostics().filter(DefaultIgnoreWarnings);
     REQUIRE(diags.size() == 5);
     CHECK(diags[0].code == diag::PortTypeNotInterfaceOrData);
     CHECK(diags[1].code == diag::VarWithInterfacePort);
@@ -2187,4 +2187,22 @@ endmodule
     auto& diags = compilation.getAllDiagnostics();
     REQUIRE(diags.size() == 1);
     CHECK(diags[0].code == diag::UnknownInterface);
+}
+
+TEST_CASE("ANSI enum port followed by struct port") {
+    auto tree = SyntaxTree::fromText(R"(
+module top (input enum {A} p3, input struct packed {logic f;} p5,
+            input enum {B} p6, input struct packed {enum {C} g;} p7);
+    localparam int x = A;
+    localparam int y = B;
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+
+    auto& top = compilation.getRoot().lookupName<InstanceSymbol>("top").body;
+    CHECK(top.lookupName<NetSymbol>("p3").getType().isEnum());
+    CHECK(top.lookupName<NetSymbol>("p6").getType().isEnum());
 }

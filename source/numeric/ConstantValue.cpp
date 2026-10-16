@@ -8,6 +8,7 @@
 #include "slang/numeric/ConstantValue.h"
 
 #include "../text/FormatBuffer.h"
+#include <algorithm>
 #include <ostream>
 
 #include "slang/numeric/MathUtils.h"
@@ -319,6 +320,66 @@ bool ConstantValue::hasUnknown() const {
         value);
 }
 
+bool ConstantValue::isIdentical(const ConstantValue& rhs) const {
+    auto identical = [](const ConstantValue& a, const ConstantValue& b) {
+        return a.isIdentical(b);
+    };
+
+    return std::visit(
+        [&](auto&& arg) {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, std::monostate>)
+                return rhs.bad();
+            else if constexpr (std::is_same_v<T, SVInt>) {
+                if (!rhs.isInteger())
+                    return false;
+
+                auto& ri = rhs.integer();
+                return arg.getBitWidth() == ri.getBitWidth() && arg.isSigned() == ri.isSigned() &&
+                       exactlyEqual(arg, ri);
+            }
+            else if constexpr (std::is_same_v<T, real_t>) {
+                return rhs.isReal() && std::bit_cast<uint64_t>(double(arg)) ==
+                                           std::bit_cast<uint64_t>(double(rhs.real()));
+            }
+            else if constexpr (std::is_same_v<T, shortreal_t>) {
+                return rhs.isShortReal() && std::bit_cast<uint32_t>(float(arg)) ==
+                                                std::bit_cast<uint32_t>(float(rhs.shortReal()));
+            }
+            else if constexpr (std::is_same_v<T, ConstantValue::NullPlaceholder>)
+                return rhs.isNullHandle();
+            else if constexpr (std::is_same_v<T, ConstantValue::UnboundedPlaceholder>)
+                return rhs.isUnbounded();
+            else if constexpr (std::is_same_v<T, ConstantValue::Elements>)
+                return rhs.isUnpacked() && std::ranges::equal(arg, rhs.elements(), identical);
+            else if constexpr (std::is_same_v<T, std::string>)
+                return rhs.isString() && arg == rhs.str();
+            else if constexpr (std::is_same_v<T, ConstantValue::Map>) {
+                if (!rhs.isMap())
+                    return false;
+
+                auto& rm = *rhs.map();
+                return arg->defaultValue.isIdentical(rm.defaultValue) &&
+                       std::ranges::equal(*arg, rm, [](auto& a, auto& b) {
+                           return a.first.isIdentical(b.first) && a.second.isIdentical(b.second);
+                       });
+            }
+            else if constexpr (std::is_same_v<T, ConstantValue::Queue>)
+                return rhs.isQueue() && std::ranges::equal(*arg, *rhs.queue(), identical);
+            else if constexpr (std::is_same_v<T, ConstantValue::Union>) {
+                if (!rhs.isUnion())
+                    return false;
+
+                auto& ru = rhs.unionVal();
+                return arg->activeMember == ru->activeMember && arg->value.isIdentical(ru->value);
+            }
+            else {
+                static_assert(always_false<T>::value, "Missing case");
+            }
+        },
+        value);
+}
+
 ConstantValue ConstantValue::convertToInt() const {
     if (isReal())
         return convertToInt(64, true, false);
@@ -406,13 +467,41 @@ ConstantValue ConstantValue::convertToStr() const {
     if (isString())
         return *this;
 
+    // An unpacked array or queue of bytes is string-like: it provides one character
+    // per element, in order from the left bound to the right bound [21.2.1.8].
+    if (isUnpacked() || isQueue()) {
+        std::string result;
+        auto append = [&result](const ConstantValue& elem) {
+            if (!elem.isInteger())
+                return false;
+            result += elem.convertToStr().str();
+            return true;
+        };
+
+        if (isQueue()) {
+            for (auto& elem : *queue()) {
+                if (!append(elem))
+                    return nullptr;
+            }
+        }
+        else {
+            for (auto& elem : elements()) {
+                if (!append(elem))
+                    return nullptr;
+            }
+        }
+        return result;
+    }
+
     if (!isInteger())
         return nullptr;
 
     // Conversion is described in [6.16]: take each 8 bit chunk,
     // remove it if it's zero, otherwise add as character to the string.
-
-    const SVInt& val = integer();
+    // The characters of a string are bytes, a 2-state type, so x and z bits
+    // read as 0 [6.11.2], as they do in a bit-stream cast to a string.
+    SVInt val = integer();
+    val.flattenUnknowns();
     int32_t msb = int32_t(val.getBitWidth() - 1);
     int32_t extraBits = int32_t(val.getBitWidth() % 8);
 

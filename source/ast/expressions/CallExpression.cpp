@@ -685,6 +685,18 @@ ConstantValue CallExpression::evalImpl(EvalContext& context) const {
     if (!checkConstant(context, symbol, sourceRange))
         return nullptr;
 
+    // [13.4.3] "Constant functions shall not contain any hierarchical
+    // references": reject a hierarchical call made from inside a constant
+    // function's body (a top-level call such as `localparam p = i.getP();`
+    // stays allowed). Same exemptions as HierarchicalValueExpression::evalImpl.
+    if (isHierarchical && context.inFunction() && context.topFrame().subroutine &&
+        !context.flags.has(EvalFlags::IsScript) &&
+        !context.getCompilation().hasFlag(CompilationFlags::AllowHierarchicalConst) &&
+        !context.astCtx.flags.has(ASTFlags::ConfigParam)) {
+        context.addDiag(diag::ConstEvalHierarchicalName, sourceRange) << symbol.name;
+        return nullptr;
+    }
+
     // Evaluate all argument in the current stack frame.
     SmallVector<ConstantValue, 4> args;
     for (auto arg : arguments()) {

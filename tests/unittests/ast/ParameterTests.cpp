@@ -1230,6 +1230,30 @@ endmodule
     CHECK(diags[0].code == diag::InfoTask);
 }
 
+TEST_CASE("Hierarchical call inside a constant function") {
+    // [13.4.3] "Constant functions shall not contain any hierarchical
+    // references"; a hierarchical call at the top level of a constant
+    // expression stays allowed (see the regress test below).
+    auto tree = SyntaxTree::fromText(R"(
+module m1;
+    function automatic int f1(); return 3; endfunction
+endmodule
+
+module t;
+    m1 m1();
+    function automatic int g(); return m1.f1(); endfunction
+    localparam int L = g();
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].code == diag::ConstEvalHierarchicalName);
+}
+
 TEST_CASE("Hierarchical parameter lookup location regress") {
     auto tree = SyntaxTree::fromText(R"(
 interface I;

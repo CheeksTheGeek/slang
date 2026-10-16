@@ -57,6 +57,11 @@ public:
     /// The subroutine that is being called.
     Subroutine subroutine;
 
+    /// True if the subroutine was named by a hierarchical path (other than one
+    /// through an interface port), e.g. `m1.f1()`. Such a call is not allowed
+    /// in a constant expression [11.2.1, 13.4.3].
+    bool isHierarchical = false;
+
     CallExpression(const Subroutine& subroutine, const Type& returnType,
                    const Expression* thisClass, std::span<const Expression*> arguments,
                    LookupLocation lookupLocation, SourceRange sourceRange) :

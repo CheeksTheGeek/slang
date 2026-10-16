@@ -1190,6 +1190,12 @@ Expression& Expression::bindLookupResult(Compilation& comp, LookupResult& result
                 auto ref = comp.emplace<HierarchicalReference>(
                     HierarchicalReference::fromLookup(comp, result));
                 comp.noteHierarchicalAssignment(*ref);
+
+                // Remember it so constant evaluation can reject the call, as it does
+                // a hierarchical value reference (names through an interface port
+                // are allowed in constants).
+                if (expr->kind == ExpressionKind::Call && !ref->isViaIfacePort())
+                    expr->as<CallExpression>().isHierarchical = true;
             }
 
             noteIfUpward(*expr);

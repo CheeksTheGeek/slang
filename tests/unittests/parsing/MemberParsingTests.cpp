@@ -1369,6 +1369,17 @@ primitive'b
     parseCompilationUnit(text);
 }
 
+TEST_CASE("Primitive table requires at least one entry") {
+    // [29.3] table combinational_entry { combinational_entry } endtable
+    auto& text = R"(
+primitive p(o, i); output o; input i; table endtable endprimitive
+)";
+    parseCompilationUnit(text);
+
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].code == diag::UdpEmptyTable);
+}
+
 TEST_CASE("Case parsing crash regress") {
     auto& text = R"(
 always case(matches matches

@@ -3323,6 +3323,11 @@ UdpBodySyntax& Parser::parseUdpBody(bool isSequential) {
         }
     }
 
+    // [29.3] Both table forms require at least one entry:
+    // `table combinational_entry { combinational_entry } endtable`.
+    if (entries.empty() && !table.isMissing() && peek(TokenKind::EndTableKeyword))
+        addDiag(diag::UdpEmptyTable, peek().location());
+
     auto endtable = expect(TokenKind::EndTableKeyword);
     return factory.udpBody({alloc, portDecls}, initial, table, {alloc, entries}, endtable);
 }

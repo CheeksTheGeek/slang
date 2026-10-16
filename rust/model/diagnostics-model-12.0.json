@@ -6962,309 +6962,316 @@
           "option": null
         },
         {
-          "name": "UdpInvalidEdgeSymbol",
+          "name": "UdpEmptyTable",
           "index": 173,
+          "severity": "Error",
+          "message": "primitive table must have at least one entry",
+          "option": null
+        },
+        {
+          "name": "UdpInvalidEdgeSymbol",
+          "index": 174,
           "severity": "Error",
           "message": "invalid symbol '{}' in edge transition specifier",
           "option": null
         },
         {
           "name": "UdpInvalidInputOnly",
-          "index": 174,
+          "index": 175,
           "severity": "Error",
           "message": "'{}' is only allowed in input fields of sequential primitives",
           "option": null
         },
         {
           "name": "UdpInvalidMinus",
-          "index": 175,
+          "index": 176,
           "severity": "Error",
           "message": "'-' is only allowed in the output field of a sequential primitive",
           "option": null
         },
         {
           "name": "UdpInvalidOutput",
-          "index": 176,
+          "index": 177,
           "severity": "Error",
           "message": "'{}' is not allowed in output field of state table",
           "option": null
         },
         {
           "name": "UdpInvalidSymbol",
-          "index": 177,
+          "index": 178,
           "severity": "Error",
           "message": "invalid symbol '{}' in state table",
           "option": null
         },
         {
           "name": "UdpInvalidTransition",
-          "index": 178,
+          "index": 179,
           "severity": "Error",
           "message": "transition specifiers are only allowed in input fields",
           "option": null
         },
         {
           "name": "UdpSequentialState",
-          "index": 179,
+          "index": 180,
           "severity": "Error",
           "message": "sequential primitive row is missing a current state field",
           "option": null
         },
         {
           "name": "UdpSingleChar",
-          "index": 180,
+          "index": 181,
           "severity": "Error",
           "message": "state table entry can only be a single symbol",
           "option": null
         },
         {
           "name": "UdpTransSameChar",
-          "index": 181,
+          "index": 182,
           "severity": "Error",
           "message": "edge transition must be between two different values",
           "option": null
         },
         {
           "name": "UdpTransitionLength",
-          "index": 182,
+          "index": 183,
           "severity": "Error",
           "message": "transition specifier requires exactly two symbols",
           "option": null
         },
         {
           "name": "UnexpectedEndDelim",
-          "index": 183,
+          "index": 184,
           "severity": "Error",
           "message": "unexpected '{}' delimiter",
           "option": null
         },
         {
           "name": "UnexpectedLetPortKeyword",
-          "index": 184,
+          "index": 185,
           "severity": "Error",
           "message": "unexpected use of '{}' in 'let' port declaration",
           "option": null
         },
         {
           "name": "UnexpectedQualifiers",
-          "index": 185,
+          "index": 186,
           "severity": "Error",
           "message": "unexpected qualifiers on class member",
           "option": null
         },
         {
           "name": "UniquePriorityAfterElse",
-          "index": 186,
+          "index": 187,
           "severity": "Error",
           "message": "cannot use 'unique' or 'priority' keyword after 'else'",
           "option": null
         },
         {
           "name": "UnpackedSigned",
-          "index": 187,
+          "index": 188,
           "severity": "Error",
           "message": "unpacked type cannot have signedness declared",
           "option": null
         },
         {
           "name": "VoidNotAllowed",
-          "index": 188,
+          "index": 189,
           "severity": "Error",
           "message": "'void' type not allowed",
           "option": null
         },
         {
           "name": "WireDataType",
-          "index": 189,
+          "index": 190,
           "severity": "Error",
           "message": "expected a data type here; 'wire' is not a data type, it's a net type",
           "option": null
         },
         {
           "name": "WrongSpecifyDelayCount",
-          "index": 190,
+          "index": 191,
           "severity": "Error",
           "message": "expected one, two, three, six, or twelve delay values assigned to module path",
           "option": null
         },
         {
           "name": "NoteLastBlockEnded",
-          "index": 191,
+          "index": 192,
           "severity": "Note",
           "message": "and ended here",
           "option": null
         },
         {
           "name": "NoteLastBlockStarted",
-          "index": 192,
+          "index": 193,
           "severity": "Note",
           "message": "last complete block started here",
           "option": null
         },
         {
           "name": "NoteMatchingIf",
-          "index": 193,
+          "index": 194,
           "severity": "Note",
           "message": "'if' statement here",
           "option": null
         },
         {
           "name": "NoteToMatchThis",
-          "index": 194,
+          "index": 195,
           "severity": "Note",
           "message": "to match this '{}'",
           "option": null
         },
         {
           "name": "BareAssociativePattern",
-          "index": 195,
+          "index": 196,
           "severity": "Warning",
           "message": "associative array literal is missing the required apostrophe prefix",
           "option": "nonstandard-bare-assoc-pattern"
         },
         {
           "name": "ColonPlusRange",
-          "index": 196,
+          "index": 197,
           "severity": "Warning",
           "message": "':+' in range select was probably meant to be '+:' for ascending range select",
           "option": "colon-plus"
         },
         {
           "name": "DPIPureTask",
-          "index": 197,
+          "index": 198,
           "severity": "Warning",
           "message": "DPI tasks cannot be marked 'pure'",
           "option": "dpi-pure-task"
         },
         {
           "name": "DanglingElse",
-          "index": 198,
+          "index": 199,
           "severity": "Warning",
           "message": "ambiguous dangling 'else'; add begin/end to clarify which 'if' the 'else' belongs to",
           "option": "dangling-else"
         },
         {
           "name": "EmptyAssignmentPattern",
-          "index": 199,
+          "index": 200,
           "severity": "Warning",
           "message": "empty assignment patterns are disallowed by SystemVerilog",
           "option": "empty-pattern"
         },
         {
           "name": "EmptyBody",
-          "index": 200,
+          "index": 201,
           "severity": "Warning",
           "message": "{} has empty body (put the semicolon on a separate line to silence this warning)",
           "option": "empty-body"
         },
         {
           "name": "ForeachCallExpr",
-          "index": 201,
+          "index": 202,
           "severity": "Warning",
           "message": "foreach array expression is not a name",
           "option": "foreach-call-expr"
         },
         {
           "name": "InitializerRequired",
-          "index": 202,
+          "index": 203,
           "severity": "Warning",
           "message": "initializer expression required",
           "option": "initializer-required"
         },
         {
           "name": "LifetimeForPrototype",
-          "index": 203,
+          "index": 204,
           "severity": "Warning",
           "message": "lifetime specifier is not allowed on prototype declaration",
           "option": "lifetime-prototype"
         },
         {
           "name": "MisleadingIndentation",
-          "index": 204,
+          "index": 205,
           "severity": "Warning",
           "message": "this statement is misleadingly indented as if it is part of the preceding {}",
           "option": "misleading-indentation"
         },
         {
           "name": "MisplacedTrailingSeparator",
-          "index": 205,
+          "index": 206,
           "severity": "Warning",
           "message": "misplaced trailing '{}'",
           "option": "misplaced-trailing-separator"
         },
         {
           "name": "MissingElseClause",
-          "index": 206,
+          "index": 207,
           "severity": "Warning",
           "message": "'if' starts on the same line as the previous 'end' without an 'else'; did you mean 'end else if'",
           "option": "missing-else-clause"
         },
         {
           "name": "NonStandardGenBlock",
-          "index": 207,
+          "index": 208,
           "severity": "Warning",
           "message": "standalone generate block without loop or condition is not allowed in SystemVerilog",
           "option": "nonstandard-generate"
         },
         {
           "name": "NonstandardConstraintBlock",
-          "index": 208,
+          "index": 209,
           "severity": "Warning",
           "message": "use of nested constraint block as a constraint item is non-standard",
           "option": "nonstandard-constraint-block"
         },
         {
           "name": "NonstandardDist",
-          "index": 209,
+          "index": 210,
           "severity": "Warning",
           "message": "use of parentheses around 'dist' expression is non-standard",
           "option": "nonstandard-dist"
         },
         {
           "name": "NonstandardForeach",
-          "index": 210,
+          "index": 211,
           "severity": "Warning",
           "message": "non-standard foreach loop variable list",
           "option": "nonstandard-foreach"
         },
         {
           "name": "NonstandardHierarchicalCross",
-          "index": 211,
+          "index": 212,
           "severity": "Warning",
           "message": "non-standard hierarchical reference in cover cross item",
           "option": "nonstandard-hierarchical-cross"
         },
         {
           "name": "NonstandardInside",
-          "index": 212,
+          "index": 213,
           "severity": "Warning",
           "message": "use of 'inside' without braces is non-standard",
           "option": "nonstandard-inside"
         },
         {
           "name": "PackageImportInClass",
-          "index": 213,
+          "index": 214,
           "severity": "Warning",
           "message": "package import not allowed in class declaration",
           "option": "package-import-in-class"
         },
         {
           "name": "QualifiersOnOutOfBlock",
-          "index": 214,
+          "index": 215,
           "severity": "Warning",
           "message": "qualifiers are not allowed on out-of-block method definitions",
           "option": "qualifiers-on-out-of-block"
         },
         {
           "name": "SolveBeforeDisallowed",
-          "index": 215,
+          "index": 216,
           "severity": "Warning",
           "message": "constraint ordering directive is not allowed within a nested constraint block",
           "option": "nested-solve-before"
         },
         {
           "name": "SplitDistWeightOp",
-          "index": 216,
+          "index": 217,
           "severity": "Warning",
           "message": "split dist weight operator is not allowed; SystemVerilog requires that they be joined together",
           "option": "split-distweight-op"
@@ -9258,5 +9265,5 @@
       ]
     }
   ],
-  "modelHash": "345184a973eb01de3278d9257be329cf76c362e836c2c0f02ab6e16bf16daea5"
+  "modelHash": "48f3b82fb376380f30565ada0895258cea47b52e0bab4744f4bd43f103700d89"
 }

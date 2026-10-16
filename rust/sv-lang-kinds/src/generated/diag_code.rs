@@ -1911,6 +1911,12 @@ const PARSER_TABLE: &[DiagInfo] = &[
         "edge transition can only be used in a sequential primitive -- are you missing a 'reg' specifier on the output port?",
     ),
     (
+        "UdpEmptyTable",
+        DiagSeverity::Error,
+        None,
+        "primitive table must have at least one entry",
+    ),
+    (
         "UdpInvalidEdgeSymbol",
         DiagSeverity::Error,
         None,
@@ -8867,50 +8873,51 @@ pub mod diag {
     pub const UdpCombState: DiagCode = DiagCode::new(DiagSubsystem::Parser, 170);
     pub const UdpDupTransition: DiagCode = DiagCode::new(DiagSubsystem::Parser, 171);
     pub const UdpEdgeInComb: DiagCode = DiagCode::new(DiagSubsystem::Parser, 172);
-    pub const UdpInvalidEdgeSymbol: DiagCode = DiagCode::new(DiagSubsystem::Parser, 173);
-    pub const UdpInvalidInputOnly: DiagCode = DiagCode::new(DiagSubsystem::Parser, 174);
-    pub const UdpInvalidMinus: DiagCode = DiagCode::new(DiagSubsystem::Parser, 175);
-    pub const UdpInvalidOutput: DiagCode = DiagCode::new(DiagSubsystem::Parser, 176);
-    pub const UdpInvalidSymbol: DiagCode = DiagCode::new(DiagSubsystem::Parser, 177);
-    pub const UdpInvalidTransition: DiagCode = DiagCode::new(DiagSubsystem::Parser, 178);
-    pub const UdpSequentialState: DiagCode = DiagCode::new(DiagSubsystem::Parser, 179);
-    pub const UdpSingleChar: DiagCode = DiagCode::new(DiagSubsystem::Parser, 180);
-    pub const UdpTransSameChar: DiagCode = DiagCode::new(DiagSubsystem::Parser, 181);
-    pub const UdpTransitionLength: DiagCode = DiagCode::new(DiagSubsystem::Parser, 182);
-    pub const UnexpectedEndDelim: DiagCode = DiagCode::new(DiagSubsystem::Parser, 183);
-    pub const UnexpectedLetPortKeyword: DiagCode = DiagCode::new(DiagSubsystem::Parser, 184);
-    pub const UnexpectedQualifiers: DiagCode = DiagCode::new(DiagSubsystem::Parser, 185);
-    pub const UniquePriorityAfterElse: DiagCode = DiagCode::new(DiagSubsystem::Parser, 186);
-    pub const UnpackedSigned: DiagCode = DiagCode::new(DiagSubsystem::Parser, 187);
-    pub const VoidNotAllowed: DiagCode = DiagCode::new(DiagSubsystem::Parser, 188);
-    pub const WireDataType: DiagCode = DiagCode::new(DiagSubsystem::Parser, 189);
-    pub const WrongSpecifyDelayCount: DiagCode = DiagCode::new(DiagSubsystem::Parser, 190);
-    pub const NoteLastBlockEnded: DiagCode = DiagCode::new(DiagSubsystem::Parser, 191);
-    pub const NoteLastBlockStarted: DiagCode = DiagCode::new(DiagSubsystem::Parser, 192);
-    pub const NoteMatchingIf: DiagCode = DiagCode::new(DiagSubsystem::Parser, 193);
-    pub const NoteToMatchThis: DiagCode = DiagCode::new(DiagSubsystem::Parser, 194);
-    pub const BareAssociativePattern: DiagCode = DiagCode::new(DiagSubsystem::Parser, 195);
-    pub const ColonPlusRange: DiagCode = DiagCode::new(DiagSubsystem::Parser, 196);
-    pub const DPIPureTask: DiagCode = DiagCode::new(DiagSubsystem::Parser, 197);
-    pub const DanglingElse: DiagCode = DiagCode::new(DiagSubsystem::Parser, 198);
-    pub const EmptyAssignmentPattern: DiagCode = DiagCode::new(DiagSubsystem::Parser, 199);
-    pub const EmptyBody: DiagCode = DiagCode::new(DiagSubsystem::Parser, 200);
-    pub const ForeachCallExpr: DiagCode = DiagCode::new(DiagSubsystem::Parser, 201);
-    pub const InitializerRequired: DiagCode = DiagCode::new(DiagSubsystem::Parser, 202);
-    pub const LifetimeForPrototype: DiagCode = DiagCode::new(DiagSubsystem::Parser, 203);
-    pub const MisleadingIndentation: DiagCode = DiagCode::new(DiagSubsystem::Parser, 204);
-    pub const MisplacedTrailingSeparator: DiagCode = DiagCode::new(DiagSubsystem::Parser, 205);
-    pub const MissingElseClause: DiagCode = DiagCode::new(DiagSubsystem::Parser, 206);
-    pub const NonStandardGenBlock: DiagCode = DiagCode::new(DiagSubsystem::Parser, 207);
-    pub const NonstandardConstraintBlock: DiagCode = DiagCode::new(DiagSubsystem::Parser, 208);
-    pub const NonstandardDist: DiagCode = DiagCode::new(DiagSubsystem::Parser, 209);
-    pub const NonstandardForeach: DiagCode = DiagCode::new(DiagSubsystem::Parser, 210);
-    pub const NonstandardHierarchicalCross: DiagCode = DiagCode::new(DiagSubsystem::Parser, 211);
-    pub const NonstandardInside: DiagCode = DiagCode::new(DiagSubsystem::Parser, 212);
-    pub const PackageImportInClass: DiagCode = DiagCode::new(DiagSubsystem::Parser, 213);
-    pub const QualifiersOnOutOfBlock: DiagCode = DiagCode::new(DiagSubsystem::Parser, 214);
-    pub const SolveBeforeDisallowed: DiagCode = DiagCode::new(DiagSubsystem::Parser, 215);
-    pub const SplitDistWeightOp: DiagCode = DiagCode::new(DiagSubsystem::Parser, 216);
+    pub const UdpEmptyTable: DiagCode = DiagCode::new(DiagSubsystem::Parser, 173);
+    pub const UdpInvalidEdgeSymbol: DiagCode = DiagCode::new(DiagSubsystem::Parser, 174);
+    pub const UdpInvalidInputOnly: DiagCode = DiagCode::new(DiagSubsystem::Parser, 175);
+    pub const UdpInvalidMinus: DiagCode = DiagCode::new(DiagSubsystem::Parser, 176);
+    pub const UdpInvalidOutput: DiagCode = DiagCode::new(DiagSubsystem::Parser, 177);
+    pub const UdpInvalidSymbol: DiagCode = DiagCode::new(DiagSubsystem::Parser, 178);
+    pub const UdpInvalidTransition: DiagCode = DiagCode::new(DiagSubsystem::Parser, 179);
+    pub const UdpSequentialState: DiagCode = DiagCode::new(DiagSubsystem::Parser, 180);
+    pub const UdpSingleChar: DiagCode = DiagCode::new(DiagSubsystem::Parser, 181);
+    pub const UdpTransSameChar: DiagCode = DiagCode::new(DiagSubsystem::Parser, 182);
+    pub const UdpTransitionLength: DiagCode = DiagCode::new(DiagSubsystem::Parser, 183);
+    pub const UnexpectedEndDelim: DiagCode = DiagCode::new(DiagSubsystem::Parser, 184);
+    pub const UnexpectedLetPortKeyword: DiagCode = DiagCode::new(DiagSubsystem::Parser, 185);
+    pub const UnexpectedQualifiers: DiagCode = DiagCode::new(DiagSubsystem::Parser, 186);
+    pub const UniquePriorityAfterElse: DiagCode = DiagCode::new(DiagSubsystem::Parser, 187);
+    pub const UnpackedSigned: DiagCode = DiagCode::new(DiagSubsystem::Parser, 188);
+    pub const VoidNotAllowed: DiagCode = DiagCode::new(DiagSubsystem::Parser, 189);
+    pub const WireDataType: DiagCode = DiagCode::new(DiagSubsystem::Parser, 190);
+    pub const WrongSpecifyDelayCount: DiagCode = DiagCode::new(DiagSubsystem::Parser, 191);
+    pub const NoteLastBlockEnded: DiagCode = DiagCode::new(DiagSubsystem::Parser, 192);
+    pub const NoteLastBlockStarted: DiagCode = DiagCode::new(DiagSubsystem::Parser, 193);
+    pub const NoteMatchingIf: DiagCode = DiagCode::new(DiagSubsystem::Parser, 194);
+    pub const NoteToMatchThis: DiagCode = DiagCode::new(DiagSubsystem::Parser, 195);
+    pub const BareAssociativePattern: DiagCode = DiagCode::new(DiagSubsystem::Parser, 196);
+    pub const ColonPlusRange: DiagCode = DiagCode::new(DiagSubsystem::Parser, 197);
+    pub const DPIPureTask: DiagCode = DiagCode::new(DiagSubsystem::Parser, 198);
+    pub const DanglingElse: DiagCode = DiagCode::new(DiagSubsystem::Parser, 199);
+    pub const EmptyAssignmentPattern: DiagCode = DiagCode::new(DiagSubsystem::Parser, 200);
+    pub const EmptyBody: DiagCode = DiagCode::new(DiagSubsystem::Parser, 201);
+    pub const ForeachCallExpr: DiagCode = DiagCode::new(DiagSubsystem::Parser, 202);
+    pub const InitializerRequired: DiagCode = DiagCode::new(DiagSubsystem::Parser, 203);
+    pub const LifetimeForPrototype: DiagCode = DiagCode::new(DiagSubsystem::Parser, 204);
+    pub const MisleadingIndentation: DiagCode = DiagCode::new(DiagSubsystem::Parser, 205);
+    pub const MisplacedTrailingSeparator: DiagCode = DiagCode::new(DiagSubsystem::Parser, 206);
+    pub const MissingElseClause: DiagCode = DiagCode::new(DiagSubsystem::Parser, 207);
+    pub const NonStandardGenBlock: DiagCode = DiagCode::new(DiagSubsystem::Parser, 208);
+    pub const NonstandardConstraintBlock: DiagCode = DiagCode::new(DiagSubsystem::Parser, 209);
+    pub const NonstandardDist: DiagCode = DiagCode::new(DiagSubsystem::Parser, 210);
+    pub const NonstandardForeach: DiagCode = DiagCode::new(DiagSubsystem::Parser, 211);
+    pub const NonstandardHierarchicalCross: DiagCode = DiagCode::new(DiagSubsystem::Parser, 212);
+    pub const NonstandardInside: DiagCode = DiagCode::new(DiagSubsystem::Parser, 213);
+    pub const PackageImportInClass: DiagCode = DiagCode::new(DiagSubsystem::Parser, 214);
+    pub const QualifiersOnOutOfBlock: DiagCode = DiagCode::new(DiagSubsystem::Parser, 215);
+    pub const SolveBeforeDisallowed: DiagCode = DiagCode::new(DiagSubsystem::Parser, 216);
+    pub const SplitDistWeightOp: DiagCode = DiagCode::new(DiagSubsystem::Parser, 217);
     pub const CouldNotOpenIncludeFile: DiagCode = DiagCode::new(DiagSubsystem::Preprocessor, 0);
     pub const DirectiveInsideDesignElement: DiagCode =
         DiagCode::new(DiagSubsystem::Preprocessor, 1);
@@ -9489,4 +9496,4 @@ pub const DIAG_GROUPS: &[DiagGroup] = &[
 
 /// SHA-256 of the canonical diagnostics model these tables were generated from.
 pub const DIAGNOSTICS_MODEL_HASH: &str =
-    "345184a973eb01de3278d9257be329cf76c362e836c2c0f02ab6e16bf16daea5";
+    "48f3b82fb376380f30565ada0895258cea47b52e0bab4744f4bd43f103700d89";

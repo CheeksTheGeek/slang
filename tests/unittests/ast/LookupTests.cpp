@@ -2978,6 +2978,45 @@ endmodule
     CHECK(diags[0].code == diag::PackageExportNotImported);
 }
 
+TEST_CASE("Package export must name the package the item was imported from") {
+    // [26.6] "...shall be imported from the same package_name used in the
+    // export", even when another package re-exports the very same symbol.
+    auto tree = SyntaxTree::fromText(R"(
+package P1;
+  integer x;
+  integer y;
+endpackage
+
+package P2;
+  import P1::x;
+  export P1::x;
+  import P1::*;
+  export P1::y;
+endpackage
+
+package P3;
+  import P1::x;
+  export P2::x;
+endpackage
+
+package P4;
+  import P1::*;
+  function automatic integer g; return y; endfunction
+  export P2::y;
+endpackage
+
+module top; endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+
+    auto& diags = compilation.getAllDiagnostics();
+    REQUIRE(diags.size() == 2);
+    CHECK(diags[0].code == diag::PackageExportNotImported);
+    CHECK(diags[1].code == diag::PackageExportNotImported);
+}
+
 TEST_CASE("Upwards genblk collision") {
     auto tree = SyntaxTree::fromText(R"(
 module m;

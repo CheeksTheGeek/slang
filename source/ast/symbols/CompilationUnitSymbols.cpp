@@ -173,11 +173,20 @@ static bool checkExportIsImported(const PackageSymbol& package, const PackageImp
         return false;
     };
 
+    // [26.6] "...shall be imported from the same package_name used in the
+    // export": matching the symbol isn't enough, since a package that
+    // re-exports it (P2::x for P1::x) names the same symbol through a
+    // different package.
+    auto exportPackageName = item.package.valueText();
+
     auto& scopeNameMap = package.getNameMap();
     if (auto it = scopeNameMap.find(lookupName); it != scopeNameMap.end()) {
         auto& symbol = unwrapTransparent(*it->second);
-        if (auto ei = symbol.as_if<ExplicitImportSymbol>())
-            return ei->importedSymbol() == &exported ? true : notImported();
+        if (auto ei = symbol.as_if<ExplicitImportSymbol>()) {
+            return ei->importedSymbol() == &exported && ei->packageName == exportPackageName
+                       ? true
+                       : notImported();
+        }
 
         auto& diag = package.addDiag(diag::Redefinition, symbol.location);
         diag << lookupName;
@@ -190,10 +199,7 @@ static bool checkExportIsImported(const PackageSymbol& package, const PackageImp
         return notImported();
 
     if (auto it = wildcardData->importedSymbols.find(lookupName);
-        it != wildcardData->importedSymbols.end()) {
-        if (it->second == &exported)
-            return true;
-
+        it != wildcardData->importedSymbols.end() && it->second != &exported) {
         auto& diag = package.addDiag(diag::ImportNameCollision, item.item.range());
         diag << lookupName;
         diag.addNote(diag::NoteDeclarationHere, item.item.location());
@@ -201,9 +207,11 @@ static bool checkExportIsImported(const PackageSymbol& package, const PackageImp
         return false;
     }
 
+    // The name came (or would come) through a wildcard import; it must be one
+    // of the export's own package.
     for (auto import : wildcardData->wildcardImports) {
         auto importPackage = import->getPackage();
-        if (!importPackage || importPackage->name != item.package.valueText())
+        if (!importPackage || importPackage->name != exportPackageName)
             continue;
 
         return importPackage->findForImport(lookupName) == &exported ? true : notImported();

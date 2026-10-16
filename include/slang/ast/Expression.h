@@ -123,6 +123,14 @@ public:
     static const Expression& bindLValue(Expression& lhs, const Type& rhs, const ASTContext& context,
                                         bitmask<AssignFlags> assignFlags);
 
+    /// If @a context is for one element of an array of instances and @a expr is a
+    /// packed connection wider than @a portType, returns the part of @a expr that
+    /// connects to this element [23.3.3.5] (the same slicing an input port gets
+    /// through its implicit conversion). Otherwise returns nullptr. Used for
+    /// connections bound as their own type, such as bidirectional switch terminals.
+    static Expression* sliceInstanceArrayConnection(const ASTContext& context,
+                                                    const Type& portType, Expression& expr);
+
     /// Binds the right hand side of an assignment-like expression from the given syntax nodes.
     /// @param lhs The type of the left hand side, for type checking
     /// @param rhs The syntax node representing the expression to bind

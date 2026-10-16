@@ -145,6 +145,20 @@ Expression& Expression::buildPackedSelectTree(const TypeProvider& typeProvider, 
     return RangeSelectExpression::fromConstant(typeProvider, expr, flatRange, context);
 }
 
+Expression* Expression::sliceInstanceArrayConnection(const ASTContext& context,
+                                                     const Type& portType, Expression& expr) {
+    auto instance = context.getInstance();
+    if (!instance || instance->arrayPath.empty() || expr.bad() || !expr.type->isIntegral() ||
+        expr.type->getBitWidth() == portType.getBitWidth()) {
+        return nullptr;
+    }
+
+    Expression* conn = tryConnectPortArray(context, portType, expr, *instance);
+    if (conn)
+        selfDetermined(context, conn);
+    return conn;
+}
+
 Expression* Expression::tryConnectPortArray(const ASTContext& context, const Type& portType,
                                             Expression& expr, const InstanceSymbolBase& instance) {
     // This lambda is shared code for reporting an error and returning an invalid expression.

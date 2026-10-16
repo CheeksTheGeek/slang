@@ -2004,6 +2004,42 @@ endmodule
     CHECK(cs == ChargeStrength::Small);
 }
 
+TEST_CASE("Switch instance arrays slice their bidirectional terminals") {
+    // [23.3.3.5] Each element of an array of switches connects to its own part
+    // of a wider terminal, rightmost index to the least significant part, as the
+    // other gate terminals already were.
+    auto tree = SyntaxTree::fromText(R"(
+module m;
+    tri [1:0] a;
+    tri [3:0] c;
+    wire [1:0] e;
+    tranif1 t[1:0] (a, c[1:0], e);
+endmodule
+)");
+
+    Compilation compilation;
+    compilation.addSyntaxTree(tree);
+    NO_COMPILATION_ERRORS;
+
+    auto& m = compilation.getRoot().topInstances[0]->body;
+    auto& arr = m.find<InstanceArraySymbol>("t");
+    REQUIRE(arr.elements.size() == 2);
+
+    // elements[i] is t[lower + i]; each terminal is a 1-bit select of the
+    // connection.
+    for (size_t i = 0; i < 2; i++) {
+        auto conns = arr.elements[i]->as<PrimitiveInstanceSymbol>().getPortConnections();
+        REQUIRE(conns.size() == 3);
+        for (auto conn : conns) {
+            auto expr = conn;
+            if (expr->kind == ExpressionKind::Assignment)
+                expr = &expr->as<AssignmentExpression>().left();
+            CHECK(expr->type->getBitWidth() == 1);
+            CHECK(expr->kind == ExpressionKind::ElementSelect);
+        }
+    }
+}
+
 TEST_CASE("Net alias directives") {
     auto tree = SyntaxTree::fromText(R"(
 module byte_swap (inout wire [31:0] A, inout wire [31:0] B);

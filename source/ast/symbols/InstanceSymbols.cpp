@@ -2031,8 +2031,23 @@ std::span<const Expression* const> PrimitiveInstanceSymbol::getPortConnections()
                     ASTContext argCtx = context;
                     argCtx.flags &= ~ASTFlags::DisallowUDNT;
                     argCtx.flags |= ASTFlags::LAndRValue;
-                    results.push_back(
-                        &Expression::bindLValue(*conns[i], argCtx, AssignFlags::InOutPort));
+                    auto bound = &Expression::bindLValue(*conns[i], argCtx,
+                                                         AssignFlags::InOutPort);
+
+                    // [23.3.3.5] In an array of switches, each element connects to
+                    // its own part of a wider terminal, just as the other gate
+                    // terminals are sliced (via bindArgument's conversion). This
+                    // lvalue is bound as its own type, so slice it explicitly.
+                    if (bound->kind == ExpressionKind::Assignment) {
+                        auto& lhs = const_cast<Expression&>(
+                            bound->as<AssignmentExpression>().left());
+                        if (auto sliced = Expression::sliceInstanceArrayConnection(argCtx,
+                                                                                   logic_t, lhs)) {
+                            bound = &Expression::bindLValue(*sliced, *sliced->type, argCtx,
+                                                            AssignFlags::InOutPort);
+                        }
+                    }
+                    results.push_back(bound);
                 }
                 else {
                     results.push_back(

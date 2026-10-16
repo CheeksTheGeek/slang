@@ -6867,10 +6867,22 @@ const CONSTEVAL_TABLE: &[DiagInfo] = &[
         "pop from empty queue",
     ),
     (
+        "ConstEvalIndexInvalid",
+        DiagSeverity::Warning,
+        Some("consteval-index"),
+        "invalid index {} for {}; the read yields the default value and a write is ignored",
+    ),
+    (
         "ConstEvalQueueRange",
         DiagSeverity::Warning,
         Some("queue-range"),
         "reversed selection range [{}:{}] for queue will always yield an empty result",
+    ),
+    (
+        "ConstEvalRangeInvalid",
+        DiagSeverity::Warning,
+        Some("consteval-range"),
+        "invalid range [{}:{}] for {}; out-of-range bits read as the default value and writes to them are ignored",
     ),
     (
         "ConstEvalStaticSkipped",
@@ -8014,10 +8026,12 @@ pub mod diag {
     pub const ConstEvalDynamicArrayIndex: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 37);
     pub const ConstEvalDynamicArrayRange: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 38);
     pub const ConstEvalEmptyQueue: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 39);
-    pub const ConstEvalQueueRange: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 40);
-    pub const ConstEvalStaticSkipped: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 41);
-    pub const ConstSysTaskIgnored: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 42);
-    pub const ConstantConversion: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 43);
+    pub const ConstEvalIndexInvalid: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 40);
+    pub const ConstEvalQueueRange: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 41);
+    pub const ConstEvalRangeInvalid: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 42);
+    pub const ConstEvalStaticSkipped: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 43);
+    pub const ConstSysTaskIgnored: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 44);
+    pub const ConstantConversion: DiagCode = DiagCode::new(DiagSubsystem::ConstEval, 45);
     pub const AlwaysInChecker: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 0);
     pub const AnsiIfacePortDefault: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 1);
     pub const AssertionPortOutputDefault: DiagCode = DiagCode::new(DiagSubsystem::Declarations, 2);
@@ -9176,6 +9190,8 @@ pub const DIAG_GROUPS: &[DiagGroup] = &[
             "elem-not-found",
             "dynarray-index",
             "dynarray-range",
+            "consteval-index",
+            "consteval-range",
             "queue-range",
             "empty-queue",
             "unknown-escape-code",
@@ -9473,4 +9489,4 @@ pub const DIAG_GROUPS: &[DiagGroup] = &[
 
 /// SHA-256 of the canonical diagnostics model these tables were generated from.
 pub const DIAGNOSTICS_MODEL_HASH: &str =
-    "15e066970c332274b7d183b906fa9b2d0bdfeb6afe1cc0a940c3b2e1f6ca3f2e";
+    "345184a973eb01de3278d9257be329cf76c362e836c2c0f02ab6e16bf16daea5";

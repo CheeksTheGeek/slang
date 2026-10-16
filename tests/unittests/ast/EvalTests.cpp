@@ -650,7 +650,7 @@ endfunction
     REQUIRE(diags.size() == 3);
     CHECK(diags[0].code == diag::ConstEvalDynamicArrayRange);
     CHECK(diags[1].code == diag::ConstEvalDynamicArrayRange);
-    CHECK(diags[2].code == diag::RangeOOB);
+    CHECK(diags[2].code == diag::ConstEvalRangeInvalid);
 }
 
 TEST_CASE("Queue read at the append index") {
@@ -2114,6 +2114,60 @@ endfunction
     CHECK(session.eval("f5").integer() == 120);
 
     NO_SESSION_ERRORS;
+}
+
+TEST_CASE("Out-of-bounds and x selects in constant functions follow 11.5.1") {
+    // [11.5.1]: out-of-range or x/z-indexed reads yield x for 4-state values and
+    // 0 for 2-state ones; such writes are ignored. Constant evaluation continues
+    // (with a consteval-index / consteval-range warning) rather than failing.
+    ScriptSession session;
+    session.eval(R"(
+function automatic bit [3:0] part2(int i);
+    bit [3:0] v = 4'b1111;
+    return v[i+:4];
+endfunction
+)");
+    session.eval(R"(
+function automatic logic [3:0] part4(int i);
+    logic [3:0] v = 4'b1111;
+    return v[i+:4];
+endfunction
+)");
+    // Partly out of range: 2-state pads with 0, 4-state with x.
+    CHECK_THAT(session.eval("part2(2)").integer(), exactlyEquals("4'b0011"_si));
+    CHECK_THAT(session.eval("part4(2)").integer(), exactlyEquals("4'bxx11"_si));
+
+    session.eval(R"(
+function automatic logic [9:0] rd(logic [95:0] index);
+    bit [3:0] v2 = 4'b1010;
+    logic [3:0] v4 = 4'b1010;
+    return {v2[index], v2[index +: 4], v4[index], v4[index +: 4]};
+endfunction
+)");
+    // x/z, beyond 32 bits, and at the int32 limit: nothing is selected.
+    for (auto arg : {"96'bx", "96'bz", "96'h80000001", "96'h10000000000000001", "96'h7fffffff"})
+        CHECK_THAT(session.eval("rd("s + arg + ")").integer(), exactlyEquals("10'b00000xxxxx"_si));
+    CHECK_THAT(session.eval("rd(96'd0)").integer(), exactlyEquals("10'b0101001010"_si));
+
+    session.eval(R"(
+function automatic logic [15:0] wr(logic signed [95:0] index);
+    logic [7:0] b = 8'hff;
+    logic [7:0] p = 8'hff;
+    b[index] = 1'b0;
+    p[index +: 4] = 4'b0;
+    return {b, p};
+endfunction
+)");
+    // Writes through an invalid index are ignored; partial ones keep the
+    // in-range bits only.
+    for (auto arg : {"96'bx", "96'h80000001", "96'h10000000000000001"})
+        CHECK_THAT(session.eval("wr("s + arg + ")").integer(), exactlyEquals("16'hffff"_si));
+    CHECK_THAT(session.eval("wr(96'd6)").integer(), exactlyEquals("16'hbf3f"_si));
+    CHECK_THAT(session.eval("wr(-96'd2)").integer(), exactlyEquals("16'hfffc"_si));
+
+    for (auto& d : session.getDiagnostics()) {
+        CHECK((d.code == diag::ConstEvalIndexInvalid || d.code == diag::ConstEvalRangeInvalid));
+    }
 }
 
 TEST_CASE("Decimal x/z digit followed by underscores") {

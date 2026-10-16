@@ -735,6 +735,31 @@ function ret_type func;
 endfunction
 ```
 
+-Wconsteval-index
+A constant function selected an element of a fixed-size array or vector with an
+index that is out of bounds, has x or z bits, or does not fit in 32 bits. Per
+[11.5.1] the read yields the default value (x for 4-state, 0 for 2-state) and a
+write is ignored, so evaluation continues.
+```
+localparam int foo = func(9);
+function int func(int i);
+    bit [3:0] v = 4'b1010;
+    return v[i];
+endfunction
+```
+
+-Wconsteval-range
+A constant function selected a range of a fixed-size array or vector that lies
+partly or wholly out of bounds. Per [11.5.1] the out-of-range bits read as the
+default value (x for 4-state, 0 for 2-state) and writes to them are ignored.
+```
+localparam bit [3:0] foo = func(2);
+function bit [3:0] func(int i);
+    bit [3:0] v = 4'b1111;
+    return v[i+:4];
+endfunction
+```
+
 -Wqueue-range
 A constant function is accessing a queue with a reversed range, which
 is defined to always yield an empty queue.

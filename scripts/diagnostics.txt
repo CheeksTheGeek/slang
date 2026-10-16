@@ -1129,6 +1129,8 @@ warning elem-not-found ConstEvalAssociativeElementNotFound "element {} does not 
 warning static-skipped ConstEvalStaticSkipped "static variable initialization is skipped in constant function calls"
 warning dynarray-index ConstEvalDynamicArrayIndex "invalid index {} for {} of length {}"
 warning dynarray-range ConstEvalDynamicArrayRange "invalid range [{}:{}] for {} of length {}"
+warning consteval-index ConstEvalIndexInvalid "invalid index {} for {}; the read yields the default value and a write is ignored"
+warning consteval-range ConstEvalRangeInvalid "invalid range [{}:{}] for {}; out-of-range bits read as the default value and writes to them are ignored"
 warning queue-range ConstEvalQueueRange "reversed selection range [{}:{}] for queue will always yield an empty result"
 warning empty-queue ConstEvalEmptyQueue "pop from empty queue"
 warning task-ignored ConstSysTaskIgnored "system task '{}' is ignored in constant expression"
@@ -1303,7 +1305,8 @@ group default = { real-underflow real-overflow vector-overflow int-overflow unco
                   unconnected-output-port unconnected-inout-port null-port
                   unconnected-unnamed-port redef-macro unknown-pragma unknown-warning-option
                   extra-pragma-args expected-diag-arg unknown-diag-arg pragma-diag-level explicit-static
-                  static-skipped elem-not-found dynarray-index dynarray-range queue-range empty-queue
+                  static-skipped elem-not-found dynarray-index dynarray-range consteval-index
+                  consteval-range queue-range empty-queue
                   unknown-escape-code missing-top warning-task unsized-concat finish-num
                   nonblocking-final constraint-missing missing-format dpi-spec enum-range udp-port-empty
                   lifetime-prototype net-inconsistent port-coercion empty-body reversed-range

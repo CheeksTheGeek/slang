@@ -1338,29 +1338,43 @@
           "option": "empty-queue"
         },
         {
-          "name": "ConstEvalQueueRange",
+          "name": "ConstEvalIndexInvalid",
           "index": 40,
+          "severity": "Warning",
+          "message": "invalid index {} for {}; the read yields the default value and a write is ignored",
+          "option": "consteval-index"
+        },
+        {
+          "name": "ConstEvalQueueRange",
+          "index": 41,
           "severity": "Warning",
           "message": "reversed selection range [{}:{}] for queue will always yield an empty result",
           "option": "queue-range"
         },
         {
+          "name": "ConstEvalRangeInvalid",
+          "index": 42,
+          "severity": "Warning",
+          "message": "invalid range [{}:{}] for {}; out-of-range bits read as the default value and writes to them are ignored",
+          "option": "consteval-range"
+        },
+        {
           "name": "ConstEvalStaticSkipped",
-          "index": 41,
+          "index": 43,
           "severity": "Warning",
           "message": "static variable initialization is skipped in constant function calls",
           "option": "static-skipped"
         },
         {
           "name": "ConstSysTaskIgnored",
-          "index": 42,
+          "index": 44,
           "severity": "Warning",
           "message": "system task '{}' is ignored in constant expression",
           "option": "task-ignored"
         },
         {
           "name": "ConstantConversion",
-          "index": 43,
+          "index": 45,
           "severity": "Warning",
           "message": "implicit conversion from {} to {} changes value from {} to {}",
           "option": "constant-conversion"
@@ -8948,6 +8962,8 @@
         "elem-not-found",
         "dynarray-index",
         "dynarray-range",
+        "consteval-index",
+        "consteval-range",
         "queue-range",
         "empty-queue",
         "unknown-escape-code",
@@ -9242,5 +9258,5 @@
       ]
     }
   ],
-  "modelHash": "15e066970c332274b7d183b906fa9b2d0bdfeb6afe1cc0a940c3b2e1f6ca3f2e"
+  "modelHash": "345184a973eb01de3278d9257be329cf76c362e836c2c0f02ab6e16bf16daea5"
 }

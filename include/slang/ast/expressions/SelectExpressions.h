@@ -100,8 +100,12 @@ public:
                            bitmask<AssignFlags> flags) const;
     bool isEquivalentImpl(const RangeSelectExpression& rhs) const;
 
+    /// Evaluates the selected range. If @a softFail is given, it is set when
+    /// the range can't be formed (an x/z or out-of-int32 index) and the caller
+    /// should treat the select as wholly out of bounds [11.5.1]: a read yields
+    /// the default value and a write is ignored.
     std::optional<ConstantRange> evalRange(EvalContext& context, const ConstantValue& val,
-                                           bool enforceBounds) const;
+                                           bool enforceBounds, bool* softFail = nullptr) const;
 
     void serializeTo(ASTSerializer& serializer) const;
 

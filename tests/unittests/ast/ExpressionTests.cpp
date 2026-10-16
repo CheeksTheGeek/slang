@@ -1493,7 +1493,9 @@ endmodule
     CHECK(diags[0].code == diag::RangeWidthOverflow);
     CHECK(diags[1].code == diag::RangeWidthOverflow);
     CHECK(diags[2].code == diag::RangeWidthOverflow);
-    CHECK(diags[3].code == diag::RangeWidthOverflow);
+    // func1: a fixed array with a base at the int32 limit selects nothing
+    // during constant evaluation [11.5.1]; func2's dynamic array still errors.
+    CHECK(diags[3].code == diag::ConstEvalIndexInvalid);
     CHECK(diags[4].code == diag::RangeWidthOverflow);
 }
 
@@ -2892,8 +2894,10 @@ endmodule
     REQUIRE(diags.size() == 5);
     CHECK(diags[0].code == diag::ConstEvalAssociativeElementNotFound);
     CHECK(diags[1].code == diag::ConstEvalAssociativeIndexInvalid);
-    CHECK(diags[2].code == diag::IndexOOB);
-    CHECK(diags[3].code == diag::IndexOOB);
+    // [11.5.1] reads with an x or out-of-bounds index yield the default value
+    // during constant evaluation: a warning, not the elaboration-time IndexOOB.
+    CHECK(diags[2].code == diag::ConstEvalIndexInvalid);
+    CHECK(diags[3].code == diag::ConstEvalIndexInvalid);
     CHECK(diags[4].code == diag::ConstEvalFunctionIdentifiersMustBeLocal);
 }
 
@@ -2977,12 +2981,14 @@ endmodule
     CHECK(diags[7].code == diag::RangeWidthOOB);
     CHECK(diags[8].code == diag::ConstEvalNonConstVariable);
     CHECK(diags[9].code == diag::ValueMustBePositive);
-    CHECK(diags[10].code == diag::RangeOOB);
+    // Fixed-range selects computed during constant evaluation are well defined
+    // when out of bounds or x-indexed [11.5.1]; dynamic ones (13, 14) are not.
+    CHECK(diags[10].code == diag::ConstEvalRangeInvalid);
     CHECK(diags[11].code == diag::ConstEvalFunctionIdentifiersMustBeLocal);
     CHECK(diags[12].code == diag::ConstEvalFunctionIdentifiersMustBeLocal);
     CHECK(diags[13].code == diag::IndexValueInvalid);
     CHECK(diags[14].code == diag::IndexValueInvalid);
-    CHECK(diags[15].code == diag::IndexValueInvalid);
+    CHECK(diags[15].code == diag::ConstEvalIndexInvalid);
     CHECK(diags[16].code == diag::ConstEvalDynamicArrayRange);
 }
 
@@ -4663,7 +4669,7 @@ endmodule
 
     auto& diags = compilation.getAllDiagnostics();
     REQUIRE(diags.size() == 1);
-    CHECK(diags[0].code == diag::IndexOOB);
+    CHECK(diags[0].code == diag::ConstEvalIndexInvalid);
 }
 
 TEST_CASE("Class type not allowed in constant expression via copy") {

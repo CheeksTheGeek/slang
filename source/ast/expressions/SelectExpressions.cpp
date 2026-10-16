@@ -335,10 +335,15 @@ std::optional<ConstantRange> ElementSelectExpression::evalIndex(EvalContext& con
         return std::nullopt;
     }
 
+    // [11.5.1] An x/z, too-large, or out-of-bounds index is well defined during
+    // constant evaluation: a read yields the default value and a write is
+    // ignored (softFail). That warrants a warning, not the elaboration-time
+    // IndexOOB that compat modes escalate to an error; a constant index that is
+    // out of bounds was already diagnosed at bind time (warnedAboutIndex).
     std::optional<int32_t> index = cs.integer().as<int32_t>();
     if (!index) {
         if (!warnedAboutIndex)
-            context.addDiag(diag::IndexOOB, sourceRange) << cs << valType;
+            context.addDiag(diag::ConstEvalIndexInvalid, sourceRange) << cs << valType;
         softFail = true;
         return std::nullopt;
     }
@@ -347,7 +352,7 @@ std::optional<ConstantRange> ElementSelectExpression::evalIndex(EvalContext& con
         ConstantRange range = valType.getFixedRange();
         if (!range.containsPoint(*index)) {
             if (!warnedAboutIndex)
-                context.addDiag(diag::IndexOOB, sourceRange) << cs << valType;
+                context.addDiag(diag::ConstEvalIndexInvalid, sourceRange) << cs << valType;
             softFail = true;
             return std::nullopt;
         }
@@ -697,9 +702,10 @@ ConstantValue RangeSelectExpression::evalImpl(EvalContext& context) const {
     if (!cv)
         return nullptr;
 
-    auto range = evalRange(context, cv, /* enforceBounds */ false);
+    bool softFail = false;
+    auto range = evalRange(context, cv, /* enforceBounds */ false, &softFail);
     if (!range)
-        return nullptr;
+        return softFail ? type->getDefaultValue() : nullptr;
 
     // If this is a queue, we didn't verify the ordering of the selection.
     // Check if it's reversed here and issue a warning if so.
@@ -708,8 +714,15 @@ ConstantValue RangeSelectExpression::evalImpl(EvalContext& context) const {
         return value().type->getDefaultValue();
     }
 
-    return cv.getSlice(range->upper(), range->lower(),
-                       type->getArrayElementType()->getDefaultValue());
+    ConstantValue result = cv.getSlice(range->upper(), range->lower(),
+                                       type->getArrayElementType()->getDefaultValue());
+
+    // [11.5.1] Bits selected out of range read as x for a 4-state value but as
+    // 0 for a 2-state one. The slice fills them with x, and the in-range bits
+    // of a 2-state value can't be unknown, so zeroing every unknown is exact.
+    if (result.isInteger() && !value().type->isFourState())
+        result.integer().flattenUnknowns();
+    return result;
 }
 
 LValue RangeSelectExpression::evalLValueImpl(EvalContext& context) const {
@@ -721,9 +734,16 @@ LValue RangeSelectExpression::evalLValueImpl(EvalContext& context) const {
     if (!value().type->hasFixedRange())
         loadedVal = lval.load();
 
-    auto range = evalRange(context, loadedVal, /* enforceBounds */ false);
-    if (!range)
-        return nullptr;
+    bool softFail = false;
+    auto range = evalRange(context, loadedVal, /* enforceBounds */ false, &softFail);
+    if (!range) {
+        if (!softFail)
+            return nullptr;
+
+        // Wholly out of bounds: reads return the default, writes are ignored.
+        lval.addIndexOutOfBounds(type->getDefaultValue());
+        return lval;
+    }
 
     if (value().type->isIntegral())
         lval.addBitSlice(*range);
@@ -735,7 +755,8 @@ LValue RangeSelectExpression::evalLValueImpl(EvalContext& context) const {
 
 std::optional<ConstantRange> RangeSelectExpression::evalRange(EvalContext& context,
                                                               const ConstantValue& val,
-                                                              bool enforceBounds) const {
+                                                              bool enforceBounds,
+                                                              bool* softFail) const {
     auto prevQ = context.getQueueTarget();
     if (val.isQueue())
         context.setQueueTarget(&val);
@@ -748,16 +769,28 @@ std::optional<ConstantRange> RangeSelectExpression::evalRange(EvalContext& conte
         return std::nullopt;
 
     const Type& valueType = *value().type;
+
+    // [11.5.1] An x/z index, or one too large to address anything, selects
+    // nothing: when the caller can treat that as out of bounds (a read yields
+    // the default, a write is ignored), warn and let it.
+    auto invalidIndex = [&](const ConstantValue& index,
+                            const Expression& expr) -> std::optional<ConstantRange> {
+        if (softFail && valueType.hasFixedRange()) {
+            context.addDiag(diag::ConstEvalIndexInvalid, expr.sourceRange) << index << valueType;
+            *softFail = true;
+        }
+        else {
+            context.addDiag(diag::IndexValueInvalid, expr.sourceRange) << index << valueType;
+        }
+        return std::nullopt;
+    };
+
     std::optional<int32_t> li = cl.integer().as<int32_t>();
     std::optional<int32_t> ri = cr.integer().as<int32_t>();
-    if (!li) {
-        context.addDiag(diag::IndexValueInvalid, left().sourceRange) << cl << valueType;
-        return std::nullopt;
-    }
-    if (!ri) {
-        context.addDiag(diag::IndexValueInvalid, right().sourceRange) << cr << valueType;
-        return std::nullopt;
-    }
+    if (!li)
+        return invalidIndex(cl, left());
+    if (!ri)
+        return invalidIndex(cr, right());
 
     ConstantRange result;
     if (selectionKind == RangeSelectionKind::Simple) {
@@ -773,6 +806,11 @@ std::optional<ConstantRange> RangeSelectExpression::evalRange(EvalContext& conte
         auto range = ConstantRange::getIndexedRange(*li, *ri, isDescending,
                                                     selectionKind == RangeSelectionKind::IndexedUp);
         if (!range) {
+            // The base is so close to the int32 limit that the range can't even
+            // be formed; with a fixed range it lies wholly out of bounds.
+            if (softFail && valueType.hasFixedRange())
+                return invalidIndex(cl, left());
+
             context.addDiag(diag::RangeWidthOverflow, sourceRange);
             return std::nullopt;
         }
@@ -784,7 +822,10 @@ std::optional<ConstantRange> RangeSelectExpression::evalRange(EvalContext& conte
         ConstantRange valueRange = valueType.getFixedRange();
         if (!warnedAboutRange &&
             (!valueRange.containsPoint(result.left) || !valueRange.containsPoint(result.right))) {
-            auto& diag = context.addDiag(diag::RangeOOB, sourceRange);
+            // During constant evaluation (softFail given) an out-of-bounds range
+            // is well defined [11.5.1], so it only warrants a warning.
+            auto& diag = context.addDiag(softFail ? diag::ConstEvalRangeInvalid : diag::RangeOOB,
+                                         sourceRange);
             diag << result.left << result.right;
             diag << valueType;
         }

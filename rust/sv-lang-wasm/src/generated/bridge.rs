@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1047 functions generated, 49 skipped (callbacks / struct out-params).
+//! is written on top. 1047 functions generated, 50 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -18180,6 +18180,7 @@ impl Slang {
  *   slang_value_driver_override_range: has a struct out-param
  *   slang_analyzed_procedure_driver_at: has a struct out-param
  *   slang_dfa_run: takes a callback (via type alias / vtable)
+ *   slang_dfa_run_ex: takes a callback (via type alias / vtable)
  *   slang_extern_impl_next: takes a callback
  *   slang_extern_impl_impl: takes a callback
  *   slang_symbol_package_time_scale: has a struct out-param

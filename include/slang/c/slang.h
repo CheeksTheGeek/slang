@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 11
+#define SLANG_C_VERSION_MINOR 12
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -6839,6 +6839,33 @@ typedef struct slang_dfa_lattice {
 /// `lattice->drop`), or NULL on error or if `procedure` is not a procedure.
 SLANG_C_API void* slang_dfa_run(slang_compilation comp, slang_ast procedure,
                                 const slang_dfa_lattice* lattice, void* user, slang_error* err);
+
+/// Flags for slang_dfa_run_ex.
+typedef enum slang_dfa_run_flags {
+    SLANG_DFA_RUN_DEFAULT = 0,
+    /// Join into the result every state parked at a `return` statement, and at
+    /// a `disable` of the containing task or function. slang moves the state
+    /// into AbstractFlowAnalysis::returnStates and marks the rest of the path
+    /// unreachable, so without this flag the result describes only the paths
+    /// that fall off the end of the body: a function whose every path ends in
+    /// `return` yields lattice->bottom(), and an early `return` inside an `if`
+    /// drops everything that path did. With it the result is
+    /// join(exit state, each return state), via lattice->clone and
+    /// lattice->join. A `break` needs no flag: its state is already merged at
+    /// the end of the enclosing loop, and a `disable` of an inner block rejoins
+    /// at the end of that block.
+    SLANG_DFA_RUN_INCLUDE_RETURNS = 1 << 0,
+} slang_dfa_run_flags;
+
+/// As slang_dfa_run, with `flags` (a bitmask of slang_dfa_run_flags). With
+/// SLANG_DFA_RUN_INCLUDE_RETURNS the lattice's `bottom` must be an identity
+/// for `join`, which slang's own flow engine already assumes wherever an
+/// unreachable branch rejoins a live one. Unknown flag bits are an
+/// SLANG_ERR_INVALID_ARG. slang_dfa_run is this with SLANG_DFA_RUN_DEFAULT.
+/// history: since 1.12.
+SLANG_C_API void* slang_dfa_run_ex(slang_compilation comp, slang_ast procedure,
+                                   const slang_dfa_lattice* lattice, void* user, uint32_t flags,
+                                   slang_error* err);
 
 /* ------------------------------------------------------------------------- */
 /* Script session                                                             */

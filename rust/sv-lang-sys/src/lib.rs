@@ -22,7 +22,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// `SLANG_C_VERSION_MAJOR` the declarations in this crate were generated for.
 pub const SLANG_C_VERSION_MAJOR: u32 = 1;
 /// `SLANG_C_VERSION_MINOR` the declarations in this crate were generated for.
-pub const SLANG_C_VERSION_MINOR: u32 = 11;
+pub const SLANG_C_VERSION_MINOR: u32 = 12;
 /// Encoded as by `SLANG_C_VERSION_ENCODE`.
 pub const SLANG_C_VERSION: u32 = SLANG_C_VERSION_MAJOR * 10000 + SLANG_C_VERSION_MINOR;
 
@@ -1006,6 +1006,13 @@ pub type slang_dfa_event_kind = c_uint;
 pub const SLANG_DFA_READ: slang_dfa_event_kind = 0;
 pub const SLANG_DFA_WRITE: slang_dfa_event_kind = 1;
 pub const SLANG_DFA_CALL: slang_dfa_event_kind = 2;
+
+/// Flags for `slang_dfa_run_ex`.
+pub type slang_dfa_run_flags = c_uint;
+/// No special behaviour (what `slang_dfa_run` does).
+pub const SLANG_DFA_RUN_DEFAULT: slang_dfa_run_flags = 0;
+/// Join the states parked at `return` / task-level `disable` into the result.
+pub const SLANG_DFA_RUN_INCLUDE_RETURNS: slang_dfa_run_flags = 1 << 0;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -2995,6 +3002,14 @@ unsafe extern "C" {
         procedure: slang_ast,
         lattice: *const slang_dfa_lattice,
         user: *mut c_void,
+        err: *mut slang_error,
+    ) -> *mut c_void;
+    pub fn slang_dfa_run_ex(
+        comp: slang_compilation,
+        procedure: slang_ast,
+        lattice: *const slang_dfa_lattice,
+        user: *mut c_void,
+        flags: u32,
         err: *mut slang_error,
     ) -> *mut c_void;
     pub fn slang_dfa_ctx_state(ctx: slang_dfa_ctx) -> *mut c_void;

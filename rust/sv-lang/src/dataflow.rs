@@ -434,6 +434,78 @@ impl<'d> EvalSession<'d> {
     /// # }
     /// ```
     pub fn run_dataflow<L: Lattice>(&self, procedure: Symbol<'_>) -> Result<L, Error> {
+        self.run_dataflow_with(procedure, sys::SLANG_DFA_RUN_DEFAULT)
+    }
+
+    /// As [`run_dataflow`](Self::run_dataflow), but the returned state also
+    /// covers every path that leaves the body through a `return` (or a
+    /// `disable` of the containing task or function).
+    ///
+    /// slang's flow engine moves the state at a `return` into a side list and
+    /// marks the rest of the path unreachable, so the plain exit state
+    /// describes only the paths that fall off the end of the body. A function
+    /// whose every path ends in `return` reports [`Lattice::bottom`], and an
+    /// early `return` inside an `if` loses everything that path did. This
+    /// method returns [`Lattice::join`] of the fall-through exit state and each
+    /// of those parked states, so a "may" analysis sees the writes made before
+    /// the `return` without accumulating them in
+    /// [`transfer`](Lattice::transfer).
+    ///
+    /// A `break` needs no special handling: its state is already merged at the
+    /// end of the enclosing loop, and a `disable` of an inner block rejoins at
+    /// the end of that block. Mirrors
+    /// `slang::analysis::AbstractFlowAnalysis::getReturnStates`.
+    ///
+    /// [`Lattice::bottom`] must be an identity for [`Lattice::join`]. slang's
+    /// own flow engine already relies on that wherever an unreachable branch
+    /// rejoins a live one (for example an `if` whose `then` ends in `return`),
+    /// so a lattice that is correct for [`run_dataflow`](Self::run_dataflow)
+    /// is correct here too.
+    ///
+    /// ```
+    /// # use sv_lang::{Session, Compilation, kinds::SymbolKind};
+    /// # use sv_lang::dataflow::{Lattice, DfaEvent, DfaEventKind};
+    /// use std::collections::BTreeSet;
+    ///
+    /// // "May write": every variable some path writes.
+    /// #[derive(Clone, Default)]
+    /// struct MayWrite(BTreeSet<String>);
+    /// impl Lattice for MayWrite {
+    ///     fn top() -> Self { MayWrite::default() }
+    ///     fn join(&mut self, other: &Self) { self.0.extend(other.0.iter().cloned()); }
+    ///     fn transfer(&mut self, ev: DfaEvent<'_>) {
+    ///         if ev.kind == DfaEventKind::Write {
+    ///             if let Some(s) = ev.symbol { self.0.insert(s.name().to_string()); }
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// let session = Session::new();
+    /// let mut comp = Compilation::new(&session)?;
+    /// comp.add_source("module m; int a, b, d; \
+    ///     function automatic void f(input bit c); \
+    ///       a = 1; if (c) begin b = 2; return; end d = 3; \
+    ///     endfunction endmodule\n")?;
+    /// let mut design = comp.compile()?;
+    /// let dfa = design.eval_session();
+    /// let body = dfa.design().top_instances().next().unwrap().instance_body().unwrap();
+    /// let f = body.find("f").unwrap();
+    /// let plain: MayWrite = dfa.run_dataflow(f)?;
+    /// let all: MayWrite = dfa.run_dataflow_including_returns(f)?;
+    /// assert!(!plain.0.contains("b")); // the early-return path is lost
+    /// assert!(all.0.contains("a") && all.0.contains("b") && all.0.contains("d"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn run_dataflow_including_returns<L: Lattice>(
+        &self,
+        procedure: Symbol<'_>,
+    ) -> Result<L, Error> {
+        self.run_dataflow_with(procedure, sys::SLANG_DFA_RUN_INCLUDE_RETURNS)
+    }
+
+    fn run_dataflow_with<L: Lattice>(&self, procedure: Symbol<'_>, flags: u32) -> Result<L, Error> {
         // The C side lifts the seal on THIS design and lazily elaborates the
         // procedure's body; a foreign procedure would mutate a design we do not
         // hold exclusively. A lifetime brand cannot prove same-design (two
@@ -462,11 +534,12 @@ impl<'d> EvalSession<'d> {
         // SAFETY: the compilation and procedure are valid; the lattice callbacks
         // do not unwind (each is wrapped in catch_unwind); `c` outlives the call.
         let raw = unsafe {
-            sys::slang_dfa_run(
+            sys::slang_dfa_run_ex(
                 c.compilation,
                 procedure.raw(),
                 &lattice,
                 &c as *const Ctx as *mut c_void,
+                flags,
                 &mut err,
             )
         };

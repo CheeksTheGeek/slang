@@ -136,6 +136,21 @@ public:
     // The opaque exit-state pointer after run() (still owned by this object).
     void* exitStateData() { return getState().data; }
 
+    // A fresh copy of the exit state joined with every state parked at a
+    // `return` (or a `disable` of the containing task): the base class moves
+    // the state into returnStates and marks the rest of the path unreachable,
+    // so the plain exit state omits those paths. Ownership passes to the
+    // caller. A `break` is already merged at its loop's end and an inner-block
+    // `disable` at that block's end, so only returns need this.
+    void* exitStateDataIncludingReturns() {
+        RustState out = copyState(getState());
+        for (auto& rs : getReturnStates())
+            joinState(out, rs);
+        void* data = out.data;
+        out.data = nullptr; // released to the caller, not dropped here
+        return data;
+    }
+
     // Public forwarders for the slang_dfa_ctx_* accessors: getState() is
     // protected on the base class, but bad/getEvalContext() are already
     // public there.
@@ -158,11 +173,21 @@ const Statement* bodyOf(const Symbol& sym) {
 
 void* slang_dfa_run(slang_compilation comp, slang_ast procedure, const slang_dfa_lattice* lattice,
                     void* user, slang_error* err) {
+    return slang_dfa_run_ex(comp, procedure, lattice, user, SLANG_DFA_RUN_DEFAULT, err);
+}
+
+void* slang_dfa_run_ex(slang_compilation comp, slang_ast procedure,
+                       const slang_dfa_lattice* lattice, void* user, uint32_t flags,
+                       slang_error* err) {
     if (!checkEntry(err))
         return nullptr;
     auto sym = symbolOf(procedure);
     if (!comp || !sym || !lattice) {
         setError(err, SLANG_ERR_INVALID_ARG, "null argument");
+        return nullptr;
+    }
+    if (flags & ~(uint32_t)SLANG_DFA_RUN_INCLUDE_RETURNS) {
+        setError(err, SLANG_ERR_INVALID_ARG, "unknown slang_dfa_run_flags bits");
         return nullptr;
     }
     SLANG_C_GUARD(err, {
@@ -185,6 +210,8 @@ void* slang_dfa_run(slang_compilation comp, slang_ast procedure, const slang_dfa
         }
         // The exit state is owned by the analysis object (dropped when it goes
         // out of scope), so hand the caller a fresh copy.
+        if (flags & SLANG_DFA_RUN_INCLUDE_RETURNS)
+            return analysis.exitStateDataIncludingReturns();
         return lattice->clone(user, analysis.exitStateData());
     });
     return nullptr;

@@ -717,6 +717,10 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | Vi
         }
     }
 
+    // DisableStatement likewise has no visitExprs; slang_statement_disable_target
+    // exposes its target, so sweep it.
+    void handle(const DisableStatement& t) { t.target.visit(*this); }
+
     void handle(const InvalidExpression& t) {
         // Force this node's own type canonical, as the generic Expression path
         // does (type is not_null), then descend into the wrapped child.
@@ -2739,6 +2743,15 @@ slang_ast slang_ast_attribute_at(slang_ast node, uint32_t index) {
 
 // ---- Invalid-node children --------------------------------------------------
 
+slang_ast slang_statement_disable_target(slang_ast stmt) {
+    SLANG_C_ACCESS(noAst(stmt.compilation, SLANG_AST_EXPRESSION), {
+        auto s = stmtOf(stmt);
+        if (!s || s->kind != StatementKind::Disable)
+            return noAst(stmt.compilation, SLANG_AST_EXPRESSION);
+        return wrapAst(s->as<DisableStatement>().target, stmt.compilation);
+    });
+}
+
 slang_ast slang_statement_invalid_child(slang_ast stmt) {
     SLANG_C_ACCESS(noAst(stmt.compilation, SLANG_AST_STATEMENT), {
         auto s = stmtOf(stmt);
@@ -4300,6 +4313,15 @@ struct SemChildCollectorT : ASTVisitor<SemChildCollectorT<Flags>, Flags> {
         else {
             out.push_back(wrapAst(t, comp));
         }
+    }
+
+    // DisableStatement has no visitExprs; its child is its target (also
+    // exposed typed via slang_statement_disable_target).
+    void handle(const DisableStatement& t) {
+        if (depth == 0)
+            out.push_back(wrapAst(t.target, comp));
+        else
+            out.push_back(wrapAst(t, comp));
     }
 };
 

@@ -72,7 +72,7 @@ extern "C" {
 /// The C API version implemented by this header. MAJOR changes only on an ABI
 /// break; MINOR increments whenever declarations are added.
 #define SLANG_C_VERSION_MAJOR 1
-#define SLANG_C_VERSION_MINOR 10
+#define SLANG_C_VERSION_MINOR 11
 
 #define SLANG_C_VERSION_ENCODE(major, minor) ((uint32_t)(major) * 10000u + (uint32_t)(minor))
 #define SLANG_C_VERSION SLANG_C_VERSION_ENCODE(SLANG_C_VERSION_MAJOR, SLANG_C_VERSION_MINOR)
@@ -2007,6 +2007,13 @@ SLANG_C_API slang_ast slang_ast_attribute_at(slang_ast node, uint32_t index);
 /// no child. The freeze sweep descends into this child, so reading into it is a
 /// pure, race-free read on a frozen design. history: since 1.6.
 SLANG_C_API slang_ast slang_statement_invalid_child(slang_ast stmt);
+
+/// For a Disable statement (`disable blk;`), its target: the expression naming
+/// the block or task being disabled (slang::ast::DisableStatement::target, an
+/// ArbitrarySymbol expression whose symbol is the target). Usable when the
+/// statement came from a macro expansion and its text can't be read. A null node
+/// for any other statement. Swept by the freeze pass. history: since 1.11.
+SLANG_C_API slang_ast slang_statement_disable_target(slang_ast stmt);
 
 /// The wrapped child of an Invalid expression (slang::ast::InvalidExpression::
 /// child), the expression analogue of slang_statement_invalid_child. A null

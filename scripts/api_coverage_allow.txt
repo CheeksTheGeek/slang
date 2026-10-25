@@ -58,6 +58,7 @@ EvaluatedDimension::isRange  # TODO-BIND or false-neg; triage
 Expression::findPotentiallyImplicitNets  # TODO-BIND candidate accessor
 Expression::getEffectiveSign  # TODO-BIND candidate accessor
 Expression::isParenthesized  # TODO-BIND candidate accessor
+Expression::sliceInstanceArrayConnection  # internal (elaboration-time static helper: slices a wide switch-terminal connection per instance-array element; the sliced expression is reached through the connection accessors)
 Expression::tryBindInterfaceRef  # TODO-BIND candidate accessor
 Expression::unwrapImplicitConversions  # internal/niche; triage
 FormalArgumentSymbol::getMergedVariable  # TODO-BIND candidate accessor

@@ -21749,6 +21749,46 @@ impl<'d> Statement<'d> {
         wrap(ast)
     }
 
+    /// For a [`StatementKind::Disable`](sv_lang_kinds::StatementKind::Disable)
+    /// statement (`disable blk;`): the expression naming what is disabled
+    /// (`slang::ast::DisableStatement::target`). Its
+    /// [`referenced_symbol`](Expression::referenced_symbol) is the block or
+    /// task. Works for a `disable` produced by a macro expansion, whose text
+    /// can't be read back. `None` for any other statement; also returned by
+    /// [`children`](Self::children).
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::{StatementKind, SymbolKind};
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// comp.add_source(
+    ///     "`define chk repeat(1) begin disable blk; end\n\
+    ///      module t; initial begin : blk `chk end endmodule\n",
+    /// )?;
+    /// let d = comp.compile()?;
+    /// fn find_disable<'d>(n: sv_lang::SemNode<'d>) -> Option<sv_lang::Statement<'d>> {
+    ///     if let Some(s) = n.as_statement() {
+    ///         if s.kind() == StatementKind::Disable {
+    ///             return Some(s);
+    ///         }
+    ///     }
+    ///     n.children().into_iter().find_map(find_disable)
+    /// }
+    /// let body = d.top_instances().next().unwrap().instance_body().unwrap();
+    /// let proc = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let disable = find_disable(proc.body().unwrap().as_sem_node()).unwrap();
+    /// let blk = disable.disable_target().unwrap().referenced_symbol().unwrap();
+    /// assert_eq!(blk.name(), "blk");
+    /// # Ok(()) }
+    /// ```
+    pub fn disable_target(&self) -> Option<Expression<'d>> {
+        // SAFETY: the statement is valid; null for non-Disable statements; the
+        // target is swept by the freeze pass, so this is a pure read.
+        wrap(unsafe { sys::slang_statement_disable_target(self.raw) })
+    }
+
     /// The immediate semantic children (sub-statements, condition/loop
     /// expressions, timing controls), in slang's own order.
     ///

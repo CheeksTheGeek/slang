@@ -1,7 +1,7 @@
 //! Generated raw wasm marshalling for the slang C API. See xtask/src/wasm_bridge.rs.
 //!
 //! One `raw_*` method per non-callback C function; the ergonomic API in lib.rs
-//! is written on top. 1046 functions generated, 49 skipped (callbacks / struct out-params).
+//! is written on top. 1047 functions generated, 49 skipped (callbacks / struct out-params).
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
@@ -3740,6 +3740,24 @@ impl Slang {
         self.write(__p_stmt, &stmt[..16])?;
         let __r = self.call(
             "slang_statement_invalid_child",
+            &[Val::I32(__sret as i32), Val::I32(__p_stmt as i32)],
+        );
+        self.free(__p_stmt);
+        __r?;
+        let mut __w = Vec::with_capacity(4);
+        for __i in 0..4 {
+            __w.push(self.read_u32(__sret + __i * 4)?);
+        }
+        self.free(__sret);
+        Ok(__w)
+    }
+    /// Raw marshalling for `slang_statement_disable_target`.
+    pub fn raw_slang_statement_disable_target(&mut self, stmt: &[u8]) -> Result<Vec<u32>, Error> {
+        let __sret = self.malloc(16)?;
+        let __p_stmt = self.malloc(16)?;
+        self.write(__p_stmt, &stmt[..16])?;
+        let __r = self.call(
+            "slang_statement_disable_target",
             &[Val::I32(__sret as i32), Val::I32(__p_stmt as i32)],
         );
         self.free(__p_stmt);

@@ -9,6 +9,8 @@
 
 #include <iterator>
 #include <ranges>
+#include <unordered_set>
+#include <vector>
 
 #include "slang/ast/ASTContext.h"
 #include "slang/ast/ASTVisitor.h"
@@ -341,8 +343,53 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | Vi
     slang_compilation owner;
     const Scope* currentScope = nullptr;
 
+    // Class specializations are created lazily, and binding one specialization's
+    // method bodies can create further specializations (of a generic that the
+    // traversal already finished). Every generic class definition seen is
+    // recorded here and every specialization swept is remembered, so
+    // sweepSpecializationsToFixpoint() can keep going until none is new.
+    std::vector<const GenericClassDefSymbol*> genericDefs;
+    std::unordered_set<const Symbol*> sweptSpecs;
+
     FreezeVisitor(slang_freeze_report& report, bool prefold, slang_compilation owner) :
         report(report), prefold(prefold), owner(owner) {}
+
+    // Visits each specialization of `gc` not seen before. The specializations
+    // are snapshotted first: visiting one binds its method bodies, which can
+    // insert into this very generic's specialization map (a flat hash map), and
+    // iterating it live across such an insertion is undefined. Returns true if
+    // any new specialization was visited.
+    bool sweepSpecializations(const GenericClassDefSymbol& gc) {
+        std::vector<const Symbol*> snapshot;
+        for (auto&& spec : gc.specializations())
+            snapshot.push_back(&spec);
+
+        bool progress = false;
+        for (auto* spec : snapshot) {
+            // Insert before visiting so a specialization that reaches itself
+            // through its own bodies is not entered twice.
+            if (sweptSpecs.insert(spec).second) {
+                spec->visit(*this);
+                progress = true;
+            }
+        }
+        return progress;
+    }
+
+    // Repeats the specialization sweep over every generic seen so far until a
+    // whole pass visits nothing new. Termination is slang's own: it caps the
+    // depth of nested specialization (ClassType::specializationDepth), so the
+    // set of specializations is finite.
+    void sweepSpecializationsToFixpoint() {
+        bool progress;
+        do {
+            progress = false;
+            // genericDefs can grow while we iterate (a specialization body may
+            // declare a nested generic), so index rather than iterate.
+            for (size_t i = 0; i < genericDefs.size(); i++)
+                progress |= sweepSpecializations(*genericDefs[i]);
+        } while (progress);
+    }
 
     template<typename T>
     void handle(const T& t) {
@@ -553,6 +600,30 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | Vi
             else if constexpr (std::is_same_v<T, RandSeqProductionSymbol>) {
                 t.getRules();
                 t.visitExprs(*this);
+
+                // visitExprs skips code blocks (`{ ... }` between productions
+                // and after a rule), and a StatementBlockSymbol's statement is
+                // not reached through its scope members either, so the
+                // statements inside would never be swept. getRules() has bound
+                // each block's statement; visit it, with the block as the scope
+                // any folding binds against.
+                auto sweepCodeBlock = [&](const RandSeqProductionSymbol::CodeBlockProd& cb) {
+                    if (auto stmt = cb.block->tryGetStatement()) {
+                        auto savedScope = currentScope;
+                        currentScope = cb.block;
+                        stmt->visit(*this);
+                        currentScope = savedScope;
+                    }
+                };
+                for (auto& rule : t.getRules()) {
+                    for (auto prod : rule.prods) {
+                        if (prod->kind == RandSeqProductionSymbol::ProdKind::CodeBlock)
+                            sweepCodeBlock(
+                                *static_cast<const RandSeqProductionSymbol::CodeBlockProd*>(prod));
+                    }
+                    if (rule.codeBlock)
+                        sweepCodeBlock(*rule.codeBlock);
+                }
             }
             // Checker instance output-port initial expressions (per
             // connection), plus each connection's attribute values. Unlike
@@ -630,6 +701,16 @@ struct FreezeVisitor : public ASTVisitor<FreezeVisitor, VisitFlags::AllGood | Vi
             else if constexpr (std::is_same_v<T, GenericClassDefSymbol>) {
                 if (auto* sc = t.getParentScope())
                     t.getDefaultSpecialization(*sc);
+
+                // Sweep the specializations ourselves rather than through
+                // visitDefault, which iterates the live specialization map and
+                // would be invalidated by a specialization created mid-visit.
+                // Specializations created later, after this generic is done,
+                // are picked up by sweepSpecializationsToFixpoint(). A generic
+                // class definition is not a Scope, so nothing else is skipped.
+                genericDefs.push_back(&t);
+                sweepSpecializations(t);
+                return;
             }
             // Loop-generate array: initial/stop/iteration expressions and the
             // loop variable are bound against a private, unregistered scope
@@ -861,6 +942,10 @@ void slang_compilation_freeze(slang_compilation comp, uint32_t flags, slang_free
         if (flags & (SLANG_FREEZE_ELABORATE_ALL | SLANG_FREEZE_PREFOLD)) {
             FreezeVisitor visitor(r, (flags & SLANG_FREEZE_PREFOLD) != 0, comp);
             comp->comp->getRoot().visit(visitor);
+            // Binding a specialization's method bodies can create further
+            // specializations of generics already swept; visit those too, to a
+            // fixpoint, so nothing is first bound after the seal.
+            visitor.sweepSpecializationsToFixpoint();
             if (flags & SLANG_FREEZE_ELABORATE_ALL)
                 comp->elaboratedAll = true;
         }
@@ -4380,6 +4465,12 @@ slang_ast slang_symbol_body(slang_ast sym_node) {
             body = &sym->as<ProceduralBlockSymbol>().getBody();
         else if (sym->kind == SymbolKind::Subroutine)
             body = &sym->as<SubroutineSymbol>().getBody();
+        else if (sym->kind == SymbolKind::StatementBlock)
+            // The statement a block was bound to, e.g. the `{ ... }` code block
+            // of a randsequence rule. A plain field read; null for a block that
+            // was never bound. The freeze sweep visits the statements of the
+            // blocks it reaches (randsequence code blocks explicitly).
+            body = sym->as<StatementBlockSymbol>().tryGetStatement();
         if (!body)
             return noAst(sym_node.compilation, SLANG_AST_STATEMENT);
         return wrapAst(*body, sym_node.compilation);

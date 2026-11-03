@@ -17,15 +17,15 @@ Run `python3 scripts/api_coverage.py` to regenerate.
 
 | bucket | count |
 |---|---|
-| Public `SLANG_EXPORT` member functions (targets) | 2532 |
-| Bound by name (class-aware; see below) | 508 |
+| Public `SLANG_EXPORT` member functions (targets) | 2538 |
+| Bound by name (class-aware; see below) | 511 |
 | Classified by structural rule (not a read-accessor surface) | 1880 |
-| Residual, listed in `scripts/api_coverage_allow.txt` | 144 |
+| Residual, listed in `scripts/api_coverage_allow.txt` | 147 |
 | **Unclassified gaps** (the gate fails if > 0) | **0** |
 | **Stale allow-list entries** (the gate fails if > 0) | **0** |
 
-So: the bindings bind **~508** public methods by name. The "857/857 = whole
-API" figure was never a real denominator — the public member surface is ~2532,
+So: the bindings bind **~511** public methods by name. The "857/857 = whole
+API" figure was never a real denominator — the public member surface is ~2538,
 most of which is deliberately **not** mirrored 1:1 (see below).
 
 ### Correction (2026-10-13): the first version of this gate over-counted

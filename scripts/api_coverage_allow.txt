@@ -106,7 +106,6 @@ Statement::StatementContext  # internal/niche; triage
 Statement::observeTiming  # internal/niche; triage
 Statement::tryGetBlock  # TODO-BIND candidate accessor
 StatementBlockSymbol::isKnownBad  # TODO-BIND candidate accessor
-StatementBlockSymbol::tryGetStatement  # TODO-BIND candidate accessor
 Symbol::appendHierarchicalPath  # internal/niche; triage
 Symbol::getHierarchicalParent  # TODO-BIND candidate accessor
 Symbol::isDeclaredBefore  # TODO-BIND candidate accessor

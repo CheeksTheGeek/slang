@@ -57,6 +57,32 @@ fn semantic_layer_elaborates_in_the_sandbox() {
 }
 
 #[test]
+fn freeze_sweep_handles_nested_class_specializations_in_the_sandbox() {
+    // The freeze sweep now snapshots each generic class's specializations and
+    // repeats until none is new. That code is compiled into this module, so a
+    // trap or non-terminating loop in it would show up here: elaborating a
+    // class that specializes another generic class, and one that specializes
+    // itself, must finish.
+    let mut slang = Slang::new().unwrap();
+    let tree = slang
+        .parse(
+            "class B #(type T=int, int K=1);\n\
+               function void h(); lbl: if (1) ; endfunction\n\
+             endclass\n\
+             class A #(type T=int);\n\
+               function void f(); B#(T,3) b; endfunction\n\
+             endclass\n\
+             class R #(int N=2);\n\
+               function void f(); R#(1) x; endfunction\n\
+             endclass\n\
+             module top; A#(shortint) a; R#(2) r; endmodule\n",
+        )
+        .unwrap();
+    let design = slang.compile(&tree).unwrap();
+    assert_eq!(slang.top_instances(&design).unwrap().len(), 1);
+}
+
+#[test]
 fn behavioral_tree_walks_in_the_sandbox() {
     let mut slang = Slang::new().unwrap();
     let tree = slang

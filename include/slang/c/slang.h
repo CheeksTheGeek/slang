@@ -4669,9 +4669,13 @@ SLANG_C_API slang_constant slang_svint_conditional(slang_svint condition, slang_
  * right}), read the kind with slang_ast_kind_name, and read operators with the
  * typed accessors below. All are pure reads on a frozen compilation. */
 
-/// The root Statement of a procedural block (`always`/`initial`/`final`) or a
-/// subroutine (`function`/`task`) symbol. Returns a null ast (domain STATEMENT)
-/// for any other symbol.
+/// The root Statement of a procedural block (`always`/`initial`/`final`), a
+/// subroutine (`function`/`task`), or a StatementBlock symbol (the statement it
+/// was bound to, e.g. the `{ ... }` code block of a randsequence rule --
+/// slang::ast::StatementBlockSymbol::tryGetStatement; null if never bound).
+/// Returns a null ast (domain STATEMENT) for any other symbol. The StatementBlock
+/// case was added in the same C ABI minor as the sweep that visits those
+/// statements.
 SLANG_C_API slang_ast slang_symbol_body(slang_ast sym);
 
 /// The number of immediate semantic children (sub-statements and

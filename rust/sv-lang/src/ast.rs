@@ -7415,9 +7415,11 @@ impl<'d> Symbol<'d> {
         true
     }
 
-    /// The root [`Statement`] of a procedural block (`always`/`initial`/`final`)
-    /// or a subroutine (`function`/`task`), or `None` for any other symbol —
-    /// the entry point into the elaborated behavioral tree. A pure read.
+    /// The root [`Statement`] of a procedural block (`always`/`initial`/`final`),
+    /// a subroutine (`function`/`task`), or a `StatementBlock` (see
+    /// [`statement_block_body`](Self::statement_block_body)), or `None` for any
+    /// other symbol — the entry point into the elaborated behavioral tree. A
+    /// pure read.
     ///
     /// # Examples
     /// ```
@@ -7437,6 +7439,50 @@ impl<'d> Symbol<'d> {
         // SAFETY: the symbol is valid; the body was forced by the freeze sweep.
         let ast = unsafe { sys::slang_symbol_body(self.raw) };
         wrap(ast)
+    }
+
+    /// For a `StatementBlock` symbol, the [`Statement`] it was bound to
+    /// (`slang::ast::StatementBlockSymbol::tryGetStatement`) — notably the
+    /// `{ ... }` code block of a `randsequence` rule, which no other accessor
+    /// reaches ([`RandSeqProd::code_block_block`] and
+    /// [`Symbol::randseq_rule_code_block`] give the block symbol). `None` for
+    /// any other symbol, or a block that was never bound. The freeze sweep
+    /// visits these statements, so reading them (and anything inside) is a
+    /// pure read on a shared design.
+    ///
+    /// # Examples
+    /// ```
+    /// # fn main() -> Result<(), sv_lang::Error> {
+    /// use sv_lang::kinds::SymbolKind;
+    /// # let session = sv_lang::Session::new();
+    /// # let mut comp = sv_lang::Compilation::new(&session)?;
+    /// # comp.add_source(
+    /// #     "module m;\n\
+    /// #        int x;\n\
+    /// #        initial randsequence(main)\n\
+    /// #          main : { x = 1; };\n\
+    /// #        endsequence\n\
+    /// #      endmodule\n",
+    /// # )?;
+    /// # let design = comp.compile()?;
+    /// let body = design.top_instances().next().unwrap().instance_body().unwrap();
+    /// let block = body.members().find(|s| s.kind() == SymbolKind::ProceduralBlock).unwrap();
+    /// let stmt = block.body().unwrap().statements()[0];
+    /// let main = stmt.randsequence_first_production().unwrap();
+    /// let code = main.randseq_rule_prods(0).next().unwrap().code_block_block().unwrap();
+    /// let inner = code.statement_block_body().expect("the code block's statement");
+    /// // The statement is real, bound elaborated structure: it has children.
+    /// assert!(!inner.children().is_empty());
+    /// // A symbol that is not a StatementBlock has no such body.
+    /// assert!(body.statement_block_body().is_none());
+    /// # Ok(()) }
+    /// ```
+    pub fn statement_block_body(&self) -> Option<Statement<'d>> {
+        if self.kind() != SymbolKind::StatementBlock {
+            return None;
+        }
+        // SAFETY: the symbol is a valid StatementBlock; a plain field read.
+        wrap(unsafe { sys::slang_symbol_body(self.raw) })
     }
 
     /// Finds a direct member by name (no imports, no upward search). A pure

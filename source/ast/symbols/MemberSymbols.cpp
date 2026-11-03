@@ -2006,10 +2006,11 @@ const RandSeqProductionSymbol::CaseProd& RandSeqProductionSymbol::createCaseProd
             case SyntaxKind::StandardRsCaseItem: {
                 auto& sci = item->as<StandardRsCaseItemSyntax>();
                 auto pi = createProdItem(*sci.item, context);
-                for (auto es : sci.expressions) {
+                for (auto es : sci.expressions)
                     expressions.push_back(es);
-                    prods.push_back(pi);
-                }
+
+                // One production per item, matching the one-per-item read below.
+                prods.push_back(pi);
                 break;
             }
             case SyntaxKind::DefaultRsCaseItem:

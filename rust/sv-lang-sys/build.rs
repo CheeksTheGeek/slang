@@ -3,8 +3,10 @@
 //! Source layout is resolved in this order:
 //!
 //! 1. `DOCS_RS` is set: nothing is compiled.
-//! 2. Feature `system`: link a prebuilt `slang-c` found through `pkg-config`
-//!    or `SLANG_C_LIB_DIR` / `SLANG_C_INCLUDE_DIR`.
+//! 2. `SLANG_C_LIB_DIR` is set (no feature needed): link the prebuilt static
+//!    `libslang-c` from it. A `slang-c.stamp` next to it, written by a normal
+//!    build into `OUT_DIR`, is checked against this crate's version and slang
+//!    revision. Feature `system` additionally allows `pkg-config` lookup.
 //! 3. `vendor/` exists next to this file (a published `.crate`): compile the
 //!    vendored sources with their pre-generated files.
 //! 4. Otherwise this is a checkout of the slang repository: compile the
@@ -25,7 +27,10 @@ fn main() {
         return;
     }
 
-    if env::var_os("CARGO_FEATURE_SYSTEM").is_some() {
+    // `SLANG_C_LIB_DIR` alone selects the prebuilt library, so a workspace of
+    // many build directories can share one compiled archive without every
+    // dependent enabling `system`.
+    if env::var_os("CARGO_FEATURE_SYSTEM").is_some() || env::var_os("SLANG_C_LIB_DIR").is_some() {
         link_system();
         return;
     }
@@ -385,6 +390,13 @@ fn compile(
 
     build.compile("slang-c");
 
+    // Lets a built archive be reused later through SLANG_C_LIB_DIR: copy
+    // libslang-c.a and this stamp (both in OUT_DIR) into one directory.
+    write_if_changed(
+        &PathBuf::from(env::var("OUT_DIR").unwrap()).join(STAMP_FILE),
+        &stamp_text(&tree.version()),
+    );
+
     if target.contains("linux") || target.contains("freebsd") {
         println!("cargo:rustc-link-lib=pthread");
     }
@@ -409,12 +421,70 @@ fn collect_cpp(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+const STAMP_FILE: &str = "slang-c.stamp";
+
+/// The identity a prebuilt `libslang-c` must carry to match this crate: the
+/// crate version (it pins the C ABI) and the vendored slang revision.
+fn stamp_text(slang_version: &Version) -> String {
+    format!(
+        "sv-lang-sys {}\nslang {}.{}.{}+{}\n",
+        env::var("CARGO_PKG_VERSION").unwrap_or_default(),
+        slang_version.major,
+        slang_version.minor,
+        slang_version.patch,
+        slang_version.hash
+    )
+}
+
+/// Refuses a prebuilt library built from a different sv-lang-sys / slang
+/// revision. A directory without a stamp is accepted with a warning.
+fn check_prebuilt_stamp(dir: &Path) {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let want = stamp_text(&SourceTree::locate(&manifest_dir).version());
+    let path = dir.join(STAMP_FILE);
+    println!("cargo:rerun-if-changed={}", path.display());
+    match fs::read_to_string(&path) {
+        Ok(have) if have == want => {}
+        Ok(have) => panic!(
+            "sv-lang-sys: the prebuilt library in {} was built from a different revision.\n\
+             prebuilt ({}):\n{have}this crate:\n{want}rebuild it, or unset SLANG_C_LIB_DIR",
+            dir.display(),
+            path.display()
+        ),
+        Err(_) => println!(
+            "cargo:warning=sv-lang-sys: no {STAMP_FILE} in {}; cannot verify the prebuilt \
+             library matches this crate (a vendored build writes one next to libslang-c.a)",
+            dir.display()
+        ),
+    }
+}
+
 fn link_system() {
     let include = env::var("SLANG_C_INCLUDE_DIR").ok();
     if let Ok(lib_dir) = env::var("SLANG_C_LIB_DIR") {
+        let dir = Path::new(&lib_dir);
+        check_prebuilt_stamp(dir);
         println!("cargo:rustc-link-search=native={lib_dir}");
-        println!("cargo:rustc-link-lib=slang-c");
-        println!("cargo:rustc-link-lib=svlang");
+        println!("cargo:rustc-link-lib=static=slang-c");
+        // The vendored build has no separate svlang library; only link one
+        // when the prebuilt directory actually provides it.
+        let has_svlang = ["a", "so", "dylib", "lib"]
+            .iter()
+            .any(|ext| dir.join(format!("libsvlang.{ext}")).exists())
+            || dir.join("svlang.lib").exists();
+        if has_svlang {
+            println!("cargo:rustc-link-lib=svlang");
+        }
+        // What the vendored path gets from `cc` and an explicit pthread.
+        let target = env::var("TARGET").unwrap_or_default();
+        if target.contains("apple") {
+            println!("cargo:rustc-link-lib=c++");
+        } else if !target.contains("msvc") {
+            println!("cargo:rustc-link-lib=stdc++");
+        }
+        if target.contains("linux") || target.contains("freebsd") {
+            println!("cargo:rustc-link-lib=pthread");
+        }
         if let Some(inc) = include {
             println!("cargo:include={inc}");
         }
